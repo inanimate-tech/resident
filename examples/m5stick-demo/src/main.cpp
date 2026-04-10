@@ -1,0 +1,88 @@
+#include <M5Unified.h>
+#include <OutrunDevice.h>
+#include "DisplayDriver.h"
+#include "IMUDriver.h"
+#include "BuzzerDriver.h"
+
+DisplayDriver displayDriver;
+IMUDriver imuDriver;
+BuzzerDriver buzzerDriver{255};
+
+Outrun::DeviceConfig makeConfig() {
+    Outrun::DeviceConfig cfg;
+    cfg.deviceType = "stick";
+    cfg.host = "hawthorn.inanimate.tech";
+    cfg.statusDisplay = &displayDriver;
+    return cfg;
+}
+
+String shaderTemplate(const Outrun::ShaderFields& fields) {
+    auto it = fields.find("expr");
+    if (it == fields.end()) return "";
+
+    String lua = "function on_tick(ctx, dt_ms)\n";
+    lua += "  local time_ms = ctx.time_ms\n";
+    lua += "  local c = (" + it->second + ")\n";
+    lua += "  local r, g, b\n";
+    lua += "  if c < -1 then\n";
+    lua += "    c = -c\n";
+    lua += "    b = math.floor(c) % 256\n";
+    lua += "    g = math.floor(c / 256) % 256\n";
+    lua += "    r = math.floor(c / 65536) % 256\n";
+    lua += "  elseif c > 0.5 then\n";
+    lua += "    r, g, b = 255, 255, 255\n";
+    lua += "  else\n";
+    lua += "    r, g, b = 0, 0, 0\n";
+    lua += "  end\n";
+    lua += "  screen.clear(r, g, b)\n";
+    lua += "  screen.flip()\n";
+    lua += "end\n";
+    return lua;
+}
+
+static const char* DEFAULT_SHADER =
+    "rgb(sin(time_ms/1000)*0.5+0.5, sin(time_ms/1000+2.094)*0.5+0.5, sin(time_ms/1000+4.189)*0.5+0.5)";
+
+class DemoDevice : public Outrun::Device {
+public:
+    DemoDevice() : Outrun::Device(makeConfig()) {}
+
+    void deviceSetup() override {
+        sandbox().addDriver(&displayDriver);
+        sandbox().addDriver(&imuDriver);
+        sandbox().addDriver(&buzzerDriver);
+        sandbox().setShaderTemplate(shaderTemplate);
+        sandbox().initialize();
+    }
+
+    void deviceLoop() override {
+        M5.update();
+        sandbox().loop();
+
+        // Load default shader once connected
+        static bool loaded = false;
+        if (!loaded && isConnected()) {
+            loaded = true;
+            Outrun::ShaderFields fields;
+            fields["expr"] = DEFAULT_SHADER;
+            sandbox().loadShader(fields);
+        }
+    }
+};
+
+DemoDevice device;
+
+void setup() {
+    Serial.begin(115200);
+    delay(2000);
+    auto cfg = M5.config();
+    M5.begin(cfg);
+    M5.Display.setRotation(1);
+    displayDriver.begin();
+    buzzerDriver.begin();
+    device.setup();
+}
+
+void loop() {
+    device.loop();
+}
