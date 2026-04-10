@@ -1,0 +1,5 @@
+.pio/
+build/
+.vscode/
+*.o
+*.a

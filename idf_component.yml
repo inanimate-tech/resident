@@ -1,0 +1,3 @@
+version: "0.1.0"
+description: "Sandbox with hardware IO and hot reload for ESP32 devices"
+url: "https://github.com/inanimate-tech/outrun"
