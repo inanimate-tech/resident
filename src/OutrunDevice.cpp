@@ -8,7 +8,7 @@ Device* Device::_instance = nullptr;
 static CourierConfig buildCourierConfig(const DeviceConfig& config) {
   CourierConfig cfg;
   cfg.host = config.host ? config.host : "localhost";
-  cfg.port = Device::DEFAULT_PORT;
+  cfg.port = 443;
   cfg.path = "/";
   cfg.apName = nullptr;
   return cfg;
