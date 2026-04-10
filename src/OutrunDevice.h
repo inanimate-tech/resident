@@ -18,7 +18,7 @@ public:
   virtual ~Device();
 
   void setup();
-  void loop();
+  virtual void loop();
 
   // Direct access to composed objects
   Courier& courier() { return _courier; }
