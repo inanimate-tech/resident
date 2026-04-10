@@ -77,6 +77,9 @@ private:
   void showStatusText(const char* text);
   String _lastStatusText;
 
+  // Persisted path string — CourierEndpoint stores const char* (no copy)
+  String _wsPath;
+
   // Singleton for static callbacks
   static Device* _instance;
 };

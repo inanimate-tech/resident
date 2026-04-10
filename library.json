@@ -16,7 +16,7 @@
   "frameworks": "arduino",
   "platforms": "espressif32",
   "dependencies": {
-    "inanimate/courier": "^0.1.0",
+    "inanimate/courier": "^0.2.0",
     "bblanchon/ArduinoJson": "^7.4.2",
     "fischer-simon/Esp32Lua": "^5.4.7"
   }

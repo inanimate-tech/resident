@@ -102,11 +102,11 @@ void Device::wireHooks()
 
   // Set up WS transport endpoint after WiFi connects
   _courier.onTransportsWillConnect([this]() {
-    String wsPath = buildWebSocketPath();
+    _wsPath = buildWebSocketPath();
     CourierEndpoint wsEp;
-    wsEp.path = wsPath;
+    wsEp.path = _wsPath.c_str();
     _courier.setEndpoint("ws", wsEp);
-    Serial.printf("[outrun] WS path: %s\n", wsPath.c_str());
+    Serial.printf("[outrun] WS path: %s\n", _wsPath.c_str());
   });
 }
 
