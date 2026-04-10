@@ -48,18 +48,21 @@ protected:
   StatusLED* statusLED() const { return _config.statusLED; }
   StatusDisplay* statusDisplay() const { return _config.statusDisplay; }
 
-  // Device identity
-  String _deviceId;
-
-  // Courier accessor for subclasses
-  CourierWSTransport& _ws;
-
   // Constants — accessible to subclasses
   static constexpr uint16_t DEFAULT_PORT = 443;
 
 private:
   DeviceConfig _config;
   Courier _courier;
+
+protected:
+  // Courier accessor for subclasses — declared after _courier
+  CourierWSTransport& _ws;
+
+  // Device identity — declared after _courier so init order matches constructor
+  String _deviceId;
+
+private:
   Sandbox _sandbox;
 
   // Message handlers
