@@ -180,6 +180,12 @@ void Sandbox::loop()
 
 void Sandbox::loadApp(const char* luaCode)
 {
+  // Stop current app before loading new one
+  if (_appRunning) {
+    _appRunning = false;
+    notifyAppRunning(false);
+  }
+
   // Reset drivers
   for (int i = 0; i < _driverCount; i++) {
     _drivers[i]->onAppReset();
