@@ -2,18 +2,19 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEV_URL="http://localhost:5173"
 BASE_URL=""
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dev-url)
-      BASE_URL="$2"
-      shift 2
+    --dev)
+      BASE_URL="$DEV_URL"
+      shift
       ;;
     -*)
       echo "Unknown flag: $1" >&2
-      echo "Usage: $0 [--dev-url URL] <app-file.lua>" >&2
+      echo "Usage: $0 [--dev] <app-file.lua>" >&2
       exit 1
       ;;
     *)
@@ -23,7 +24,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 [--dev-url URL] <app-file.lua>" >&2
+  echo "Usage: $0 [--dev] <app-file.lua>" >&2
   exit 1
 fi
 

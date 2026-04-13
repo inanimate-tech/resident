@@ -87,5 +87,5 @@ Send a Lua app to a device from the command line:
 ./send-app.sh device-apps/hello.lua
 
 # Local dev
-./send-app.sh --dev-url http://localhost:8787 device-apps/hello.lua
+./send-app.sh --dev device-apps/hello.lua
 ```
