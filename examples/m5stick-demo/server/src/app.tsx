@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback } from "react";
 import { useAgent } from "agents/react";
 
 function DeviceMonitor({
@@ -42,7 +42,6 @@ export default function App() {
   const [code, setCode] = useState("");
   const [lastSent, setLastSent] = useState("");
   const [sending, setSending] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleStatus = useCallback((connected: boolean) => {
     setDeviceConnected(connected);
@@ -115,7 +114,6 @@ export default function App() {
           </label>
           <textarea
             id="app-code"
-            ref={textareaRef}
             value={code}
             onChange={(e) => setCode(e.target.value)}
             placeholder={'function on_tick(ctx, dt_ms)\n  screen.clear(0, 0, 0)\n  screen.text(10, 10, "Hello")\n  screen.flip()\nend'}
@@ -136,9 +134,7 @@ export default function App() {
         {lastSent && (
           <div className="space-y-2">
             <h2 className="text-sm font-medium text-gray-700">Last Sent</h2>
-            <pre className="p-4 bg-gray-900 text-green-400 text-sm font-mono rounded-lg overflow-auto max-h-64">
-              {lastSent}
-            </pre>
+            <pre className="p-4 bg-gray-900 text-green-400 text-sm font-mono rounded-lg overflow-auto max-h-64">{lastSent}</pre>
           </div>
         )}
       </div>

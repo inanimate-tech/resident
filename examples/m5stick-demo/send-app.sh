@@ -59,13 +59,19 @@ fi
 URL="${BASE_URL}/agents/device-agent/${DEVICE_ID}"
 echo "Sending $(basename "$APP_FILE") to $URL"
 
-HTTP_CODE=$(curl -s -o /dev/stderr -w "%{http_code}" \
+RESPONSE=$(curl -s -w "\n%{http_code}" \
   -X POST \
   -H "Content-Type: text/plain" \
   --data-binary "@${APP_FILE}" \
-  "$URL" 2>&1)
+  "$URL")
 
-echo ""
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+
+if [[ -n "$BODY" ]]; then
+  echo "$BODY"
+fi
+
 if [[ "$HTTP_CODE" == "200" ]]; then
   echo "Sent successfully."
 else

@@ -13,7 +13,7 @@ export class DeviceAgent extends Agent<Env> {
     return ["device"];
   }
 
-  onConnect(connection: Connection, ctx: ConnectionContext): void {
+  onConnect(_connection: Connection, _ctx: ConnectionContext): void {
     this.broadcastStatus();
   }
 
