@@ -1,0 +1,32 @@
+{
+  "name": "m5stick-demo-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lua app broadcaster for M5Stick devices",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "start": "vite dev",
+    "deploy": "vite build && wrangler deploy",
+    "types": "wrangler types env.d.ts --include-runtime false"
+  },
+  "dependencies": {
+    "agents": "^0.10.1",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
+  },
+  "devDependencies": {
+    "@babel/plugin-proposal-decorators": "^7.29.0",
+    "@cloudflare/vite-plugin": "1.31.2",
+    "@cloudflare/workers-types": "^4.20260411.1",
+    "@rolldown/plugin-babel": "^0.2.2",
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.8",
+    "wrangler": "^4.81.1"
+  }
+}
