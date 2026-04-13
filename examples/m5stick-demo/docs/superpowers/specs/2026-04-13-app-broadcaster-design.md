@@ -56,9 +56,8 @@ On connect/close, broadcast device presence state to all monitor connections:
 The handler:
 1. Reads the request body as text
 2. Wraps it as `{ type: "app", code: "<lua>" }`
-3. Broadcasts the JSON message to all device (non-monitor) connections
-4. Broadcasts `{ type: "app_sent", code: "<lua>" }` to all monitor connections
-5. Returns 200 with `{ ok: true }`
+3. Broadcasts the JSON message to **all** connections (device and monitor alike)
+4. Returns 200 with `{ ok: true }`
 
 ### No State Persistence
 
@@ -81,7 +80,7 @@ Single page with these elements:
 - Submit button that POSTs the textarea content to `/agents/device-agent/{deviceId}`
 
 ### Last Sent
-- Shows the most recently sent app code (from `app_sent` monitor messages)
+- Shows the most recently sent app code (from `app` messages received over the monitor WebSocket)
 
 ### Styling
 - Keep Tailwind CSS
@@ -115,14 +114,14 @@ Reads accelerometer data via `imu.accel()` and visualizes it on screen.
 
 ```bash
 #!/bin/bash
-# Usage: ./send-app.sh <device-id> <app-file.lua>
-# Posts a Lua app file to a specific device via the production server
+# Usage: ./send-app.sh [--dev-url URL] <device-id> <app-file.lua>
+# Posts a Lua app file to a specific device
 ```
 
 - Takes device ID and a Lua filename as arguments
-- Resolves the production URL from `wrangler.jsonc` worker name (format: `https://{name}.{subdomain}.workers.dev`)
-- Uses `npx wrangler deployments list --json` or parses the worker name to construct the URL
-- POSTs the file content as text/plain to `https://{url}/agents/device-agent/{deviceId}`
+- `--dev-url <URL>` flag overrides the production URL (e.g. `--dev-url http://localhost:8787` for local dev)
+- Without `--dev-url`, resolves the production URL from wrangler (worker name from `wrangler.jsonc`)
+- POSTs the file content as text/plain to `{url}/agents/device-agent/{deviceId}`
 - Prints success/failure
 
 ## Dependencies to Remove
@@ -146,6 +145,5 @@ Keep:
 
 ## Migrations
 
-Update `wrangler.jsonc` migrations:
-- Rename class from `ChatAgent` to `DeviceAgent`
-- Add a `renamed_classes` migration entry (or `delete_classes` + `new_sqlite_classes` if no data to preserve)
+Fresh deployment — no existing data to migrate:
+- Replace `ChatAgent` with `DeviceAgent` in bindings and `new_sqlite_classes`
