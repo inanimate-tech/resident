@@ -62,6 +62,15 @@ cd device
 pio run -e m5sticks3 -t upload
 ```
 
+### Connect to Wi-Fi
+
+The device manages its own connectivity.
+
+If it cannot connect to a configured Wi-Fi network, it creates an access point called **Outrun Stick XXXX**.
+
+Connect to this and configure your local Wi-Fi credentials via the captive portal (note that ESP32 does not support 5GHz networks).
+
+The device screen will show "Connecting..." until the server is deployed.
 
 ## Server
 
@@ -102,8 +111,11 @@ curl -X POST -H "Content-Type: text/plain" \
 Send a Lua app to a device from the command line:
 
 ```bash
-# Production
+# From a file
 ./send-app.sh device-apps/hello.lua
+
+# From stdin
+echo 'function init(ctx) screen.clear(255,0,0) screen.flip() end' | ./send-app.sh
 
 # Local dev
 ./send-app.sh --dev device-apps/hello.lua

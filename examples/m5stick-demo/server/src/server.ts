@@ -13,6 +13,16 @@ export class DeviceAgent extends Agent<Env> {
     return ["device"];
   }
 
+  // Device connections are plain WebSocket clients (Courier) — they don't
+  // speak the agents SDK protocol, so suppress identity/state frames.
+  shouldSendProtocolMessages(
+    _connection: Connection,
+    ctx: ConnectionContext
+  ): boolean {
+    const url = new URL(ctx.request.url);
+    return url.searchParams.get("monitor") === "1";
+  }
+
   onConnect(_connection: Connection, _ctx: ConnectionContext): void {
     this.broadcastStatus();
   }
@@ -34,7 +44,17 @@ export class DeviceAgent extends Agent<Env> {
     const code = await request.text();
     const message = JSON.stringify({ type: "app", code });
 
-    this.broadcast(message);
+    let deviceCount = 0;
+    for (const conn of this.getConnections("device")) {
+      conn.send(message);
+      deviceCount++;
+    }
+    let monitorCount = 0;
+    for (const conn of this.getConnections("monitor")) {
+      conn.send(message);
+      monitorCount++;
+    }
+    console.log(`Sent app to ${deviceCount} device(s) and ${monitorCount} monitor(s)`);
 
     return Response.json({ ok: true });
   }

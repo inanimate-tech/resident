@@ -144,7 +144,7 @@ void Device::setup()
 
   // Build AP name for WiFi config portal
   String apName = String(getDeviceType());
-  apName.toUpperCase();
+  apName[0] = toupper(apName[0]);
   String idSuffix = _deviceId.substring(0, 4);
   _courier.setAPName((String("Outrun ") + apName + " " + idSuffix).c_str());
 

@@ -14,7 +14,8 @@ while [[ $# -gt 0 ]]; do
       ;;
     -*)
       echo "Unknown flag: $1" >&2
-      echo "Usage: $0 [--dev] <app-file.lua>" >&2
+      echo "Usage: $0 [--dev] [app-file.lua]" >&2
+      echo "       cat app.lua | $0 [--dev]" >&2
       exit 1
       ;;
     *)
@@ -23,16 +24,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 [--dev] <app-file.lua>" >&2
-  exit 1
-fi
-
 DEVICE_ID="m5stick-demo"
-APP_FILE="$1"
 
-if [[ ! -f "$APP_FILE" ]]; then
-  echo "Error: file not found: $APP_FILE" >&2
+# Read app code from file argument or stdin
+if [[ $# -ge 1 ]]; then
+  APP_FILE="$1"
+  if [[ ! -f "$APP_FILE" ]]; then
+    echo "Error: file not found: $APP_FILE" >&2
+    exit 1
+  fi
+  APP_CODE=$(cat "$APP_FILE")
+  APP_NAME=$(basename "$APP_FILE")
+elif [[ ! -t 0 ]]; then
+  APP_CODE=$(cat)
+  APP_NAME="stdin"
+else
+  echo "Usage: $0 [--dev] [app-file.lua]" >&2
+  echo "       cat app.lua | $0 [--dev]" >&2
   exit 1
 fi
 
@@ -58,12 +66,12 @@ with open('wrangler.jsonc') as f:
 fi
 
 URL="${BASE_URL}/agents/device-agent/${DEVICE_ID}"
-echo "Sending $(basename "$APP_FILE") to $URL"
+echo "Sending ${APP_NAME} to $URL"
 
 RESPONSE=$(curl -s -w "\n%{http_code}" \
   -X POST \
   -H "Content-Type: text/plain" \
-  --data-binary "@${APP_FILE}" \
+  --data-binary "$APP_CODE" \
   "$URL")
 
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)

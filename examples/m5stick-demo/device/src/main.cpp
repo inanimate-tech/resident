@@ -11,7 +11,7 @@ BuzzerDriver buzzerDriver{255};
 Outrun::DeviceConfig makeConfig() {
     Outrun::DeviceConfig cfg;
     cfg.deviceType = "stick";
-    cfg.host = "hawthorn.inanimate.tech";
+    cfg.host = "m5stick-demo.genmon.workers.dev";
     cfg.statusDisplay = &displayDriver;
     return cfg;
 }
@@ -46,6 +46,10 @@ static const char* DEFAULT_SHADER =
 class DemoDevice : public Outrun::Device {
 public:
     DemoDevice() : Outrun::Device(makeConfig()) {}
+
+    String buildWebSocketPath() override {
+        return "/agents/device-agent/m5stick-demo";
+    }
 
     void deviceSetup() override {
         sandbox().addDriver(&displayDriver);
