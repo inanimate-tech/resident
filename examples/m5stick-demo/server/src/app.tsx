@@ -1,62 +1,38 @@
 import { useState, useCallback } from "react";
 import { useAgent } from "agents/react";
 
-function DeviceMonitor({
-  deviceId,
-  onStatus,
-  onApp
-}: {
-  deviceId: string;
-  onStatus: (connected: boolean) => void;
-  onApp: (code: string) => void;
-}) {
-  useAgent({
-    agent: "DeviceAgent",
-    name: deviceId,
-    query: { monitor: "1" },
-    onOpen: useCallback(() => onStatus(false), [onStatus]),
-    onClose: useCallback(() => onStatus(false), [onStatus]),
-    onMessage: useCallback(
-      (event: MessageEvent) => {
-        try {
-          const data = JSON.parse(String(event.data));
-          if (data.type === "status") {
-            onStatus(data.deviceConnected);
-          } else if (data.type === "app") {
-            onApp(data.code);
-          }
-        } catch {
-          // Not JSON or protocol message
-        }
-      },
-      [onStatus, onApp]
-    )
-  });
-
-  return null;
-}
+const DEVICE_ID = "m5stick-demo";
+const AGENT_URL = `/agents/device-agent/${DEVICE_ID}`;
 
 export default function App() {
-  const [deviceId, setDeviceId] = useState("");
   const [deviceConnected, setDeviceConnected] = useState(false);
   const [code, setCode] = useState("");
   const [lastSent, setLastSent] = useState("");
   const [sending, setSending] = useState(false);
 
-  const handleStatus = useCallback((connected: boolean) => {
-    setDeviceConnected(connected);
-  }, []);
-
-  const handleApp = useCallback((appCode: string) => {
-    setLastSent(appCode);
-  }, []);
+  useAgent({
+    agent: "DeviceAgent",
+    name: DEVICE_ID,
+    query: { monitor: "1" },
+    onMessage: useCallback((event: MessageEvent) => {
+      try {
+        const data = JSON.parse(String(event.data));
+        if (data.type === "status") {
+          setDeviceConnected(data.deviceConnected);
+        } else if (data.type === "app") {
+          setLastSent(data.code);
+        }
+      } catch {
+        // Not JSON or protocol message
+      }
+    }, [])
+  });
 
   const sendApp = useCallback(async () => {
-    if (!code.trim() || !deviceId || sending) return;
+    if (!code.trim() || sending) return;
     setSending(true);
     try {
-      const url = `/agents/device-agent/${deviceId}`;
-      const res = await fetch(url, {
+      const res = await fetch(AGENT_URL, {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
         body: code
@@ -69,7 +45,7 @@ export default function App() {
     } finally {
       setSending(false);
     }
-  }, [code, deviceId, sending]);
+  }, [code, sending]);
 
   return (
     <div className="min-h-screen bg-gray-50 p-8">
@@ -78,33 +54,11 @@ export default function App() {
           M5Stick App Broadcaster
         </h1>
 
-        {/* Monitor connection — only mounts when deviceId is set */}
-        {deviceId && (
-          <DeviceMonitor
-            deviceId={deviceId}
-            onStatus={handleStatus}
-            onApp={handleApp}
-          />
-        )}
-
-        {/* Device ID input */}
-        <div className="flex items-center gap-3">
-          <label htmlFor="device-id" className="text-sm font-medium text-gray-700">
-            Device ID
-          </label>
-          <input
-            id="device-id"
-            type="text"
-            value={deviceId}
-            onChange={(e) => setDeviceId(e.target.value.trim())}
-            placeholder="e.g. a1b2c3d4"
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
-          {deviceId && (
-            <span className="text-xl" title={deviceConnected ? "Device connected" : "Device not connected"}>
-              {deviceConnected ? "\u2705" : "\u274C"}
-            </span>
-          )}
+        {/* Device status */}
+        <div className="flex items-center gap-2 text-sm text-gray-600">
+          <span className="text-xl">{deviceConnected ? "\u2705" : "\u274C"}</span>
+          <span className="font-mono">{DEVICE_ID}</span>
+          <span>{deviceConnected ? "connected" : "waiting for device"}</span>
         </div>
 
         {/* Code textarea */}
@@ -123,7 +77,7 @@ export default function App() {
           <button
             type="button"
             onClick={sendApp}
-            disabled={!code.trim() || !deviceId || sending}
+            disabled={!code.trim() || sending}
             className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {sending ? "Sending..." : "Send to Device"}

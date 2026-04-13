@@ -42,7 +42,7 @@ POST Lua code to a device:
 ```bash
 curl -X POST -H "Content-Type: text/plain" \
   --data-binary @device-apps/hello.lua \
-  https://your-worker.workers.dev/agents/device-agent/DEVICE_ID
+  https://your-worker.workers.dev/agents/device-agent/m5stick-demo
 ```
 
 ## Device
@@ -84,8 +84,8 @@ Send a Lua app to a device from the command line:
 
 ```bash
 # Production
-./send-app.sh DEVICE_ID device-apps/hello.lua
+./send-app.sh device-apps/hello.lua
 
 # Local dev
-./send-app.sh --dev-url http://localhost:8787 DEVICE_ID device-apps/hello.lua
+./send-app.sh --dev-url http://localhost:8787 device-apps/hello.lua
 ```

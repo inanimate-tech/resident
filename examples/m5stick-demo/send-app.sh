@@ -13,7 +13,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     -*)
       echo "Unknown flag: $1" >&2
-      echo "Usage: $0 [--dev-url URL] <device-id> <app-file.lua>" >&2
+      echo "Usage: $0 [--dev-url URL] <app-file.lua>" >&2
       exit 1
       ;;
     *)
@@ -22,13 +22,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ $# -lt 2 ]]; then
-  echo "Usage: $0 [--dev-url URL] <device-id> <app-file.lua>" >&2
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $0 [--dev-url URL] <app-file.lua>" >&2
   exit 1
 fi
 
-DEVICE_ID="$1"
-APP_FILE="$2"
+DEVICE_ID="m5stick-demo"
+APP_FILE="$1"
 
 if [[ ! -f "$APP_FILE" ]]; then
   echo "Error: file not found: $APP_FILE" >&2
