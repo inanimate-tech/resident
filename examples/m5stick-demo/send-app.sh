@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROD_URL="https://m5stick-demo.genmon.workers.dev"
 DEV_URL="http://localhost:5173"
 BASE_URL=""
 
@@ -44,25 +45,8 @@ else
   exit 1
 fi
 
-# Resolve production URL from wrangler if not overridden
 if [[ -z "$BASE_URL" ]]; then
-  WORKER_NAME=$(cd "$SCRIPT_DIR/server" && npx --yes wrangler deployments list --json 2>/dev/null | \
-    python3 -c "import sys,json; items=json.load(sys.stdin)['items']; print(items[0]['url'])" 2>/dev/null || true)
-
-  if [[ -z "$WORKER_NAME" ]]; then
-    # Fallback: parse worker name from wrangler.jsonc
-    NAME=$(cd "$SCRIPT_DIR/server" && python3 -c "
-import json, re
-with open('wrangler.jsonc') as f:
-    text = re.sub(r'//.*', '', f.read())
-    print(json.loads(text)['name'])
-")
-    BASE_URL="https://${NAME}.workers.dev"
-    echo "Using derived URL: $BASE_URL"
-  else
-    BASE_URL="https://$WORKER_NAME"
-    echo "Using deployed URL: $BASE_URL"
-  fi
+  BASE_URL="$PROD_URL"
 fi
 
 URL="${BASE_URL}/agents/device-agent/${DEVICE_ID}"
