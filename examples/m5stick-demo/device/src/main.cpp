@@ -74,7 +74,7 @@ DemoDevice device;
 
 void setup() {
     Serial.begin(115200);
-    delay(2000);
+    delay(2000);  // Wait for USB CDC on M5StickS3; harmless on M5Stick
     auto cfg = M5.config();
     M5.begin(cfg);
     M5.Display.setRotation(1);
