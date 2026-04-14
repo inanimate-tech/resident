@@ -7,7 +7,6 @@
 #include <Courier.h>
 #include "OutrunSandbox.h"
 #include "OutrunDeviceConfig.h"
-#include "OutrunMessageHandler.h"
 #include "chipstring.h"
 
 namespace Outrun {
@@ -35,9 +34,13 @@ public:
   bool sendTo(const char* transportName, const char* payload);
   bool sendBinaryTo(const char* transportName, const uint8_t* data, size_t len);
 
-  // Message handling (for non-sandbox messages)
-  void addMessageHandler(MessageHandler* handler);
-  virtual bool onMessage(const char* type, JsonDocument& doc) { return false; }
+  // Message handling — override in subclasses, call super to keep sandbox routing
+  virtual void onMessage(const char* type, JsonDocument& doc);
+
+  // Connection lifecycle — override in subclasses, call super to keep base behavior
+  virtual void onConnectionChange(CourierState state);
+  virtual void onTransportsWillConnect();
+  virtual void onConnected();
 
 protected:
   virtual void deviceSetup() {}
@@ -64,14 +67,6 @@ protected:
 
 private:
   Sandbox _sandbox;
-
-  // Message handlers
-  static constexpr int MAX_MESSAGE_HANDLERS = 4;
-  MessageHandler* _messageHandlers[MAX_MESSAGE_HANDLERS] = {};
-  int _messageHandlerCount = 0;
-
-  // Internal message routing
-  void routeSandboxMessage(const char* type, JsonDocument& doc);
 
   // Courier lifecycle hooks
   void wireHooks();
