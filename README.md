@@ -32,10 +32,6 @@ public:
         sandbox().addDriver(&display);
         sandbox().initialize();
     }
-
-    void deviceLoop() override {
-        sandbox().loop();
-    }
 };
 
 MyDevice device;
@@ -127,7 +123,11 @@ end
 
 ## Message Protocol
 
-When using `Outrun::Device`, incoming JSON messages with these types are routed to the sandbox automatically:
+When using `Outrun::Device`, the base `onMessage()` routes these types to the sandbox:
+
+Subclasses can override `onMessage()` to handle custom types, then call `Device::onMessage()` for sandbox routing. The same pattern applies to `onConnected()`, `onConnectionChange()`, and `onTransportsWillConnect()` — override and call super.
+
+Incoming JSON messages with these types are handled by the sandbox:
 
 ```json
 { "type": "app", "code": "function on_tick(ctx, dt_ms) ... end" }

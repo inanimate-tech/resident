@@ -61,7 +61,6 @@ public:
 
     void deviceLoop() override {
         M5.update();
-        sandbox().loop();
 
         // Load default shader once connected
         static bool loaded = false;
