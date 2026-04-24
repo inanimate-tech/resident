@@ -55,6 +55,8 @@ public:
     // Timezone carries its configuration per-instance.
     Timezone& timezoneForTest() { return _tz; }
     bool luaGlobalBoolForTest(const char* name);
+    int luaGlobalIntForTest(const char* name);
+    void callOnTickForTest(unsigned long dt_ms) { callOnTick(dt_ms); }
 
 private:
     struct lua_State* _lua = nullptr;
@@ -121,6 +123,7 @@ private:
     void callInit();
     void callOnTick(unsigned long dt_ms);
     void processNextEvent();
+    void pushLocalTimeFields();  // pushes utc_h/utc_m/localtime_h/localtime_m onto the Lua table at stack top
     void pushAppEvent(const char* name, const char* dataJson, const char* from, uint32_t ts_ms);
     void notifyAppRunning(bool running);
     static void driverEventHandler(void* ctx, const char* name,

@@ -77,6 +77,15 @@ bool Sandbox::luaGlobalBoolForTest(const char* name)
   return result;
 }
 
+int Sandbox::luaGlobalIntForTest(const char* name)
+{
+  if (!_lua || !name) return 0;
+  lua_getglobal(_lua, name);
+  int result = (int)lua_tointeger(_lua, -1);
+  lua_pop(_lua, 1);
+  return result;
+}
+
 void Sandbox::addDriver(Driver* driver)
 {
   if (_driverCount < MAX_DRIVERS && driver != nullptr) {
@@ -387,16 +396,7 @@ void Sandbox::callInit()
   lua_setfield(_lua, -2, "trigger_count");
 
   // Time-of-day fields
-  int utcH = UTC.hour();
-  int utcM = UTC.minute();
-  lua_pushinteger(_lua, utcH);
-  lua_setfield(_lua, -2, "utc_h");
-  lua_pushinteger(_lua, utcM);
-  lua_setfield(_lua, -2, "utc_m");
-  lua_pushinteger(_lua, utcH);
-  lua_setfield(_lua, -2, "localtime_h");
-  lua_pushinteger(_lua, utcM);
-  lua_setfield(_lua, -2, "localtime_m");
+  pushLocalTimeFields();
 
   int result = lua_pcall(_lua, 1, 0, 0);
   if (result != 0) {
@@ -422,16 +422,7 @@ void Sandbox::callOnTick(unsigned long dt_ms)
   lua_setfield(_lua, -2, "trigger_count");
 
   // Time-of-day fields
-  int utcH = UTC.hour();
-  int utcM = UTC.minute();
-  lua_pushinteger(_lua, utcH);
-  lua_setfield(_lua, -2, "utc_h");
-  lua_pushinteger(_lua, utcM);
-  lua_setfield(_lua, -2, "utc_m");
-  lua_pushinteger(_lua, utcH);
-  lua_setfield(_lua, -2, "localtime_h");
-  lua_pushinteger(_lua, utcM);
-  lua_setfield(_lua, -2, "localtime_m");
+  pushLocalTimeFields();
 
   lua_pushinteger(_lua, dt_ms);
 
@@ -450,6 +441,23 @@ void Sandbox::callOnTick(unsigned long dt_ms)
     }
     lua_pop(_lua, 1);
   }
+}
+
+void Sandbox::pushLocalTimeFields()
+{
+  int utcH = UTC.hour();
+  int utcM = UTC.minute();
+  lua_pushinteger(_lua, utcH);
+  lua_setfield(_lua, -2, "utc_h");
+  lua_pushinteger(_lua, utcM);
+  lua_setfield(_lua, -2, "utc_m");
+
+  int localH = _hasTimezone ? _tz.hour()   : utcH;
+  int localM = _hasTimezone ? _tz.minute() : utcM;
+  lua_pushinteger(_lua, localH);
+  lua_setfield(_lua, -2, "localtime_h");
+  lua_pushinteger(_lua, localM);
+  lua_setfield(_lua, -2, "localtime_m");
 }
 
 void Sandbox::processNextEvent()
@@ -815,19 +823,40 @@ int Sandbox::lua_time_is_valid(lua_State* L)
 
 int Sandbox::lua_time_hour(lua_State* L)
 {
-  lua_pushinteger(L, UTC.hour());
+  lua_getfield(L, LUA_REGISTRYINDEX, REGISTRY_KEY);
+  Sandbox* self = (Sandbox*)lua_touserdata(L, -1);
+  lua_pop(L, 1);
+  if (self && self->_hasTimezone) {
+    lua_pushinteger(L, self->_tz.hour());
+  } else {
+    lua_pushinteger(L, UTC.hour());
+  }
   return 1;
 }
 
 int Sandbox::lua_time_minute(lua_State* L)
 {
-  lua_pushinteger(L, UTC.minute());
+  lua_getfield(L, LUA_REGISTRYINDEX, REGISTRY_KEY);
+  Sandbox* self = (Sandbox*)lua_touserdata(L, -1);
+  lua_pop(L, 1);
+  if (self && self->_hasTimezone) {
+    lua_pushinteger(L, self->_tz.minute());
+  } else {
+    lua_pushinteger(L, UTC.minute());
+  }
   return 1;
 }
 
 int Sandbox::lua_time_second(lua_State* L)
 {
-  lua_pushinteger(L, UTC.second());
+  lua_getfield(L, LUA_REGISTRYINDEX, REGISTRY_KEY);
+  Sandbox* self = (Sandbox*)lua_touserdata(L, -1);
+  lua_pop(L, 1);
+  if (self && self->_hasTimezone) {
+    lua_pushinteger(L, self->_tz.second());
+  } else {
+    lua_pushinteger(L, UTC.second());
+  }
   return 1;
 }
 
