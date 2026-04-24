@@ -3,6 +3,7 @@
 #define OUTRUN_SANDBOX_H
 
 #include <Arduino.h>
+#include <ezTime.h>
 #include <map>
 #include <functional>
 #include "OutrunDriver.h"
@@ -44,9 +45,26 @@ public:
     // State queries
     bool isAppRunning() const;
 
+    // Timezone — no-op on nullptr/empty. Success means ezTime resolved the
+    // zone (either from its own cache or via one UDP lookup to
+    // timezoned.rop.nl). Failure logs and leaves hasTimezone() == false.
+    void setTimezone(const char* ianaZone);
+    bool hasTimezone() const { return _hasTimezone; }
+
+    // Test hooks — only used by native tests. Exposed here because the mock
+    // Timezone carries its configuration per-instance.
+    Timezone& timezoneForTest() { return _tz; }
+    bool luaGlobalBoolForTest(const char* name);
+
 private:
     struct lua_State* _lua = nullptr;
     bool _appRunning = false;
+
+    // Timezone selected via registration's detectedTimezone. When
+    // _hasTimezone is true, ctx.localtime_* and time.hour/minute/second read
+    // from _tz; otherwise they fall back to UTC.
+    Timezone _tz;
+    bool _hasTimezone = false;
 
     // Drivers and modules
     static constexpr int MAX_DRIVERS = 8;
@@ -121,6 +139,7 @@ private:
     static int lua_time_minute(lua_State* L);
     static int lua_time_second(lua_State* L);
     static int lua_time_day_id(lua_State* L);
+    static int lua_time_has_timezone(lua_State* L);
 
     // Math wrapper functions
     static int lua_math_floor(lua_State* L);

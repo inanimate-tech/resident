@@ -52,6 +52,31 @@ Sandbox::~Sandbox()
   }
 }
 
+void Sandbox::setTimezone(const char* ianaZone)
+{
+  if (!ianaZone || !*ianaZone) {
+    _hasTimezone = false;
+    return;
+  }
+  bool ok = _tz.setLocation(ianaZone);
+  _hasTimezone = ok;
+  if (!ok) {
+    Serial.printf("[time] detectedTimezone=%s not recognised, staying on UTC\n",
+        ianaZone);
+  } else {
+    Serial.printf("[time] timezone set to %s\n", ianaZone);
+  }
+}
+
+bool Sandbox::luaGlobalBoolForTest(const char* name)
+{
+  if (!_lua || !name) return false;
+  lua_getglobal(_lua, name);
+  bool result = lua_toboolean(_lua, -1);
+  lua_pop(_lua, 1);
+  return result;
+}
+
 void Sandbox::addDriver(Driver* driver)
 {
   if (_driverCount < MAX_DRIVERS && driver != nullptr) {
@@ -160,6 +185,8 @@ void Sandbox::setupLuaEnvironment()
   lua_setfield(_lua, -2, "second");
   lua_pushcfunction(_lua, lua_time_day_id);
   lua_setfield(_lua, -2, "day_id");
+  lua_pushcfunction(_lua, lua_time_has_timezone);
+  lua_setfield(_lua, -2, "has_timezone");
   lua_setglobal(_lua, "time");
 }
 
@@ -807,6 +834,15 @@ int Sandbox::lua_time_second(lua_State* L)
 int Sandbox::lua_time_day_id(lua_State* L)
 {
   lua_pushinteger(L, millis() / 86400000);
+  return 1;
+}
+
+int Sandbox::lua_time_has_timezone(lua_State* L)
+{
+  lua_getfield(L, LUA_REGISTRYINDEX, REGISTRY_KEY);
+  Sandbox* self = (Sandbox*)lua_touserdata(L, -1);
+  lua_pop(L, 1);
+  lua_pushboolean(L, self && self->hasTimezone());
   return 1;
 }
 
