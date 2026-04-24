@@ -143,9 +143,17 @@ Incoming JSON messages with these types are handled by the sandbox:
 
 The `ctx` table contains: `time_ms`, `trigger_count`, `utc_h`, `utc_m`, `localtime_h`, `localtime_m`.
 
+`localtime_h` / `localtime_m` return local time when a timezone has been set on the sandbox via `Sandbox::setTimezone(ianaZone)` and ezTime recognised the zone; otherwise they equal `utc_h` / `utc_m`.
+
 ### Shader expressions
 
 Shader messages are converted to Lua via a template function you provide. The expression has access to `time_ms`, `trigger_count`, and time variables. Built-in helpers: `rgb(r,g,b)`, `fract(x)`, `beat(bpm)`, `noise2d(x,y)`.
+
+### Timezone
+
+`Sandbox::setTimezone(const char* ianaZone)` — set the sandbox's local timezone for `ctx.localtime_h/m` and the `time.*` Lua bindings. Pass an IANA zone string (e.g. `"Europe/London"`). ezTime performs a UDP lookup to `timezoned.rop.nl` on first sight of a zone and caches the POSIX string in EEPROM. On failure (null / empty / unrecognised zone), the sandbox falls back to UTC.
+
+`Sandbox::hasTimezone() const` — returns `true` after a successful `setTimezone`. Exposed to Lua as `time.has_timezone()`. When false, `time.hour()` / `time.minute()` / `time.second()` return UTC.
 
 ## Building
 
