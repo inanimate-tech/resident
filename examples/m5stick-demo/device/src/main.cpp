@@ -3,10 +3,16 @@
 #include "DisplayDriver.h"
 #include "IMUDriver.h"
 #include "BuzzerDriver.h"
+#include "PushButtonsDriver.h"
+
+// M5StickC Plus2: Button A = GPIO 37, Button B = GPIO 39
+static constexpr uint8_t BUTTON_PINS[] = {37, 39};
+static constexpr PushButtonsConfig buttonConfig = {.numButtons = 2, .pins = BUTTON_PINS};
 
 DisplayDriver displayDriver;
 IMUDriver imuDriver;
 BuzzerDriver buzzerDriver{255};
+PushButtonsDriver buttonDriver{buttonConfig};
 
 Outrun::DeviceConfig makeConfig() {
     Outrun::DeviceConfig cfg;
@@ -52,15 +58,19 @@ public:
     }
 
     void deviceSetup() override {
+        buttonDriver.begin();
+
         sandbox().addDriver(&displayDriver);
         sandbox().addDriver(&imuDriver);
         sandbox().addDriver(&buzzerDriver);
+        sandbox().addDriver(&buttonDriver);
         sandbox().setShaderTemplate(shaderTemplate);
         sandbox().initialize();
     }
 
     void deviceLoop() override {
         M5.update();
+        buttonDriver.update();
 
         // Load default shader once connected
         static bool loaded = false;

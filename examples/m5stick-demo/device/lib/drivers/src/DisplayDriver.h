@@ -34,11 +34,18 @@ private:
   static int lua_display_clear(lua_State* L);
   static int lua_display_text(lua_State* L);
   static int lua_display_fill_rect(lua_State* L);
+  static int lua_display_rect(lua_State* L);
+  static int lua_display_line(lua_State* L);
+  static int lua_display_triangle(lua_State* L);
+  static int lua_display_fill_triangle(lua_State* L);
   static int lua_display_pixel(lua_State* L);
   static int lua_display_flip(lua_State* L);
   static int lua_display_set_brightness(lua_State* L);
   static int lua_display_width(lua_State* L);
   static int lua_display_height(lua_State* L);
+#ifdef HAS_QRCODE
+  static int lua_display_qr(lua_State* L);
+#endif
 };
 
 #endif // DISPLAY_DRIVER_H
