@@ -1,5 +1,5 @@
 {
-  "name": "m5stick-demo-server",
+  "name": "outrun-m5stick-demo",
   "version": "1.0.0",
   "private": true,
   "description": "Lua app broadcaster for M5Stick devices",

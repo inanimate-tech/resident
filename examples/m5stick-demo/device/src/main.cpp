@@ -17,7 +17,7 @@ PushButtonsDriver buttonDriver{buttonConfig};
 Outrun::DeviceConfig makeConfig() {
     Outrun::DeviceConfig cfg;
     cfg.deviceType = "stick";
-    cfg.host = "m5stick-demo.genmon.workers.dev";
+    cfg.host = "outrun-m5stick-demo.genmon.workers.dev";
     cfg.statusDisplay = &displayDriver;
     return cfg;
 }

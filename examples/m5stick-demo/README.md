@@ -102,7 +102,7 @@ POST Lua code to a device:
 ```bash
 curl -X POST -H "Content-Type: text/plain" \
   --data-binary @device-apps/hello.lua \
-  https://your-worker.workers.dev/agents/device-agent/m5stick-demo
+  https://outrun-m5stick-demo.YOUR-CF-NAME.workers.dev/agents/device-agent/m5stick-demo
 ```
 
 
