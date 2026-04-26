@@ -3,3 +3,14 @@ build/
 .vscode/
 *.o
 *.a
+
+# ESP-IDF build artifacts (per-example)
+examples/*/build/
+examples/*/managed_components/
+examples/*/components/
+examples/*/sdkconfig
+examples/*/sdkconfig.old
+examples/*/dependencies.lock
+
+# PlatformIO test build artifacts
+test/unit/.pio/
