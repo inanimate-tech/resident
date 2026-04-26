@@ -1,11 +1,13 @@
 # ESP-IDF example + test suite
 
+> **Status (2026-04-26): IDF example deferred.** Courier 0.3.1 has unresolved transitive deps in its ESP-IDF packaging — `idf.py reconfigure` fails with `Failed to resolve component 'ezTime' required by component 'inanimate__courier': unknown name.` Same applies to `ArduinoJson` and `WiFiManager`. The IDF example portion of this spec is paused pending a courier fix (tracked separately). This PR proceeds with deliverable 2 only — the test suite + CI without the `build-espidf` job. Spec content for the IDF example is kept below as a breadcrumb for resuming once courier is patched.
+
 ## Goal
 
-Two deliverables, one PR:
+Originally two deliverables, one PR. Currently scoped to deliverable 2:
 
-1. A minimal **ESP-IDF example** (`examples/espidf-basic/`) demonstrating how a real consumer integrates Outrun in an ESP-IDF project — analogous to `courier/examples/espidf-basic/`.
-2. A **test suite + CI** that builds the new IDF example AND the existing PlatformIO `m5stick-demo`, runs cppcheck on `src/`, and reserves a native unit-test slot for future PRs.
+1. ~~A minimal **ESP-IDF example** (`examples/espidf-basic/`) demonstrating how a real consumer integrates Outrun in an ESP-IDF project — analogous to `courier/examples/espidf-basic/`.~~ **Deferred.**
+2. A **test suite + CI** that builds the existing PlatformIO `m5stick-demo`, runs cppcheck on `src/`, and reserves a native unit-test slot for future PRs. (Originally also covered the IDF example build; that job drops out of CI for now.)
 
 The CI must run locally via a single `./tools/run-tests.py` entry point and in GitHub Actions. The unit-test slot starts as one passing assertion; the goal is to give every future "big change" a place to land tests, not to backfill tests for existing code.
 
