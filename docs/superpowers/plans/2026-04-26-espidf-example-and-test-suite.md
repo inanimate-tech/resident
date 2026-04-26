@@ -94,28 +94,18 @@ git commit -m "chore: ignore ESP-IDF and unit-test build artifacts"
 
 **Files:** none modified — this is a recon task whose output is a documented decision used in Task 6.
 
-- [ ] **Step 1: Check the PlatformIO library registry entry**
+**Recon completed during planning. Findings:**
 
-Run: `pio pkg show fischer-simon/Esp32Lua | head -30`
-Expected: shows the library metadata including a `repository` URL.
+- **URL:** `https://github.com/Fischer-Simon/Esp32Lua.git` (note capital F-S — the PlatformIO identifier `fischer-simon/Esp32Lua` is lowercase but the GitHub repo is mixed-case).
+- **Tags:** **NONE.** The upstream repo has no git tags, only a `main` branch. PIO version `5.4.7` is the registry's published label, not a git tag.
+- **Pin:** by commit SHA, not by tag. Last known good SHA on `main` (as of 2026-04-26): `53c7d504ee266532e625145dc141d76692063145`.
 
-If `pio pkg show` is unavailable, fall back to: `curl -s https://api.registry.platformio.org/v3/libraries/fischer-simon/library/Esp32Lua | python3 -m json.tool | grep -E '(repository|version)' | head -10`
+**Implication for Task 6:** the fetch script can't use `git clone --branch=<tag>`. It must clone the default branch and `git checkout <sha>` to pin reproducibly.
 
-- [ ] **Step 2: Verify the repository is reachable and pick a tag**
-
-Take the URL from Step 1. Verify it's reachable: `git ls-remote --tags <url> | tail -10`
-Expected: lists git tags. Pick a stable tag matching the PlatformIO version pin in `library.json` (`^5.4.7`) — e.g. `v5.4.7` or whatever the closest tag is.
-
-If the upstream repo doesn't have a matching tag (some Arduino libs only tag major versions), pick the highest available tag in the same major (5.x) and document the choice.
-
-- [ ] **Step 3: Record the decision**
-
-Write the chosen URL and tag in a comment at the top of the fetch script you'll create in Task 6. No commit yet — this is just a captured decision used downstream.
-
-Example (to use in Task 6):
+If you want to verify these findings independently before Task 6:
 ```bash
-# Esp32Lua upstream: https://github.com/<actual-url>/Esp32Lua
-# Tag: v5.4.7 (matches library.json pin "^5.4.7")
+~/.platformio/penv/bin/pio pkg show fischer-simon/Esp32Lua | grep -E '(Repository|Homepage)'
+git ls-remote https://github.com/Fischer-Simon/Esp32Lua.git
 ```
 
 ---
@@ -410,17 +400,21 @@ git commit -m "feat(examples): add main.cpp for IDF example"
 **Files:**
 - Create: `examples/espidf-basic/tools/fetch-deps.sh`
 
-- [ ] **Step 1: Write the fetch script using the URL/tag from Task 2**
+- [ ] **Step 1: Write the fetch script using the URL/SHA from Task 2**
 
 Path: `examples/espidf-basic/tools/fetch-deps.sh`
 
-Substitute `<ESP32LUA_URL>` and `<ESP32LUA_TAG>` with the values you confirmed in Task 2.
+Esp32Lua has no git tags — the script clones `main` and pins by commit SHA via clone-then-checkout.
 
 ```bash
 #!/usr/bin/env bash
 # Fetches Esp32Lua and wraps it as an ESP-IDF component under
 # examples/espidf-basic/components/. Esp32Lua is not on the ESP Component
 # Registry, so a pure `idf.py build` can't resolve it.
+#
+# The upstream repo (https://github.com/Fischer-Simon/Esp32Lua) has no git
+# tags, only a main branch — so we pin by commit SHA via clone-then-checkout.
+# Bump the SHA below intentionally when picking up upstream changes.
 #
 # Re-runnable: skips clone if the target dir exists.
 
@@ -430,23 +424,24 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 COMPONENTS="$DIR/components"
 mkdir -p "$COMPONENTS"
 
-ESP32LUA_URL="<ESP32LUA_URL>"
-ESP32LUA_TAG="<ESP32LUA_TAG>"
+ESP32LUA_URL="https://github.com/Fischer-Simon/Esp32Lua.git"
+ESP32LUA_SHA="53c7d504ee266532e625145dc141d76692063145"
 
-fetch() {
-    local name="$1" url="$2" ref="$3"
+fetch_pinned() {
+    local name="$1" url="$2" sha="$3"
     local target="$COMPONENTS/$name"
     if [[ -d "$target" ]]; then
         echo "  $name already present — skipping"
         return
     fi
-    echo "  fetching $name @ $ref"
-    git clone --depth=1 --branch="$ref" --quiet "$url" "$target"
+    echo "  fetching $name @ $sha"
+    git clone --quiet "$url" "$target"
+    git -C "$target" -c advice.detachedHead=false checkout --quiet "$sha"
     rm -rf "$target/.git"
 }
 
 echo "Fetching Esp32Lua into $COMPONENTS"
-fetch Esp32Lua "$ESP32LUA_URL" "$ESP32LUA_TAG"
+fetch_pinned Esp32Lua "$ESP32LUA_URL" "$ESP32LUA_SHA"
 
 # Shim CMakeLists for Esp32Lua — upstream ships an Arduino-style library,
 # not an IDF component. Glob the Lua C sources, exclude the standalone
