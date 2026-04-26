@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.0-dev (d27cda1)
+
+---
+
 ## v0.2.0-dev (82a34e4)
 
 Initial version of this changelog. The state of the repo at commit `82a34e4` is the baseline — prior history is not retroactively documented here.
