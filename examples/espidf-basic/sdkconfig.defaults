@@ -1,0 +1,19 @@
+# Target — esp32 by default; override with idf.py set-target esp32s3 etc.
+CONFIG_IDF_TARGET="esp32"
+
+# Flash (4MB default; matches partitions.csv above)
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# Arduino integration: don't autostart; we drive setup()/loop() via app_main()
+CONFIG_AUTOSTART_ARDUINO=n
+
+# Arduino requires 1000Hz tick rate
+CONFIG_FREERTOS_HZ=1000
+
+# Main task stack — registration + JSON parsing needs more than the 3584 default
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# Use our custom partition table
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
