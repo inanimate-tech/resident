@@ -18,6 +18,7 @@ The CI must run locally via a single `./tools/run-tests.py` entry point and in G
 - `test/unit/` PlatformIO native env with one smoke assertion.
 - `.github/workflows/ci.yml` with four jobs: static-analysis, unit-tests, build-platformio, build-espidf.
 - Updates to `docs/changelog.md` (`v0.3.0-dev` section) recording the new example, test suite, and CI.
+- Updates to `.gitignore` to exclude IDF build artifacts (`build/`, `components/`, `managed_components/`, `sdkconfig`, `dependencies.lock`) under the new example.
 
 **Not in scope:**
 - Backfilling unit tests for existing Outrun source.
@@ -38,7 +39,7 @@ outrun/
 │   │   ├── README.md                      # build/flash instructions
 │   │   ├── main/
 │   │   │   ├── CMakeLists.txt             # idf_component_register(... REQUIRES outrun arduino-esp32)
-│   │   │   ├── idf_component.yml          # path: outrun; registry pins for the rest
+│   │   │   ├── idf_component.yml          # path: ../../.. for outrun; registry pins for the rest
 │   │   │   ├── main.cpp                   # app_main() → initArduino() → BasicDevice
 │   │   │   ├── StubLEDDriver.h
 │   │   │   └── StubLEDDriver.cpp
@@ -71,7 +72,9 @@ The example resolves dependencies the way a real consumer would:
 | bblanchon/arduinojson | registry, `^7.0.0` | confirmed available as `bblanchon/arduinojson` (lowercase) |
 | Esp32Lua | fetched by `tools/fetch-deps.sh` into `components/Esp32Lua/` | not on registry; only library that needs out-of-band fetching |
 
-The fetch script clones `https://github.com/fischer-simon/Esp32Lua` at a pinned tag, removes its `.git`, and writes a shim `CMakeLists.txt` matching the proven pattern from `hawthorn-firmware/arduino-deps/Esp32Lua/`:
+The fetch script clones the upstream Esp32Lua repository at a pinned tag, removes its `.git`, and writes a shim `CMakeLists.txt` matching the proven pattern from `hawthorn-firmware/arduino-deps/Esp32Lua/`. The exact upstream git URL must be confirmed during implementation by inspecting the PlatformIO registry entry for `fischer-simon/Esp32Lua` — the PlatformIO library identifier doesn't always map directly to a GitHub URL.
+
+Shim CMakeLists.txt:
 
 ```cmake
 file(GLOB LUA_SRCS "src/lua/*.c")
@@ -196,7 +199,7 @@ Four jobs, all on `ubuntu-latest`, triggered on push to `main` and PRs targeting
 | `static-analysis` | install uv + cppcheck | `./tools/run-tests.py static-analysis` |
 | `unit-tests` | install uv + platformio | `./tools/run-tests.py unit` |
 | `build-platformio` | install uv + platformio | `./tools/run-tests.py build` |
-| `build-espidf` | run fetch-deps script | `espressif/esp-idf-ci-action@v1` with `esp_idf_version: v5.1.4`, `target: esp32`, `path: examples/espidf-basic` |
+| `build-espidf` | run `./examples/espidf-basic/tools/fetch-deps.sh` | `espressif/esp-idf-ci-action@v1` with `esp_idf_version: v5.1.4`, `target: esp32`, `path: examples/espidf-basic` |
 
 IDF version `v5.1.4` matches courier for cross-debugging convenience. Single target (`esp32`) to start; adding `esp32s3` later is a one-line change.
 
