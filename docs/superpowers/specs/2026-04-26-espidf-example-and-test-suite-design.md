@@ -19,6 +19,7 @@ The CI must run locally via a single `./tools/run-tests.py` entry point and in G
 - `.github/workflows/ci.yml` with four jobs: static-analysis, unit-tests, build-platformio, build-espidf.
 - Updates to `docs/changelog.md` (`v0.3.0-dev` section) recording the new example, test suite, and CI.
 - Updates to `.gitignore` to exclude IDF build artifacts (`build/`, `components/`, `managed_components/`, `sdkconfig`, `dependencies.lock`) under the new example.
+- Targeted edit to `examples/m5stick-demo/device/platformio.ini` to make the existing demo buildable in CI: replace the `git+ssh://...outrun.git` dep with `symlink://../../..` (uses in-tree source) and the `git+ssh://...courier.git` dep with `git+https://...courier.git` (courier is public). No other changes to the demo. **Why required:** outrun is a private GitHub repo; CI runners have no SSH key for it, so any `git+ssh://` dep on outrun will fail at lib resolution time.
 
 **Not in scope:**
 - Backfilling unit tests for existing Outrun source.
