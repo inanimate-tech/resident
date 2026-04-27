@@ -7,13 +7,12 @@
 #include <map>
 #include <functional>
 #include "OutrunDriver.h"
-#include "OutrunModule.h"
+#include "OutrunSandboxConfig.h"
 
 namespace Outrun {
 
-using ShaderFields = std::map<String, String>;
-using ShaderTemplateFn = String (*)(const ShaderFields& fields);
-using TelemetryCallback = std::function<void(const char* json)>;
+// Module is still referenced in private members below; removed in Task 7.
+class Module;
 
 class Sandbox {
 public:

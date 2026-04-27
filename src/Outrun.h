@@ -3,8 +3,8 @@
 #define OUTRUN_H
 
 #include "OutrunSandbox.h"
+#include "OutrunSandboxConfig.h"
 #include "OutrunDriver.h"
-#include "OutrunModule.h"
 #include "OutrunDeviceConfig.h"
 #include "OutrunStatusLED.h"
 #include "OutrunStatusDisplay.h"
