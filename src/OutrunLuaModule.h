@@ -1,6 +1,6 @@
 // src/OutrunLuaModule.h
-#ifndef OUTRUN_LUA_MODULE_H
-#define OUTRUN_LUA_MODULE_H
+#ifndef OUTRUN_luaUA_MODULE_H
+#define OUTRUN_luaUA_MODULE_H
 
 extern "C" {
   #include "lua/lua.h"
@@ -40,48 +40,48 @@ struct Trampoline {
 // `lua_setglobal`s the table afterwards.
 class LuaModule {
 public:
-  LuaModule(lua_State* L, void* self) : _L(L), _self(self) {}
+  LuaModule(lua_State* L, void* self) : _lua(L), _self(self) {}
 
   template<auto MemberFn>
   LuaModule& method(const char* name) {
-    lua_pushlightuserdata(_L, _self);
-    lua_pushcclosure(_L, &Trampoline<MemberFn>::call, 1);
-    lua_setfield(_L, -2, name);
+    lua_pushlightuserdata(_lua, _self);
+    lua_pushcclosure(_lua, &Trampoline<MemberFn>::call, 1);
+    lua_setfield(_lua, -2, name);
     return *this;
   }
 
   LuaModule& staticMethod(const char* name, lua_CFunction fn) {
-    lua_pushcfunction(_L, fn);
-    lua_setfield(_L, -2, name);
+    lua_pushcfunction(_lua, fn);
+    lua_setfield(_lua, -2, name);
     return *this;
   }
 
   LuaModule& constant(const char* name, int value) {
-    lua_pushinteger(_L, value);
-    lua_setfield(_L, -2, name);
+    lua_pushinteger(_lua, value);
+    lua_setfield(_lua, -2, name);
     return *this;
   }
   LuaModule& constant(const char* name, double value) {
-    lua_pushnumber(_L, value);
-    lua_setfield(_L, -2, name);
+    lua_pushnumber(_lua, value);
+    lua_setfield(_lua, -2, name);
     return *this;
   }
   LuaModule& constant(const char* name, const char* value) {
-    lua_pushstring(_L, value);
-    lua_setfield(_L, -2, name);
+    lua_pushstring(_lua, value);
+    lua_setfield(_lua, -2, name);
     return *this;
   }
   LuaModule& constant(const char* name, bool value) {
-    lua_pushboolean(_L, value);
-    lua_setfield(_L, -2, name);
+    lua_pushboolean(_lua, value);
+    lua_setfield(_lua, -2, name);
     return *this;
   }
 
 private:
-  lua_State* _L;
+  lua_State* _lua;
   void* _self;
 };
 
 } // namespace Outrun
 
-#endif // OUTRUN_LUA_MODULE_H
+#endif // OUTRUN_luaUA_MODULE_H

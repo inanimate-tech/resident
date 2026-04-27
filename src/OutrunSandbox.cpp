@@ -131,7 +131,7 @@ void Sandbox::initialize()
     Serial.printf("  Initializing extension: %s\n", ext->name());
 
     // Wire event sink first so a Driver's begin() can safely sendEvent().
-    Driver* driver = dynamic_cast<Driver*>(ext);
+    Driver* driver = ext->asDriver();
     if (driver) {
       driver->setEventSink(driverEventHandler, this);
     }
@@ -656,7 +656,7 @@ void Sandbox::driverEventHandler(void* ctx, const char* name,
 
 void Sandbox::notifyAppRunning(bool running) {
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
-    Driver* driver = dynamic_cast<Driver*>(_config.extensions.items[i]);
+    Driver* driver = _config.extensions.items[i]->asDriver();
     if (driver) driver->onAppRunning(running);
   }
 }

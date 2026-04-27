@@ -22,6 +22,9 @@ public:
   // the event-sink machinery.
   virtual void onAppRunning(bool running) { (void)running; }
 
+  // RTTI-free downcast support (Extension::asDriver returns nullptr by default).
+  Driver* asDriver() override { return this; }
+
 protected:
   void sendEvent(const char* name, const EventField* fields, int fieldCount) {
     if (_eventSinkFn) {

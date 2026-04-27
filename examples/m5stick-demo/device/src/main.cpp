@@ -14,14 +14,6 @@ IMUDriver imuDriver;
 BuzzerDriver buzzerDriver{255};
 PushButtonsDriver buttonDriver{buttonConfig};
 
-Outrun::DeviceConfig makeConfig() {
-    Outrun::DeviceConfig cfg;
-    cfg.deviceType = "stick";
-    cfg.host = "outrun-m5stick-demo.genmon.workers.dev";
-    cfg.statusDisplay = &displayDriver;
-    return cfg;
-}
-
 String shaderTemplate(const Outrun::ShaderFields& fields) {
     auto it = fields.find("expr");
     if (it == fields.end()) return "";
@@ -49,6 +41,16 @@ String shaderTemplate(const Outrun::ShaderFields& fields) {
 static const char* DEFAULT_SHADER =
     "rgb(sin(time_ms/1000)*0.5+0.5, sin(time_ms/1000+2.094)*0.5+0.5, sin(time_ms/1000+4.189)*0.5+0.5)";
 
+Outrun::DeviceConfig makeConfig() {
+    Outrun::DeviceConfig cfg;
+    cfg.deviceType     = "stick";
+    cfg.host           = "outrun-m5stick-demo.genmon.workers.dev";
+    cfg.statusDisplay  = &displayDriver;
+    cfg.shaderTemplate = shaderTemplate;
+    cfg.extensions     = {&displayDriver, &imuDriver, &buzzerDriver, &buttonDriver};
+    return cfg;
+}
+
 class DemoDevice : public Outrun::Device {
 public:
     DemoDevice() : Outrun::Device(makeConfig()) {}
@@ -57,22 +59,9 @@ public:
         return "/agents/device-agent/m5stick-demo";
     }
 
-    void deviceSetup() override {
-        buttonDriver.begin();
-
-        sandbox().addDriver(&displayDriver);
-        sandbox().addDriver(&imuDriver);
-        sandbox().addDriver(&buzzerDriver);
-        sandbox().addDriver(&buttonDriver);
-        sandbox().setShaderTemplate(shaderTemplate);
-        sandbox().initialize();
-    }
-
     void deviceLoop() override {
         M5.update();
-        buttonDriver.update();
 
-        // Load default shader once connected
         static bool loaded = false;
         if (!loaded && isConnected()) {
             loaded = true;
@@ -91,8 +80,6 @@ void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
     M5.Display.setRotation(1);
-    displayDriver.begin();
-    buzzerDriver.begin();
     device.setup();
 }
 
