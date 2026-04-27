@@ -150,6 +150,15 @@ void Device::setup()
 
   Serial.printf("[outrun] Device: %s (%s)\n", getDeviceType(), _deviceId.c_str());
 
+  // Forward extension/shader config from DeviceConfig into the internal sandbox.
+  Outrun::SandboxConfig sandboxCfg;
+  sandboxCfg.extensions     = _config.extensions;
+  sandboxCfg.shaderTemplate = _config.shaderTemplate;
+  _sandbox.configure(sandboxCfg);
+
+  // Status display gets its own lifecycle from Device.
+  if (_config.statusDisplay) _config.statusDisplay->begin();
+
   deviceSetup();
   _courier.setup();
 }
@@ -157,6 +166,8 @@ void Device::setup()
 void Device::loop()
 {
   _courier.loop();
+
+  if (_config.statusDisplay) _config.statusDisplay->update();
 
   if (isConnected()) {
     _sandbox.loop();

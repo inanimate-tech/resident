@@ -4,6 +4,7 @@
 
 #include "OutrunStatusLED.h"
 #include "OutrunStatusDisplay.h"
+#include "OutrunSandboxConfig.h"   // for ShaderTemplateFn, Extensions
 
 namespace Outrun {
 
@@ -12,6 +13,8 @@ struct DeviceConfig {
   const char* host = nullptr;
   StatusLED* statusLED = nullptr;
   StatusDisplay* statusDisplay = nullptr;
+  ShaderTemplateFn shaderTemplate = nullptr;
+  Extensions extensions;
 };
 
 } // namespace Outrun
