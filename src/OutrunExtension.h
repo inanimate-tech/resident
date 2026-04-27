@@ -19,15 +19,17 @@ public:
   virtual ~Extension() = default;
 
   // Drive begin() at most once. Public so user code can call it early
-  // (status-display use cases); Sandbox will skip the second call.
-  // Static form so we can keep the bool flag private.
+  // (e.g. status displays that need hardware before Sandbox initialises);
+  // Sandbox calls it too, and the second call is a no-op.
+  // Static rather than a member so the idempotency check lives in one
+  // place and all callers (user code, Sandbox) share the same guard.
   static void beginExtension(Extension& e) {
     if (!e._begun) { e.begin(); e._begun = true; }
   }
 
 private:
   bool _begun = false;
-  friend class Sandbox;
+  friend class Sandbox;   // reads _begun and event-sink state in later tasks
 };
 
 } // namespace Outrun

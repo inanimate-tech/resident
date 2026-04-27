@@ -49,10 +49,23 @@ void test_subclass_overrides_invoked(void) {
     TEST_ASSERT_EQUAL_INT(1, e.resetCount);
 }
 
+void test_direct_begin_then_beginExtension_runs_begin_twice(void) {
+    // Spec: a direct begin() call (e.g. user code initialising a status
+    // display before Sandbox::initialize()) does NOT set _begun. The first
+    // subsequent beginExtension() will still call begin(); only after
+    // beginExtension() has run is _begun set, so further calls are no-ops.
+    TestExtension e;
+    e.begin();                                  // direct call
+    Outrun::Extension::beginExtension(e);       // calls begin() again
+    Outrun::Extension::beginExtension(e);       // no-op
+    TEST_ASSERT_EQUAL_INT(2, e.beginCount);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_default_lifecycle_does_nothing);
     RUN_TEST(test_begin_if_needed_runs_once);
     RUN_TEST(test_subclass_overrides_invoked);
+    RUN_TEST(test_direct_begin_then_beginExtension_runs_begin_twice);
     return UNITY_END();
 }
