@@ -1,6 +1,6 @@
 // src/OutrunLuaModule.h
-#ifndef OUTRUN_luaUA_MODULE_H
-#define OUTRUN_luaUA_MODULE_H
+#ifndef OUTRUN_LUA_MODULE_H
+#define OUTRUN_LUA_MODULE_H
 
 extern "C" {
   #include "lua/lua.h"
@@ -84,4 +84,4 @@ private:
 
 } // namespace Outrun
 
-#endif // OUTRUN_luaUA_MODULE_H
+#endif // OUTRUN_LUA_MODULE_H
