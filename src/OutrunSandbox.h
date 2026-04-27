@@ -11,7 +11,8 @@
 
 namespace Outrun {
 
-// Module is still referenced in private members below; removed in Task 7.
+// Transitional: Module is forward-declared only; _modules[] and addModule()
+// are removed when Sandbox switches to SandboxConfig (next refactor step).
 class Module;
 
 class Sandbox {

@@ -16,7 +16,7 @@ using TelemetryCallback = std::function<void(const char* json)>;
 struct SandboxConfig {
   Extensions extensions;
   ShaderTemplateFn shaderTemplate = nullptr;
-  TelemetryCallback telemetry;
+  TelemetryCallback telemetry = nullptr;
   const char* timezone = nullptr;
 };
 
