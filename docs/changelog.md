@@ -2,6 +2,26 @@
 
 ## v0.3.0-dev (d27cda1)
 
+### Internal
+
+- Added `tools/run-tests.py` (uv inline-script) with `static-analysis`,
+  `unit`, `build`, and `all` subcommands. Local entry point and CI driver.
+- Added `test/unit/` with a native PlatformIO env and a smoke assertion.
+  Slot for future unit tests; no existing source is currently covered.
+- Added `.github/workflows/ci.yml` with three jobs: static analysis
+  (cppcheck), unit tests (PIO native), and PlatformIO build of
+  `m5stick-demo`. A fourth job for ESP-IDF builds is planned but deferred
+  pending an upstream `inanimate/courier` packaging fix (courier's CMake
+  REQUIRES line names `ezTime`, `ArduinoJson`, `WiFiManager` by bare names
+  but its `idf_component.yml` doesn't declare those deps, so consumers
+  can't `idf.py reconfigure` against the published registry version).
+- Patched `examples/m5stick-demo/device/platformio.ini` to use the in-tree
+  Outrun source (`symlink://../../..`) and HTTPS for courier, so the demo
+  builds in CI without SSH credentials. Added an explicit
+  `symlink://lib/drivers` line to keep `M5StickDrivers` discoverable
+  (PlatformIO suppresses the project's own `lib/` scan when a parent
+  symlink contains the project). No functional change for local devs.
+
 ---
 
 ## v0.2.0-dev (82a34e4)
