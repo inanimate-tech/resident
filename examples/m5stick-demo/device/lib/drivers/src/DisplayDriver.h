@@ -2,6 +2,7 @@
 #define DISPLAY_DRIVER_H
 
 #include <OutrunDriver.h>
+#include <OutrunLuaModule.h>
 #include <OutrunStatusDisplay.h>
 #include <M5Unified.h>
 
@@ -12,7 +13,25 @@
 class DisplayDriver : public Outrun::Driver, public Outrun::StatusDisplay {
 public:
   const char* name() const override { return "screen"; }
-  void installSandboxModule(lua_State* L) override;
+
+  void registerModule(Outrun::LuaModule& m) override {
+    m.method<&DisplayDriver::clear>("clear")
+     .method<&DisplayDriver::text>("text")
+     .method<&DisplayDriver::fillRect>("fill_rect")
+     .method<&DisplayDriver::rect>("rect")
+     .method<&DisplayDriver::line>("line")
+     .method<&DisplayDriver::triangle>("triangle")
+     .method<&DisplayDriver::fillTriangle>("fill_triangle")
+     .method<&DisplayDriver::pixel>("pixel")
+     .method<&DisplayDriver::flip>("flip")
+     .method<&DisplayDriver::setBrightness>("set_brightness")
+     .method<&DisplayDriver::width>("width")
+     .method<&DisplayDriver::height>("height");
+#ifdef HAS_QRCODE
+    m.method<&DisplayDriver::qr>("qr");
+#endif
+  }
+
   void onAppReset() override;
   void onAppRunning(bool running) override { _appRunning = running; }
 
@@ -20,7 +39,7 @@ public:
   void displayText(const char* text) override;
 
   // Call once after M5.begin() to create the sprite framebuffer
-  void begin();
+  void begin() override;
 
 protected:
   M5Canvas _canvas{&M5.Display};
@@ -29,22 +48,20 @@ private:
   bool _initialized = false;
   bool _appRunning = false;
 
-  static DisplayDriver* getFromLua(lua_State* L, const char* fn);
-
-  static int lua_display_clear(lua_State* L);
-  static int lua_display_text(lua_State* L);
-  static int lua_display_fill_rect(lua_State* L);
-  static int lua_display_rect(lua_State* L);
-  static int lua_display_line(lua_State* L);
-  static int lua_display_triangle(lua_State* L);
-  static int lua_display_fill_triangle(lua_State* L);
-  static int lua_display_pixel(lua_State* L);
-  static int lua_display_flip(lua_State* L);
-  static int lua_display_set_brightness(lua_State* L);
-  static int lua_display_width(lua_State* L);
-  static int lua_display_height(lua_State* L);
+  int clear(lua_State* L);
+  int text(lua_State* L);
+  int fillRect(lua_State* L);
+  int rect(lua_State* L);
+  int line(lua_State* L);
+  int triangle(lua_State* L);
+  int fillTriangle(lua_State* L);
+  int pixel(lua_State* L);
+  int flip(lua_State* L);
+  int setBrightness(lua_State* L);
+  int width(lua_State* L);
+  int height(lua_State* L);
 #ifdef HAS_QRCODE
-  static int lua_display_qr(lua_State* L);
+  int qr(lua_State* L);
 #endif
 };
 
