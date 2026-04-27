@@ -13,25 +13,23 @@ Outrun provides a sandboxed Lua runtime that can be loaded with new code over th
 ```cpp
 #include <OutrunDevice.h>
 #include "MyDisplayDriver.h"
+#include "MyButtonDriver.h"
 
 MyDisplayDriver display;
+MyButtonDriver button{...};   // however your driver takes config
 
 Outrun::DeviceConfig makeConfig() {
     Outrun::DeviceConfig cfg;
-    cfg.deviceType = "demo";
-    cfg.host = "your-server.example.com";
+    cfg.deviceType    = "demo";
+    cfg.host          = "your-server.example.com";
     cfg.statusDisplay = &display;
+    cfg.extensions    = {&display, &button};
     return cfg;
 }
 
 class MyDevice : public Outrun::Device {
 public:
     MyDevice() : Outrun::Device(makeConfig()) {}
-
-    void deviceSetup() override {
-        sandbox().addDriver(&display);
-        sandbox().initialize();
-    }
 };
 
 MyDevice device;
@@ -51,12 +49,17 @@ Use the sandbox directly without any network stack:
 #include "MyLEDDriver.h"
 
 MyLEDDriver led;
-Outrun::Sandbox sandbox;
+
+Outrun::SandboxConfig makeConfig() {
+    Outrun::SandboxConfig cfg;
+    cfg.extensions = {&led};
+    return cfg;
+}
+
+Outrun::Sandbox sandbox{makeConfig()};
 
 void setup() {
-    sandbox.addDriver(&led);
     sandbox.initialize();
-
     sandbox.loadApp(
         "function on_tick(ctx, dt_ms)\n"
         "  local t = ctx.time_ms / 1000\n"
@@ -72,10 +75,11 @@ void loop() {
 
 ## Writing a Driver
 
-Drivers expose hardware to Lua by registering global functions:
+Drivers expose hardware to Lua via a builder API:
 
 ```cpp
 #include <OutrunDriver.h>
+#include <OutrunLuaModule.h>
 #include <M5Unified.h>
 
 extern "C" {
@@ -86,16 +90,11 @@ extern "C" {
 class IMUDriver : public Outrun::Driver {
 public:
     const char* name() const override { return "imu"; }
-
-    void installSandboxModule(lua_State* L) override {
-        lua_newtable(L);
-        lua_pushcfunction(L, lua_accel);
-        lua_setfield(L, -2, "accel");
-        lua_setglobal(L, "imu");
+    void registerModule(Outrun::LuaModule& m) override {
+        m.method<&IMUDriver::accel>("accel");
     }
 
-private:
-    static int lua_accel(lua_State* L) {
+    int accel(lua_State* L) {
         M5.Imu.update();
         auto d = M5.Imu.getImuData();
         lua_pushnumber(L, d.accel.x);
@@ -117,9 +116,17 @@ end
 
 ### Driver lifecycle
 
-- `installSandboxModule(L)` — called once during `sandbox.initialize()` to register Lua globals
-- `onAppReset()` — called when a new app is loaded, before compilation
-- `onAppRunning(bool)` — called when an app starts or stops running
+- `begin()` — called once by `Sandbox::initialize()` in registration order.
+  Hardware init goes here. Idempotent: a manual early call is safe (the
+  Sandbox's call becomes a no-op).
+- `update()` — called every iteration of `Sandbox::loop()`. Use for
+  per-tick driver work like polling and debouncing. Runs at full main-loop
+  rate, distinct from Lua's 10 FPS `on_tick`.
+- `registerModule(LuaModule& m)` — called once by `Sandbox::initialize()`
+  to register the driver's Lua-visible global. Use the builder's
+  `method<>`, `staticMethod`, and `constant` overloads.
+- `onAppReset()` — called when a new app is loaded (before compilation).
+- `onAppRunning(bool)` — called when an app starts or stops running.
 
 ## Message Protocol
 
