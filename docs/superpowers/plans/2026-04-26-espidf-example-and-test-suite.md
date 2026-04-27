@@ -4,7 +4,7 @@
 
 > **Status (2026-04-26): Tasks 2–6 deferred.** Hit a courier 0.3.1 packaging issue during Task 3 verification: courier's CMake `REQUIRES` line names `ezTime`, `ArduinoJson`, `WiFiManager` by bare names but its `idf_component.yml` doesn't declare those deps, so `idf.py reconfigure` fails on the consumer side. Resuming the IDF example needs a courier fix (filed separately). For now, **execute Tasks 1, 7, 8, 9, 10, 11, 12** with these adjustments: Task 10's CI workflow drops the `build-espidf` job (3 jobs total, not 4); Task 11's changelog entries omit references to the IDF example, and `examples/espidf-basic/README.md` is not created. Tasks 2–6 are left in this document as a breadcrumb for resuming once courier ships the fix.
 
-**Goal:** Add an ESP-IDF example demonstrating Outrun integration in a real-consumer style, plus a CI-driven test suite that builds the new IDF example, the existing PlatformIO `m5stick-demo`, runs cppcheck on `src/`, and reserves a native unit-test slot for future PRs.
+**Goal:** Add an ESP-IDF example demonstrating Resident integration in a real-consumer style, plus a CI-driven test suite that builds the new IDF example, the existing PlatformIO `m5stick-demo`, runs cppcheck on `src/`, and reserves a native unit-test slot for future PRs.
 
 **Architecture:** A single `tools/run-tests.py` (uv inline-script) drives the PIO/cppcheck checks locally and in CI. The ESP-IDF build is invoked via `idf.py` locally and via `espressif/esp-idf-ci-action@v1` in CI (matches courier's split). The new IDF example uses `path: ../../..` for outrun, registry pins for arduino-esp32/courier/ArduinoJson, and a single fetch script for Esp32Lua (the only dep with no registry option). The existing m5stick-demo gets a small platformio.ini change to use the in-tree outrun source via `symlink://` (required because outrun is a private GitHub repo and CI has no SSH key).
 
@@ -193,7 +193,7 @@ dependencies:
   idf:
     version: ">=5.0.0"
 
-  # Outrun itself — built from the in-tree source so the example is also
+  # Resident itself — built from the in-tree source so the example is also
   # build verification for the library. Consumers copying this example
   # should change this to a pinned registry version once outrun publishes.
   outrun:
@@ -240,10 +240,10 @@ git commit -m "feat(examples): scaffold espidf-basic IDF project"
 - Create: `examples/espidf-basic/main/StubLEDDriver.h`
 - Create: `examples/espidf-basic/main/StubLEDDriver.cpp`
 
-The Outrun driver interface (`src/OutrunDriver.h`) is:
+The Resident driver interface (`src/ResidentDriver.h`) is:
 
 ```cpp
-namespace Outrun {
+namespace Resident {
 class Driver {
 public:
   virtual const char* name() const = 0;
@@ -266,12 +266,12 @@ Path: `examples/espidf-basic/main/StubLEDDriver.h`
 ```cpp
 #pragma once
 
-#include <OutrunDriver.h>
+#include <ResidentDriver.h>
 
 // Minimal no-op driver. Exists to exercise Sandbox::addDriver() in CI without
 // requiring real hardware. Exposes an `led` table in Lua with one function:
 //   led.set(r, g, b)  -- accepts but ignores three integers
-class StubLEDDriver : public Outrun::Driver {
+class StubLEDDriver : public Resident::Driver {
 public:
     const char* name() const override { return "led"; }
     void installSandboxModule(lua_State* L) override;
@@ -313,7 +313,7 @@ void StubLEDDriver::installSandboxModule(lua_State* L) {
 
 - [ ] **Step 3: No standalone test — Task 7 verifies via the full IDF build**
 
-`StubLEDDriver` is exercised when the example links. There's no native test harness for ESP-IDF code in this PR (that's part of the larger Outrun unit test goal, which is out of scope here). The compile + link in Task 7 is the verification.
+`StubLEDDriver` is exercised when the example links. There's no native test harness for ESP-IDF code in this PR (that's part of the larger Resident unit test goal, which is out of scope here). The compile + link in Task 7 is the verification.
 
 - [ ] **Step 4: Commit**
 
@@ -334,30 +334,30 @@ git commit -m "feat(examples): add StubLEDDriver for IDF example"
 Path: `examples/espidf-basic/main/main.cpp`
 
 ```cpp
-// Minimal ESP-IDF example for Outrun. Demonstrates:
-//   - Subclassing Outrun::Device
+// Minimal ESP-IDF example for Resident. Demonstrates:
+//   - Subclassing Resident::Device
 //   - Registering a driver with the sandbox
 //   - Running setup()/loop() from app_main() rather than autostarted Arduino
 //
 // This intentionally targets `example.com` — it won't actually connect.
-// Real consumers point `host` at their own Outrun server.
+// Real consumers point `host` at their own Resident server.
 
 #include <Arduino.h>
-#include <OutrunDevice.h>
+#include <ResidentDevice.h>
 #include "StubLEDDriver.h"
 
 static StubLEDDriver led;
 
-static Outrun::DeviceConfig makeConfig() {
-    Outrun::DeviceConfig cfg;
+static Resident::DeviceConfig makeConfig() {
+    Resident::DeviceConfig cfg;
     cfg.deviceType = "espidf-basic";
     cfg.host = "example.com";
     return cfg;
 }
 
-class BasicDevice : public Outrun::Device {
+class BasicDevice : public Resident::Device {
 public:
-    BasicDevice() : Outrun::Device(makeConfig()) {}
+    BasicDevice() : Resident::Device(makeConfig()) {}
 
     void deviceSetup() override {
         sandbox().addDriver(&led);
@@ -379,11 +379,11 @@ extern "C" void app_main() {
 }
 ```
 
-- [ ] **Step 2: Verify the OutrunDeviceConfig fields are right**
+- [ ] **Step 2: Verify the ResidentDeviceConfig fields are right**
 
-The `cfg.deviceType` and `cfg.host` field names come from `src/OutrunDeviceConfig.h`. Open that file and confirm both fields exist with those names. If they differ, adjust `main.cpp` to match.
+The `cfg.deviceType` and `cfg.host` field names come from `src/ResidentDeviceConfig.h`. Open that file and confirm both fields exist with those names. If they differ, adjust `main.cpp` to match.
 
-Run: `grep -E '(deviceType|host)' /Users/matt/code/outrun/src/OutrunDeviceConfig.h`
+Run: `grep -E '(deviceType|host)' /Users/matt/code/outrun/src/ResidentDeviceConfig.h`
 Expected: both field names appear in the config struct.
 
 If a field name differs, update `main.cpp` accordingly (keep the same intent: identify the device type, set the WS host).
@@ -490,8 +490,8 @@ idf.py build
 Expected: build succeeds. Output ends with "Project build complete." and an `app-flash` instruction.
 
 If the build fails, common fixes:
-- Missing field on `Outrun::DeviceConfig` — adjust `main.cpp` to match the real header.
-- Missing function from `Outrun::Device` — check `src/OutrunDevice.h` for the actual signatures.
+- Missing field on `Resident::DeviceConfig` — adjust `main.cpp` to match the real header.
+- Missing function from `Resident::Device` — check `src/ResidentDevice.h` for the actual signatures.
 - Linker errors about undefined `lua_*` symbols — Esp32Lua source filter in the shim CMakeLists.txt is too aggressive; check the `src/lua/` directory layout.
 - `Arduino.h` not found — `arduino-esp32` registry resolution didn't pull through; check `idf_component.yml` syntax.
 
@@ -576,14 +576,14 @@ git commit -m "test: add native unit-test slot with smoke test"
 **Files:**
 - Modify: `examples/m5stick-demo/device/platformio.ini`
 
-The current file uses `git+ssh://git@github.com/inanimate-tech/outrun.git` (private repo, no SSH key in CI) and `git+ssh://...courier.git` (public, but still SSH). Switch outrun to the in-tree source via `symlink://` and courier to `git+https://` (auth-free).
+The current file uses `git+ssh://git@github.com/inanimate-tech/resident.git` (private repo, no SSH key in CI) and `git+ssh://...courier.git` (public, but still SSH). Switch outrun to the in-tree source via `symlink://` and courier to `git+https://` (auth-free).
 
 - [ ] **Step 1: Edit the lib_deps**
 
 In `examples/m5stick-demo/device/platformio.ini`, in the `[env]` block, replace these two lines:
 
 ```
-    git+ssh://git@github.com/inanimate-tech/outrun.git
+    git+ssh://git@github.com/inanimate-tech/resident.git
     git+ssh://git@github.com/inanimate-tech/courier.git
 ```
 
@@ -663,7 +663,7 @@ def run_cmd(cmd: list[str], cwd: Path | None = None, label: str = "") -> bool:
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 def cli() -> None:
-    """Run tests for the Outrun library."""
+    """Run tests for the Resident library."""
     pass
 
 
@@ -857,7 +857,7 @@ Path: `examples/espidf-basic/README.md`
 ```markdown
 # espidf-basic
 
-Minimal ESP-IDF example showing how a consumer project integrates Outrun.
+Minimal ESP-IDF example showing how a consumer project integrates Resident.
 Builds a no-op `BasicDevice` that registers a stub LED driver with the
 sandbox. Doesn't connect to any real network — `host` is `example.com`.
 
@@ -891,9 +891,9 @@ Replace `/dev/cu.usbserial-XXXX` with your board's serial device.
 ## Files
 
 - `main/main.cpp` — `app_main()` entry point and `BasicDevice` class.
-- `main/StubLEDDriver.{h,cpp}` — minimal `Outrun::Driver` implementation
+- `main/StubLEDDriver.{h,cpp}` — minimal `Resident::Driver` implementation
   that exposes a `led.set(r, g, b)` Lua function (no-op).
-- `main/idf_component.yml` — dependency manifest. Outrun comes from the
+- `main/idf_component.yml` — dependency manifest. Resident comes from the
   in-tree source via `path: ../../..`; the rest are registry pins.
 - `main/CMakeLists.txt` — IDF component registration.
 - `partitions.csv`, `sdkconfig.defaults` — minimal IDF project config.
@@ -910,7 +910,7 @@ In `docs/changelog.md`, modify the `## v0.3.0-dev (d27cda1)` section to add:
 
 ### New features
 
-- `examples/espidf-basic/`: minimal ESP-IDF example demonstrating Outrun
+- `examples/espidf-basic/`: minimal ESP-IDF example demonstrating Resident
   integration in a real-consumer style. Uses registry pins for
   arduino-esp32, courier, and ArduinoJson; a small fetch script handles
   Esp32Lua (the only dep not on the ESP Component Registry).
@@ -925,7 +925,7 @@ In `docs/changelog.md`, modify the `## v0.3.0-dev (d27cda1)` section to add:
   (cppcheck), unit tests, PlatformIO build of `m5stick-demo`, and ESP-IDF
   build of `espidf-basic`.
 - Patched `examples/m5stick-demo/device/platformio.ini` to use the in-tree
-  Outrun source (`symlink://../../..`) and HTTPS for courier, so the demo
+  Resident source (`symlink://../../..`) and HTTPS for courier, so the demo
   builds in CI without SSH credentials. No functional change for local devs.
 ```
 

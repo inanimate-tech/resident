@@ -1,4 +1,4 @@
-#include "OutrunSandbox.h"
+#include "ResidentSandbox.h"
 #include <Arduino.h>
 #include <ezTime.h>
 #include <math.h>
@@ -27,10 +27,10 @@ static void* psramLuaAlloc(void* ud, void* ptr, size_t osize, size_t nsize) {
 }
 #endif
 
-namespace Outrun {
+namespace Resident {
 
 // Registry key for accessing the sandbox instance from Lua C functions
-static const char* REGISTRY_KEY = "OutrunSandbox_instance";
+static const char* REGISTRY_KEY = "ResidentSandbox_instance";
 
 Sandbox::Sandbox() {
   memset(_events, 0, sizeof(_events));
@@ -98,7 +98,7 @@ int Sandbox::luaGlobalIntForTest(const char* name)
 
 void Sandbox::initialize()
 {
-  Serial.println("Initializing Outrun::Sandbox");
+  Serial.println("Initializing Resident::Sandbox");
 
 #ifdef ESP_PLATFORM
   _lua = lua_newstate(psramLuaAlloc, NULL);
@@ -149,7 +149,7 @@ void Sandbox::initialize()
   _triggerResetTime = millis();
   _lastTickTime = millis();
 
-  Serial.println("Outrun::Sandbox initialized");
+  Serial.println("Resident::Sandbox initialized");
 }
 
 void Sandbox::setupLuaEnvironment()
@@ -240,10 +240,10 @@ void Sandbox::loadApp(const char* luaCode)
   emitTelemetry("app_received");
 
   if (compileApp(luaCode)) {
-    Serial.println("Outrun::Sandbox: app compiled successfully");
+    Serial.println("Resident::Sandbox: app compiled successfully");
     emitTelemetry("app_compiled");
   } else {
-    Serial.println("Outrun::Sandbox: app compilation failed");
+    Serial.println("Resident::Sandbox: app compilation failed");
   }
 }
 
@@ -310,13 +310,13 @@ bool Sandbox::compileApp(const char* code)
     int execResult = lua_pcall(_lua, 0, 0, 0);
     if (execResult != 0) {
       const char* errMsg = lua_tostring(_lua, -1);
-      Serial.printf("Outrun::Sandbox: execution failed: %s\n", errMsg);
+      Serial.printf("Resident::Sandbox: execution failed: %s\n", errMsg);
       emitTelemetry("compile_error", errMsg);
       lua_pop(_lua, 1);
     }
   } else {
     const char* errMsg = lua_tostring(_lua, -1);
-    Serial.printf("Outrun::Sandbox: compile failed: %s\n", errMsg);
+    Serial.printf("Resident::Sandbox: compile failed: %s\n", errMsg);
     emitTelemetry("compile_error", errMsg);
     lua_pop(_lua, 1);
     return false;
@@ -336,7 +336,7 @@ bool Sandbox::compileApp(const char* code)
   lua_pop(_lua, 1);
 
   if (!hasInit && !hasOnTick && !hasOnEvent) {
-    Serial.println("Outrun::Sandbox: no callbacks found (init, on_tick, or on_event required)");
+    Serial.println("Resident::Sandbox: no callbacks found (init, on_tick, or on_event required)");
     emitTelemetry("compile_error", "no callbacks found (init, on_tick, or on_event required)");
     return false;
   }
@@ -371,7 +371,7 @@ bool Sandbox::compileApp(const char* code)
   notifyAppRunning(true);
   callInit();
 
-  Serial.println("Outrun::Sandbox: app compiled successfully");
+  Serial.println("Resident::Sandbox: app compiled successfully");
   return true;
 }
 
@@ -395,7 +395,7 @@ void Sandbox::callInit()
   int result = lua_pcall(_lua, 1, 0, 0);
   if (result != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
-    Serial.printf("Outrun::Sandbox: init() error: %s\n", errMsg);
+    Serial.printf("Resident::Sandbox: init() error: %s\n", errMsg);
     emitTelemetry("runtime_error", errMsg);
     lua_pop(_lua, 1);
   }
@@ -423,7 +423,7 @@ void Sandbox::callOnTick(unsigned long dt_ms)
   int result = lua_pcall(_lua, 2, 0, 0);
   if (result != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
-    Serial.printf("Outrun::Sandbox: on_tick() error: %s\n", errMsg);
+    Serial.printf("Resident::Sandbox: on_tick() error: %s\n", errMsg);
 
     // Rate-limit on_tick errors (fires 10x/sec)
     unsigned long now = millis();
@@ -589,7 +589,7 @@ void Sandbox::processNextEvent()
   int callResult = lua_pcall(_lua, 2, 0, 0);
   if (callResult != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
-    Serial.printf("Outrun::Sandbox: on_event() error: %s\n", errMsg);
+    Serial.printf("Resident::Sandbox: on_event() error: %s\n", errMsg);
     emitTelemetry("runtime_error", errMsg);
     lua_pop(_lua, 1);
   }
@@ -931,4 +931,4 @@ int Sandbox::lua_math_fmod(lua_State* L)
   return 1;
 }
 
-} // namespace Outrun
+} // namespace Resident

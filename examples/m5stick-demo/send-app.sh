@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROD_URL="https://outrun-m5stick-demo.genmon.workers.dev"
+PROD_URL="https://resident-m5stick-demo.genmon.workers.dev"
 DEV_URL="http://localhost:5173"
 BASE_URL=""
 

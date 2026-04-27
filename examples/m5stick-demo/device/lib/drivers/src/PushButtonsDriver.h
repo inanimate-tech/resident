@@ -2,15 +2,15 @@
 #define PUSH_BUTTONS_DRIVER_H
 
 #include <cstdint>
-#include <OutrunDriver.h>
-#include <OutrunLuaModule.h>
+#include <ResidentDriver.h>
+#include <ResidentLuaModule.h>
 
 struct PushButtonsConfig {
   uint8_t numButtons;
   const uint8_t* pins;
 };
 
-class PushButtonsDriver : public Outrun::Driver {
+class PushButtonsDriver : public Resident::Driver {
 public:
   explicit PushButtonsDriver(const PushButtonsConfig& config);
 
@@ -18,7 +18,7 @@ public:
   void begin() override;
   void update() override;
   void onAppReset() override;
-  void registerModule(Outrun::LuaModule& m) override {
+  void registerModule(Resident::LuaModule& m) override {
     m.method<PushButtonsDriver, &PushButtonsDriver::pressCount>("press_count");
   }
 

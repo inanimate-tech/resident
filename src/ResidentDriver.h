@@ -1,10 +1,10 @@
-// src/OutrunDriver.h
-#ifndef OUTRUN_DRIVER_H
-#define OUTRUN_DRIVER_H
+// src/ResidentDriver.h
+#ifndef RESIDENT_DRIVER_H
+#define RESIDENT_DRIVER_H
 
-#include "OutrunExtension.h"
+#include "ResidentExtension.h"
 
-namespace Outrun {
+namespace Resident {
 
 struct EventField {
   const char* key;
@@ -47,6 +47,6 @@ private:
   }
 };
 
-} // namespace Outrun
+} // namespace Resident
 
-#endif // OUTRUN_DRIVER_H
+#endif // RESIDENT_DRIVER_H

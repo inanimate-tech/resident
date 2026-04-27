@@ -66,9 +66,9 @@ void PushButtonsDriver::update()
           }
         } else {
           btn.pressCount++;
-          Outrun::EventField fields[] = {
-            {"index", Outrun::EventField::INT, {.i = (int)i}},
-            {"count", Outrun::EventField::INT, {.i = (int)btn.pressCount}}
+          Resident::EventField fields[] = {
+            {"index", Resident::EventField::INT, {.i = (int)i}},
+            {"count", Resident::EventField::INT, {.i = (int)btn.pressCount}}
           };
           sendEvent("button", fields, 2);
           Serial.printf("PushButton[%d] pressed (count=%d)\n", i, btn.pressCount);

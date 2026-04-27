@@ -1,25 +1,25 @@
-# Outrun
+# Resident
 
 Sandbox with hardware IO and hot reload for ESP32 devices.
 
-Outrun provides a sandboxed Lua runtime that can be loaded with new code over the network at any time. Hardware peripherals are exposed to Lua through a driver interface, so apps can draw to displays, read sensors, and control outputs without touching C++.
+Resident provides a sandboxed Lua runtime that can be loaded with new code over the network at any time. Hardware peripherals are exposed to Lua through a driver interface, so apps can draw to displays, read sensors, and control outputs without touching C++.
 
 ## Quick Start
 
-### With `Outrun::Device` (network-connected)
+### With `Resident::Device` (network-connected)
 
-`Outrun::Device` composes [Courier](https://github.com/inanimate-tech/courier) for connectivity with the sandbox runtime. It handles WiFi, WebSocket transport, and message routing automatically.
+`Resident::Device` composes [Courier](https://github.com/inanimate-tech/courier) for connectivity with the sandbox runtime. It handles WiFi, WebSocket transport, and message routing automatically.
 
 ```cpp
-#include <OutrunDevice.h>
+#include <ResidentDevice.h>
 #include "MyDisplayDriver.h"
 #include "MyButtonDriver.h"
 
 MyDisplayDriver display;
 MyButtonDriver button{...};   // however your driver takes config
 
-Outrun::DeviceConfig makeConfig() {
-    Outrun::DeviceConfig cfg;
+Resident::DeviceConfig makeConfig() {
+    Resident::DeviceConfig cfg;
     cfg.deviceType    = "demo";
     cfg.host          = "your-server.example.com";
     cfg.statusDisplay = &display;
@@ -27,9 +27,9 @@ Outrun::DeviceConfig makeConfig() {
     return cfg;
 }
 
-class MyDevice : public Outrun::Device {
+class MyDevice : public Resident::Device {
 public:
-    MyDevice() : Outrun::Device(makeConfig()) {}
+    MyDevice() : Resident::Device(makeConfig()) {}
 };
 
 MyDevice device;
@@ -42,23 +42,23 @@ The device connects to WiFi (with a captive portal for configuration), opens a W
 
 For telemetry callback or timezone, call `sandbox().setTelemetryCallback(...)` / `sandbox().setTimezone(...)` from your `deviceSetup()` override.
 
-### Standalone `Outrun::Sandbox` (no network)
+### Standalone `Resident::Sandbox` (no network)
 
 Use the sandbox directly without any network stack:
 
 ```cpp
-#include <OutrunSandbox.h>
+#include <ResidentSandbox.h>
 #include "MyLEDDriver.h"
 
 MyLEDDriver led;
 
-Outrun::SandboxConfig makeConfig() {
-    Outrun::SandboxConfig cfg;
+Resident::SandboxConfig makeConfig() {
+    Resident::SandboxConfig cfg;
     cfg.extensions = {&led};
     return cfg;
 }
 
-Outrun::Sandbox sandbox{makeConfig()};
+Resident::Sandbox sandbox{makeConfig()};
 
 void setup() {
     sandbox.initialize();
@@ -80,8 +80,8 @@ void loop() {
 Drivers expose hardware to Lua via a builder API:
 
 ```cpp
-#include <OutrunDriver.h>
-#include <OutrunLuaModule.h>
+#include <ResidentDriver.h>
+#include <ResidentLuaModule.h>
 #include <M5Unified.h>
 
 extern "C" {
@@ -89,10 +89,10 @@ extern "C" {
   #include "lua/lauxlib.h"
 }
 
-class IMUDriver : public Outrun::Driver {
+class IMUDriver : public Resident::Driver {
 public:
     const char* name() const override { return "imu"; }
-    void registerModule(Outrun::LuaModule& m) override {
+    void registerModule(Resident::LuaModule& m) override {
         m.method<IMUDriver, &IMUDriver::accel>("accel");
     }
 
@@ -116,7 +116,7 @@ function on_tick(ctx, dt_ms)
 end
 ```
 
-For Lua-only extensions that don't expose hardware or emit events, extend `Outrun::Extension` directly instead of `Outrun::Driver` — the same `registerModule(LuaModule&)` and lifecycle hooks apply.
+For Lua-only extensions that don't expose hardware or emit events, extend `Resident::Extension` directly instead of `Resident::Driver` — the same `registerModule(LuaModule&)` and lifecycle hooks apply.
 
 ### Driver lifecycle
 
@@ -134,7 +134,7 @@ For Lua-only extensions that don't expose hardware or emit events, extend `Outru
 
 ## Message Protocol
 
-When using `Outrun::Device`, the base `onMessage()` routes these types to the sandbox:
+When using `Resident::Device`, the base `onMessage()` routes these types to the sandbox:
 
 Subclasses can override `onMessage()` to handle custom types, then call `Device::onMessage()` for sandbox routing. The same pattern applies to `onConnected()`, `onConnectionChange()`, and `onTransportsWillConnect()` — override and call super.
 
@@ -176,7 +176,7 @@ platform = espressif32@6.12.0
 board = esp32-s3-devkitc-1
 framework = arduino
 lib_deps =
-    https://github.com/inanimate-tech/outrun.git
+    https://github.com/inanimate-tech/resident.git
     https://github.com/inanimate-tech/courier.git
     tzapu/WiFiManager@^2.0.17
     bblanchon/ArduinoJson@^7.4.2
@@ -196,7 +196,7 @@ And in `idf_component.yml`:
 
 ```yaml
 dependencies:
-  inanimate/outrun:
+  inanimate/resident:
     version: "^0.1.0"
 ```
 

@@ -1,28 +1,28 @@
-// Minimal ESP-IDF example for Outrun. Demonstrates:
-//   - Subclassing Outrun::Device
+// Minimal ESP-IDF example for Resident. Demonstrates:
+//   - Subclassing Resident::Device
 //   - Registering a driver declaratively via DeviceConfig::extensions
 //   - Running setup()/loop() from app_main() rather than autostarted Arduino
 //
 // This intentionally targets `example.com` — it won't actually connect.
-// Real consumers point `host` at their own Outrun server.
+// Real consumers point `host` at their own Resident server.
 
 #include <Arduino.h>
-#include <OutrunDevice.h>
+#include <ResidentDevice.h>
 #include "StubLEDDriver.h"
 
 static StubLEDDriver led;
 
-static Outrun::DeviceConfig makeConfig() {
-    Outrun::DeviceConfig cfg;
+static Resident::DeviceConfig makeConfig() {
+    Resident::DeviceConfig cfg;
     cfg.deviceType = "espidf-basic";
     cfg.host = "example.com";
     cfg.extensions = {&led};
     return cfg;
 }
 
-class BasicDevice : public Outrun::Device {
+class BasicDevice : public Resident::Device {
 public:
-    BasicDevice() : Outrun::Device(makeConfig()) {}
+    BasicDevice() : Resident::Device(makeConfig()) {}
 };
 
 static BasicDevice device;

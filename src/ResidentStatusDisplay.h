@@ -1,8 +1,8 @@
-// src/OutrunStatusDisplay.h
-#ifndef OUTRUN_STATUS_DISPLAY_H
-#define OUTRUN_STATUS_DISPLAY_H
+// src/ResidentStatusDisplay.h
+#ifndef RESIDENT_STATUS_DISPLAY_H
+#define RESIDENT_STATUS_DISPLAY_H
 
-namespace Outrun {
+namespace Resident {
 
 class StatusDisplay {
 public:
@@ -12,6 +12,6 @@ public:
   virtual ~StatusDisplay() = default;
 };
 
-} // namespace Outrun
+} // namespace Resident
 
-#endif // OUTRUN_STATUS_DISPLAY_H
+#endif // RESIDENT_STATUS_DISPLAY_H

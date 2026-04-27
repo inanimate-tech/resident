@@ -1,9 +1,9 @@
 #include <unity.h>
-#include "OutrunExtension.h"
+#include "ResidentExtension.h"
 
 namespace {
 
-class TestExtension : public Outrun::Extension {
+class TestExtension : public Resident::Extension {
 public:
   int beginCount = 0;
   int updateCount = 0;
@@ -20,7 +20,7 @@ void setUp(void) {}
 void tearDown(void) {}
 
 void test_default_lifecycle_does_nothing(void) {
-    class Bare : public Outrun::Extension {
+    class Bare : public Resident::Extension {
       public: const char* name() const override { return "bare"; }
     };
     Bare b;
@@ -32,9 +32,9 @@ void test_default_lifecycle_does_nothing(void) {
 
 void test_begin_if_needed_runs_once(void) {
     TestExtension e;
-    Outrun::Extension::beginExtension(e);
-    Outrun::Extension::beginExtension(e);
-    Outrun::Extension::beginExtension(e);
+    Resident::Extension::beginExtension(e);
+    Resident::Extension::beginExtension(e);
+    Resident::Extension::beginExtension(e);
     TEST_ASSERT_EQUAL_INT(1, e.beginCount);
 }
 
@@ -56,8 +56,8 @@ void test_direct_begin_then_beginExtension_runs_begin_twice(void) {
     // beginExtension() has run is _begun set, so further calls are no-ops.
     TestExtension e;
     e.begin();                                  // direct call
-    Outrun::Extension::beginExtension(e);       // calls begin() again
-    Outrun::Extension::beginExtension(e);       // no-op
+    Resident::Extension::beginExtension(e);       // calls begin() again
+    Resident::Extension::beginExtension(e);       // no-op
     TEST_ASSERT_EQUAL_INT(2, e.beginCount);
 }
 

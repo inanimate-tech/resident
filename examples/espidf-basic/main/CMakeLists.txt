@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "main.cpp" "StubLEDDriver.cpp"
     INCLUDE_DIRS "."
-    REQUIRES outrun espressif__arduino-esp32
+    REQUIRES resident espressif__arduino-esp32
 )

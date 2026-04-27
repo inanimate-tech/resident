@@ -1,17 +1,17 @@
 #ifndef IMU_DRIVER_H
 #define IMU_DRIVER_H
 
-#include <OutrunDriver.h>
-#include <OutrunLuaModule.h>
+#include <ResidentDriver.h>
+#include <ResidentLuaModule.h>
 
-// Outrun driver wrapping M5Unified's IMU (MPU6886) for Lua access.
+// Resident driver wrapping M5Unified's IMU (MPU6886) for Lua access.
 // Lua API: imu.accel() -> ax,ay,az (g-force, body frame)
 //          imu.gyro()  -> gx,gy,gz (degrees/sec, body frame)
 //          imu.temp()  -> not supported, returns 0
-class IMUDriver : public Outrun::Driver {
+class IMUDriver : public Resident::Driver {
 public:
   const char* name() const override { return "imu"; }
-  void registerModule(Outrun::LuaModule& m) override {
+  void registerModule(Resident::LuaModule& m) override {
     m.method<IMUDriver, &IMUDriver::accel>("accel")
      .method<IMUDriver, &IMUDriver::gyro>("gyro")
      .method<IMUDriver, &IMUDriver::temp>("temp");

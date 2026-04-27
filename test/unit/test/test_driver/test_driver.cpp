@@ -1,8 +1,8 @@
 #include <unity.h>
-#include "OutrunDriver.h"
+#include "ResidentDriver.h"
 
 namespace {
-class StubDriver : public Outrun::Driver {
+class StubDriver : public Resident::Driver {
 public:
   int onAppRunningCalls = 0;
   bool lastRunning = false;
@@ -25,7 +25,7 @@ void tearDown(void) {}
 
 void test_driver_is_extension(void) {
     StubDriver d;
-    Outrun::Extension* asExt = &d;
+    Resident::Extension* asExt = &d;
     TEST_ASSERT_EQUAL_STRING("stub", asExt->name());
     asExt->begin();
     asExt->update();

@@ -1,16 +1,16 @@
-// src/OutrunSandbox.h
-#ifndef OUTRUN_SANDBOX_H
-#define OUTRUN_SANDBOX_H
+// src/ResidentSandbox.h
+#ifndef RESIDENT_SANDBOX_H
+#define RESIDENT_SANDBOX_H
 
 #include <Arduino.h>
 #include <ezTime.h>
 #include <map>
 #include <functional>
-#include "OutrunDriver.h"
-#include "OutrunLuaModule.h"
-#include "OutrunSandboxConfig.h"
+#include "ResidentDriver.h"
+#include "ResidentLuaModule.h"
+#include "ResidentSandboxConfig.h"
 
-namespace Outrun {
+namespace Resident {
 
 class Sandbox {
 public:
@@ -147,6 +147,6 @@ private:
     static int lua_math_fmod(lua_State* L);
 };
 
-} // namespace Outrun
+} // namespace Resident
 
-#endif // OUTRUN_SANDBOX_H
+#endif // RESIDENT_SANDBOX_H

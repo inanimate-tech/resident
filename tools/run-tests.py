@@ -36,7 +36,7 @@ def run_cmd(cmd: list[str], cwd: Path | None = None, label: str = "") -> bool:
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 def cli() -> None:
-    """Run tests for the Outrun library."""
+    """Run tests for the Resident library."""
     pass
 
 

@@ -1,5 +1,5 @@
 // Smoke test — proves the native test environment compiles and runs.
-// Real unit tests for outrun source land in sibling test_*/ directories.
+// Real unit tests for resident source land in sibling test_*/ directories.
 
 #include <unity.h>
 

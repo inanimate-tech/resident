@@ -1,12 +1,12 @@
-// src/OutrunExtensions.h
-#ifndef OUTRUN_EXTENSIONS_H
-#define OUTRUN_EXTENSIONS_H
+// src/ResidentExtensions.h
+#ifndef RESIDENT_EXTENSIONS_H
+#define RESIDENT_EXTENSIONS_H
 
 #include <cstdint>
 #include <initializer_list>
-#include "OutrunExtension.h"
+#include "ResidentExtension.h"
 
-namespace Outrun {
+namespace Resident {
 
 struct Extensions {
   // MAX must stay below 256 because count is uint8_t.
@@ -23,6 +23,6 @@ struct Extensions {
   }
 };
 
-} // namespace Outrun
+} // namespace Resident
 
-#endif // OUTRUN_EXTENSIONS_H
+#endif // RESIDENT_EXTENSIONS_H

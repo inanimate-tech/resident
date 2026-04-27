@@ -1,20 +1,20 @@
 #ifndef DISPLAY_DRIVER_H
 #define DISPLAY_DRIVER_H
 
-#include <OutrunDriver.h>
-#include <OutrunLuaModule.h>
-#include <OutrunStatusDisplay.h>
+#include <ResidentDriver.h>
+#include <ResidentLuaModule.h>
+#include <ResidentStatusDisplay.h>
 #include <M5Unified.h>
 
-// Outrun driver wrapping M5.Display for Lua access.
-// Dual role: Outrun::Driver (Lua screen.* module via sprite buffer)
-//          + Outrun::StatusDisplay (connection state text, direct to display)
+// Resident driver wrapping M5.Display for Lua access.
+// Dual role: Resident::Driver (Lua screen.* module via sprite buffer)
+//          + Resident::StatusDisplay (connection state text, direct to display)
 // When an app is running, status display calls are suppressed.
-class DisplayDriver : public Outrun::Driver, public Outrun::StatusDisplay {
+class DisplayDriver : public Resident::Driver, public Resident::StatusDisplay {
 public:
   const char* name() const override { return "screen"; }
 
-  void registerModule(Outrun::LuaModule& m) override {
+  void registerModule(Resident::LuaModule& m) override {
     m.method<DisplayDriver, &DisplayDriver::clear>("clear")
      .method<DisplayDriver, &DisplayDriver::text>("text")
      .method<DisplayDriver, &DisplayDriver::fillRect>("fill_rect")
@@ -35,7 +35,7 @@ public:
   void onAppReset() override;
   void onAppRunning(bool running) override { _appRunning = running; }
 
-  // Outrun::StatusDisplay — writes directly to M5.Display (not sprite)
+  // Resident::StatusDisplay — writes directly to M5.Display (not sprite)
   void displayText(const char* text) override;
 
   // Call once after M5.begin() to create the sprite framebuffer

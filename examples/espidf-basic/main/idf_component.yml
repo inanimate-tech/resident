@@ -2,10 +2,10 @@ dependencies:
   idf:
     version: ">=5.0.0"
 
-  # Outrun itself — built from the in-tree source so the example is also
+  # Resident itself — built from the in-tree source so the example is also
   # build verification for the library. Consumers copying this example
-  # should change this to a pinned registry version once outrun publishes.
-  outrun:
+  # should change this to a pinned registry version once resident publishes.
+  resident:
     path: ../../..
 
   # Registry deps — these are what real consumers depend on.

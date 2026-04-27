@@ -1,6 +1,6 @@
 version: "0.3.0-dev"
 description: "Sandbox with hardware IO and hot reload for ESP32 devices"
-url: "https://github.com/inanimate-tech/outrun"
+url: "https://github.com/inanimate-tech/resident"
 
 dependencies:
   idf:

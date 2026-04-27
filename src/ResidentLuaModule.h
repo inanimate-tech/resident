@@ -1,6 +1,6 @@
-// src/OutrunLuaModule.h
-#ifndef OUTRUN_LUA_MODULE_H
-#define OUTRUN_LUA_MODULE_H
+// src/ResidentLuaModule.h
+#ifndef RESIDENT_LUA_MODULE_H
+#define RESIDENT_LUA_MODULE_H
 
 extern "C" {
   #include "lua/lua.h"
@@ -8,7 +8,7 @@ extern "C" {
 
 #include <type_traits>
 
-namespace Outrun {
+namespace Resident {
 
 class Extension;  // forward decl for the Trampoline static_assert
 
@@ -18,15 +18,15 @@ class Extension;  // forward decl for the Trampoline static_assert
 // void* -> ClassT* is correct only when Extension is the leftmost base of
 // ClassT, so the addresses are numerically equal. This is the case for
 // every single-inheritance driver. For dual-inheritance drivers (e.g. one
-// that is also an Outrun::StatusDisplay), declare Driver first:
+// that is also an Resident::StatusDisplay), declare Driver first:
 //
-//   class Foo : public Outrun::Driver, public Outrun::StatusDisplay  // OK
-//   class Foo : public Outrun::StatusDisplay, public Outrun::Driver  // BROKEN
+//   class Foo : public Resident::Driver, public Resident::StatusDisplay  // OK
+//   class Foo : public Resident::StatusDisplay, public Resident::Driver  // BROKEN
 template<class C, int (C::*F)(lua_State*)>
 struct Trampoline {
   static_assert(std::is_base_of<Extension, C>::value,
                 "LuaModule::method<> requires the member function's class "
-                "to derive from Outrun::Extension.");
+                "to derive from Resident::Extension.");
   static int call(lua_State* L) {
     void* ud = lua_touserdata(L, lua_upvalueindex(1));
     return (static_cast<C*>(ud)->*F)(L);
@@ -38,7 +38,7 @@ template<class C, int (C::*F)(lua_State*) const>
 struct TrampolineConst {
   static_assert(std::is_base_of<Extension, C>::value,
                 "LuaModule::method<> requires the member function's class "
-                "to derive from Outrun::Extension.");
+                "to derive from Resident::Extension.");
   static int call(lua_State* L) {
     void* ud = lua_touserdata(L, lua_upvalueindex(1));
     return (static_cast<const C*>(ud)->*F)(L);
@@ -100,6 +100,6 @@ private:
   void* _self;
 };
 
-} // namespace Outrun
+} // namespace Resident
 
-#endif // OUTRUN_LUA_MODULE_H
+#endif // RESIDENT_LUA_MODULE_H

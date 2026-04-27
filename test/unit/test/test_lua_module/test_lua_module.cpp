@@ -4,12 +4,12 @@ extern "C" {
   #include "lua/lualib.h"
   #include "lua/lauxlib.h"
 }
-#include "OutrunLuaModule.h"
-#include "OutrunExtension.h"
+#include "ResidentLuaModule.h"
+#include "ResidentExtension.h"
 
 namespace {
 
-class Calc : public Outrun::Extension {
+class Calc : public Resident::Extension {
 public:
   const char* name() const override { return "calc"; }
   int value = 0;
@@ -26,7 +26,7 @@ public:
   }
 };
 
-class ConstReader : public Outrun::Extension {
+class ConstReader : public Resident::Extension {
 public:
   const char* name() const override { return "const_reader"; }
   int width() const { return 42; }
@@ -51,7 +51,7 @@ void tearDown(void) {
 void test_method_binds_and_recovers_this(void) {
     Calc calc;
     lua_newtable(L);
-    Outrun::LuaModule m(L, &calc);
+    Resident::LuaModule m(L, &calc);
     m.method<Calc, &Calc::add>("add");
     lua_setglobal(L, "calc");
 
@@ -65,7 +65,7 @@ void test_method_binds_and_recovers_this(void) {
 void test_method_chain(void) {
     Calc calc;
     lua_newtable(L);
-    Outrun::LuaModule(L, &calc)
+    Resident::LuaModule(L, &calc)
       .method<Calc, &Calc::add>("add")
       .method<Calc, &Calc::reset>("reset");
     lua_setglobal(L, "calc");
@@ -82,7 +82,7 @@ void test_static_method(void) {
       return 1;
     };
     lua_newtable(L);
-    Outrun::LuaModule(L, nullptr).staticMethod("answer", fn);
+    Resident::LuaModule(L, nullptr).staticMethod("answer", fn);
     lua_setglobal(L, "m");
 
     int rc = luaL_dostring(L, "return m.answer()");
@@ -93,10 +93,10 @@ void test_static_method(void) {
 
 void test_constants(void) {
     lua_newtable(L);
-    Outrun::LuaModule(L, nullptr)
+    Resident::LuaModule(L, nullptr)
       .constant("ANSWER", 42)
       .constant("PI", 3.14)
-      .constant("NAME", "outrun")
+      .constant("NAME", "resident")
       .constant("ON", true);
     lua_setglobal(L, "k");
 
@@ -104,7 +104,7 @@ void test_constants(void) {
     TEST_ASSERT_EQUAL_INT(0, rc);
     TEST_ASSERT_EQUAL_INT(42,    (int)lua_tointeger(L, -4));
     TEST_ASSERT_EQUAL_FLOAT(3.14, (float)lua_tonumber(L, -3));
-    TEST_ASSERT_EQUAL_STRING("outrun", lua_tostring(L, -2));
+    TEST_ASSERT_EQUAL_STRING("resident", lua_tostring(L, -2));
     TEST_ASSERT_TRUE(lua_toboolean(L, -1));
     lua_pop(L, 4);
 }
@@ -112,7 +112,7 @@ void test_constants(void) {
 void test_method_binds_const_member_fn(void) {
     ConstReader r;
     lua_newtable(L);
-    Outrun::LuaModule(L, &r).method<ConstReader, &ConstReader::luaWidth>("width");
+    Resident::LuaModule(L, &r).method<ConstReader, &ConstReader::luaWidth>("width");
     lua_setglobal(L, "r");
 
     int rc = luaL_dostring(L, "return r.width()");

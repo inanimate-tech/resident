@@ -1,7 +1,7 @@
-// src/OutrunDevice.cpp
-#include "OutrunDevice.h"
+// src/ResidentDevice.cpp
+#include "ResidentDevice.h"
 
-namespace Outrun {
+namespace Resident {
 
 Device* Device::_instance = nullptr;
 
@@ -102,7 +102,7 @@ void Device::onTransportsWillConnect()
   CourierEndpoint wsEp;
   wsEp.path = _wsPath.c_str();
   _courier.setEndpoint("ws", wsEp);
-  Serial.printf("[outrun] WS path: %s\n", _wsPath.c_str());
+  Serial.printf("[resident] WS path: %s\n", _wsPath.c_str());
 }
 
 void Device::onConnected()
@@ -146,12 +146,12 @@ void Device::setup()
   String apName = String(getDeviceType());
   apName[0] = toupper(apName[0]);
   String idSuffix = _deviceId.substring(0, 4);
-  _courier.setAPName((String("Outrun ") + apName + " " + idSuffix).c_str());
+  _courier.setAPName((String("Resident ") + apName + " " + idSuffix).c_str());
 
-  Serial.printf("[outrun] Device: %s (%s)\n", getDeviceType(), _deviceId.c_str());
+  Serial.printf("[resident] Device: %s (%s)\n", getDeviceType(), _deviceId.c_str());
 
   // Forward extension/shader config from DeviceConfig into the internal sandbox.
-  Outrun::SandboxConfig sandboxCfg;
+  Resident::SandboxConfig sandboxCfg;
   sandboxCfg.extensions     = _config.extensions;
   sandboxCfg.shaderTemplate = _config.shaderTemplate;
   _sandbox.configure(sandboxCfg);
@@ -226,4 +226,4 @@ void Device::showStatusText(const char* text)
   _config.statusDisplay->displayText(text);
 }
 
-} // namespace Outrun
+} // namespace Resident

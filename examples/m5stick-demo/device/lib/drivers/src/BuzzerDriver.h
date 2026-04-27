@@ -2,21 +2,21 @@
 #define BUZZER_DRIVER_H
 
 #include <cstdint>
-#include <OutrunDriver.h>
-#include <OutrunLuaModule.h>
+#include <ResidentDriver.h>
+#include <ResidentLuaModule.h>
 
-// Outrun driver for buzzer via M5Unified Speaker API.
+// Resident driver for buzzer via M5Unified Speaker API.
 // Lua API: buzzer.beep(freq_hz, duration_ms)
 //          buzzer.tone(freq_hz)  — continuous until stop
 //          buzzer.stop()
-class BuzzerDriver : public Outrun::Driver {
+class BuzzerDriver : public Resident::Driver {
 public:
   explicit BuzzerDriver(uint8_t volume = 128) : _volume(volume) {}
 
   const char* name() const override { return "buzzer"; }
   void begin() override;
   void onAppReset() override;
-  void registerModule(Outrun::LuaModule& m) override {
+  void registerModule(Resident::LuaModule& m) override {
     m.method<BuzzerDriver, &BuzzerDriver::beep>("beep")
      .method<BuzzerDriver, &BuzzerDriver::tone>("tone")
      .method<BuzzerDriver, &BuzzerDriver::stop>("stop");

@@ -1,13 +1,13 @@
-// src/OutrunSandboxConfig.h
-#ifndef OUTRUN_SANDBOX_CONFIG_H
-#define OUTRUN_SANDBOX_CONFIG_H
+// src/ResidentSandboxConfig.h
+#ifndef RESIDENT_SANDBOX_CONFIG_H
+#define RESIDENT_SANDBOX_CONFIG_H
 
 #include <Arduino.h>
 #include <map>
 #include <functional>
-#include "OutrunExtensions.h"
+#include "ResidentExtensions.h"
 
-namespace Outrun {
+namespace Resident {
 
 using ShaderFields = std::map<String, String>;
 using ShaderTemplateFn = String (*)(const ShaderFields& fields);
@@ -20,6 +20,6 @@ struct SandboxConfig {
   const char* timezone = nullptr;
 };
 
-} // namespace Outrun
+} // namespace Resident
 
-#endif // OUTRUN_SANDBOX_CONFIG_H
+#endif // RESIDENT_SANDBOX_CONFIG_H

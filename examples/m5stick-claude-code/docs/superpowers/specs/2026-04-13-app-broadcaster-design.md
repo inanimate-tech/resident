@@ -94,7 +94,7 @@ Move existing files into `device/` subdirectory:
 - `lib/` -> `device/lib/`
 - `platformio.ini` -> `device/platformio.ini`
 
-The firmware code itself is unchanged. The device will need its WebSocket path updated to `/agents/device-agent/{deviceId}` — but this is configured in the Outrun library's Device class, so the main.cpp may need a host/path update to point at this new server.
+The firmware code itself is unchanged. The device will need its WebSocket path updated to `/agents/device-agent/{deviceId}` — but this is configured in the Resident library's Device class, so the main.cpp may need a host/path update to point at this new server.
 
 ## Example Lua Apps (`device-apps/`)
 

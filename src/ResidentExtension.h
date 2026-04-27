@@ -1,10 +1,10 @@
-// src/OutrunExtension.h
-#ifndef OUTRUN_EXTENSION_H
-#define OUTRUN_EXTENSION_H
+// src/ResidentExtension.h
+#ifndef RESIDENT_EXTENSION_H
+#define RESIDENT_EXTENSION_H
 
 struct lua_State;
 
-namespace Outrun {
+namespace Resident {
 
 class LuaModule;
 class Sandbox;
@@ -36,6 +36,6 @@ private:
   friend class Sandbox;   // reads _begun and event-sink state in later tasks
 };
 
-} // namespace Outrun
+} // namespace Resident
 
-#endif // OUTRUN_EXTENSION_H
+#endif // RESIDENT_EXTENSION_H
