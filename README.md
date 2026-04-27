@@ -40,6 +40,8 @@ void loop()  { device.loop(); }
 
 The device connects to WiFi (with a captive portal for configuration), opens a WebSocket to your server, and accepts Lua apps and shader expressions as JSON messages.
 
+For telemetry callback or timezone, call `sandbox().setTelemetryCallback(...)` / `sandbox().setTimezone(...)` from your `deviceSetup()` override.
+
 ### Standalone `Outrun::Sandbox` (no network)
 
 Use the sandbox directly without any network stack:
@@ -114,6 +116,8 @@ function on_tick(ctx, dt_ms)
 end
 ```
 
+For Lua-only extensions that don't expose hardware or emit events, extend `Outrun::Extension` directly instead of `Outrun::Driver` — the same `registerModule(LuaModule&)` and lifecycle hooks apply.
+
 ### Driver lifecycle
 
 - `begin()` — called once by `Sandbox::initialize()` in registration order.
@@ -171,6 +175,8 @@ Shader messages are converted to Lua via a template function you provide. The ex
 platform = espressif32@6.12.0
 board = esp32-s3-devkitc-1
 framework = arduino
+build_unflags = -std=gnu++11
+build_flags   = -std=gnu++17
 lib_deps =
     https://github.com/inanimate-tech/outrun.git
     https://github.com/inanimate-tech/courier.git
@@ -179,6 +185,8 @@ lib_deps =
     ropg/ezTime@^0.8.3
     fischer-simon/Esp32Lua@^5.4.7
 ```
+
+The `-std=gnu++17` flag is required — Outrun's `LuaModule` builder uses `template<auto>` (a C++17 feature). Arduino-ESP32 defaults to `-std=gnu++11`, hence the unflag/flag pair.
 
 ### ESP-IDF (Arduino as component)
 

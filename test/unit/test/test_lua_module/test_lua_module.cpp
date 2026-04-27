@@ -5,11 +5,13 @@ extern "C" {
   #include "lua/lauxlib.h"
 }
 #include "OutrunLuaModule.h"
+#include "OutrunExtension.h"
 
 namespace {
 
-class Calc {
+class Calc : public Outrun::Extension {
 public:
+  const char* name() const override { return "calc"; }
   int value = 0;
   int add(lua_State* L) {
     int n = (int)luaL_checkinteger(L, 1);
@@ -24,8 +26,9 @@ public:
   }
 };
 
-class ConstReader {
+class ConstReader : public Outrun::Extension {
 public:
+  const char* name() const override { return "const_reader"; }
   int width() const { return 42; }
   int luaWidth(lua_State* L) const {
     lua_pushinteger(L, width());

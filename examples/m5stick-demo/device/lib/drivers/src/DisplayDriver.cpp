@@ -11,6 +11,9 @@ extern "C" {
 #endif
 
 void DisplayDriver::begin() {
+  if (_initialized) return;   // dual-inherit (Driver + StatusDisplay) →
+                              // Device.setup() and Sandbox.initialize()
+                              // both reach us; guard against re-init.
   // setColorDepth must come BEFORE createSprite — the sprite buffer is
   // allocated at whatever depth is set when create is called.
   _canvas.setColorDepth(16);

@@ -6,7 +6,11 @@ extern "C" {
   #include "lua/lua.h"
 }
 
+#include <type_traits>
+
 namespace Outrun {
+
+class Extension;  // forward decl for the Trampoline static_assert
 
 // MemberFnClass<&C::m>::type -> C
 template<class T> struct MemberFnClass;
@@ -28,6 +32,9 @@ struct MemberFnClass<R (C::*)(A...) const> { using type = C; };
 template<auto MemberFn>
 struct Trampoline {
   using ClassT = typename MemberFnClass<decltype(MemberFn)>::type;
+  static_assert(std::is_base_of<Extension, ClassT>::value,
+                "LuaModule::method<> requires the member function's class "
+                "to derive from Outrun::Extension.");
   static int call(lua_State* L) {
     void* ud = lua_touserdata(L, lua_upvalueindex(1));
     ClassT* self = static_cast<ClassT*>(ud);
