@@ -2,6 +2,52 @@
 
 ## v0.3.0-dev (d27cda1)
 
+### Breaking changes
+
+- `Outrun::Driver::installSandboxModule(lua_State*)` removed. Drivers
+  override `registerModule(Outrun::LuaModule&)` instead and use the
+  builder's `method<&Class::fn>`, `staticMethod`, and `constant`
+  overloads. `this` is recovered via Lua upvalue — no more registry-stash
+  + `getFromLua` boilerplate.
+- `Outrun::Module` class removed. Things that were Modules now extend
+  `Outrun::Extension` directly.
+- `Sandbox::addDriver()`, `Sandbox::addModule()`, and
+  `Sandbox::setShaderTemplate()` removed. Drivers and shader template
+  register at config time via `SandboxConfig::extensions` /
+  `DeviceConfig::extensions` and `*::shaderTemplate`.
+  `Sandbox::initialize()` consumes the config.
+- `Sandbox` constructor gains a `(const SandboxConfig&)` overload.
+  `Device::setup()` automatically calls `_sandbox.configure(...)` and
+  `_sandbox.initialize()`. Subclasses no longer need to call
+  `sandbox().initialize()` from `deviceSetup()`.
+- Driver `begin()` and `update()` are now `override`s on the new
+  `Outrun::Extension` base, called automatically by `Sandbox`. Manual
+  calls in user `setup()` / `loop()` should be deleted.
+- `Outrun::StatusDisplay` gains optional `begin()` / `update()` virtuals
+  (default no-op). `Device` now drives them; `Sandbox` does not touch
+  status displays.
+- m5stick-demo example: `platformio.ini` now sets `-std=gnu++17` (Arduino
+  ESP32 framework defaults to gnu++11; the new `LuaModule` builder uses
+  `template<auto>` which requires C++17). Downstream projects must do
+  the same.
+
+### New features
+
+- `Outrun::LuaModule` builder: `method<&Class::fn>(name)`,
+  `staticMethod(name, fn)`, `constant(name, value)` (overloads for `int`,
+  `double`, `const char*`, `bool`). `this` recovered via Lua upvalue —
+  no more registry-stash + `getFromLua` boilerplate. Const member
+  functions supported.
+- `Outrun::Extension` base class: shared lifecycle (`begin()`, `update()`,
+  `onAppReset()`, `registerModule()`) for driver and pure-Lua extensions.
+- `Outrun::Driver` extends `Outrun::Extension`; adds `onAppRunning(bool)`
+  and the event-sink machinery. Inheritance ordering rule: when also
+  inheriting `Outrun::StatusDisplay`, declare `Driver` first to satisfy
+  the `LuaModule` upvalue cast invariant.
+- `Outrun::Extensions` declarative wrapper: `cfg.extensions = {&a, &b}`
+  works in vanilla C++11 with no compiler-flag changes (uses an
+  initializer_list ctor that copies into a fixed-size inline array).
+
 ### Internal
 
 - Added `tools/run-tests.py` (uv inline-script) with `static-analysis`,
@@ -21,6 +67,19 @@
   `symlink://lib/drivers` line to keep `M5StickDrivers` discoverable
   (PlatformIO suppresses the project's own `lib/` scan when a parent
   symlink contains the project). No functional change for local devs.
+- Driver discrimination uses a virtual `Extension::asDriver()` rather
+  than `dynamic_cast<Driver*>` — Arduino ESP32 builds with `-fno-rtti`.
+- Native unit-test environment now links Lua so `LuaModule`, `Extension`,
+  and `Extensions` have direct unit-test coverage. Adds Arduino/Print
+  stubs under `test/unit/include/` so Esp32Lua's C++ wrapper compiles
+  natively.
+- `OutrunSandbox::loop()` now drives extension `update()` at full
+  main-loop rate even when no app is running (so button drivers keep
+  debouncing between apps); Lua `on_tick` and event dispatch remain
+  gated on `_appRunning`.
+- `OutrunSandbox::initialize()` wires extension event sinks before
+  calling `begin()`, so a driver's `begin()` can safely call `sendEvent`
+  (e.g. reporting initial sensor state).
 
 ---
 
