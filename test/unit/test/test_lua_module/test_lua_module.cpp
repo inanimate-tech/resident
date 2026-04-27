@@ -52,7 +52,7 @@ void test_method_binds_and_recovers_this(void) {
     Calc calc;
     lua_newtable(L);
     Outrun::LuaModule m(L, &calc);
-    m.method<&Calc::add>("add");
+    m.method<Calc, &Calc::add>("add");
     lua_setglobal(L, "calc");
 
     int rc = luaL_dostring(L, "return calc.add(7)");
@@ -66,8 +66,8 @@ void test_method_chain(void) {
     Calc calc;
     lua_newtable(L);
     Outrun::LuaModule(L, &calc)
-      .method<&Calc::add>("add")
-      .method<&Calc::reset>("reset");
+      .method<Calc, &Calc::add>("add")
+      .method<Calc, &Calc::reset>("reset");
     lua_setglobal(L, "calc");
 
     int rc = luaL_dostring(L, "calc.add(3); calc.add(4); calc.reset(); return calc.add(1)");
@@ -112,7 +112,7 @@ void test_constants(void) {
 void test_method_binds_const_member_fn(void) {
     ConstReader r;
     lua_newtable(L);
-    Outrun::LuaModule(L, &r).method<&ConstReader::luaWidth>("width");
+    Outrun::LuaModule(L, &r).method<ConstReader, &ConstReader::luaWidth>("width");
     lua_setglobal(L, "r");
 
     int rc = luaL_dostring(L, "return r.width()");

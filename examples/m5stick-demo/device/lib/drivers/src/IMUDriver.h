@@ -12,9 +12,9 @@ class IMUDriver : public Outrun::Driver {
 public:
   const char* name() const override { return "imu"; }
   void registerModule(Outrun::LuaModule& m) override {
-    m.method<&IMUDriver::accel>("accel")
-     .method<&IMUDriver::gyro>("gyro")
-     .method<&IMUDriver::temp>("temp");
+    m.method<IMUDriver, &IMUDriver::accel>("accel")
+     .method<IMUDriver, &IMUDriver::gyro>("gyro")
+     .method<IMUDriver, &IMUDriver::temp>("temp");
   }
 
   int accel(lua_State* L);

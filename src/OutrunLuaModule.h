@@ -12,13 +12,6 @@ namespace Outrun {
 
 class Extension;  // forward decl for the Trampoline static_assert
 
-// MemberFnClass<&C::m>::type -> C
-template<class T> struct MemberFnClass;
-template<class C, class R, class... A>
-struct MemberFnClass<R (C::*)(A...)> { using type = C; };
-template<class C, class R, class... A>
-struct MemberFnClass<R (C::*)(A...) const> { using type = C; };
-
 // Trampoline: read this from upvalue 1, call member fn with lua_State*.
 //
 // The void* upvalue is the Extension* registered with Sandbox. Casting
@@ -29,16 +22,26 @@ struct MemberFnClass<R (C::*)(A...) const> { using type = C; };
 //
 //   class Foo : public Outrun::Driver, public Outrun::StatusDisplay  // OK
 //   class Foo : public Outrun::StatusDisplay, public Outrun::Driver  // BROKEN
-template<auto MemberFn>
+template<class C, int (C::*F)(lua_State*)>
 struct Trampoline {
-  using ClassT = typename MemberFnClass<decltype(MemberFn)>::type;
-  static_assert(std::is_base_of<Extension, ClassT>::value,
+  static_assert(std::is_base_of<Extension, C>::value,
                 "LuaModule::method<> requires the member function's class "
                 "to derive from Outrun::Extension.");
   static int call(lua_State* L) {
     void* ud = lua_touserdata(L, lua_upvalueindex(1));
-    ClassT* self = static_cast<ClassT*>(ud);
-    return (self->*MemberFn)(L);
+    return (static_cast<C*>(ud)->*F)(L);
+  }
+};
+
+// Const-member-fn overload (e.g. read-only display dimension accessors).
+template<class C, int (C::*F)(lua_State*) const>
+struct TrampolineConst {
+  static_assert(std::is_base_of<Extension, C>::value,
+                "LuaModule::method<> requires the member function's class "
+                "to derive from Outrun::Extension.");
+  static int call(lua_State* L) {
+    void* ud = lua_touserdata(L, lua_upvalueindex(1));
+    return (static_cast<const C*>(ud)->*F)(L);
   }
 };
 
@@ -49,10 +52,18 @@ class LuaModule {
 public:
   LuaModule(lua_State* L, void* self) : _lua(L), _self(self) {}
 
-  template<auto MemberFn>
+  template<class C, int (C::*F)(lua_State*)>
   LuaModule& method(const char* name) {
     lua_pushlightuserdata(_lua, _self);
-    lua_pushcclosure(_lua, &Trampoline<MemberFn>::call, 1);
+    lua_pushcclosure(_lua, &Trampoline<C, F>::call, 1);
+    lua_setfield(_lua, -2, name);
+    return *this;
+  }
+
+  template<class C, int (C::*F)(lua_State*) const>
+  LuaModule& method(const char* name) {
+    lua_pushlightuserdata(_lua, _self);
+    lua_pushcclosure(_lua, &TrampolineConst<C, F>::call, 1);
     lua_setfield(_lua, -2, name);
     return *this;
   }

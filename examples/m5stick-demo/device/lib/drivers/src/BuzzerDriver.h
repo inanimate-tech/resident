@@ -17,9 +17,9 @@ public:
   void begin() override;
   void onAppReset() override;
   void registerModule(Outrun::LuaModule& m) override {
-    m.method<&BuzzerDriver::beep>("beep")
-     .method<&BuzzerDriver::tone>("tone")
-     .method<&BuzzerDriver::stop>("stop");
+    m.method<BuzzerDriver, &BuzzerDriver::beep>("beep")
+     .method<BuzzerDriver, &BuzzerDriver::tone>("tone")
+     .method<BuzzerDriver, &BuzzerDriver::stop>("stop");
   }
 
   int beep(lua_State* L);

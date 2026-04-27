@@ -26,18 +26,15 @@
 - `Outrun::StatusDisplay` gains optional `begin()` / `update()` virtuals
   (default no-op). `Device` now drives them; `Sandbox` does not touch
   status displays.
-- m5stick-demo example: `platformio.ini` now sets `-std=gnu++17` (Arduino
-  ESP32 framework defaults to gnu++11; the new `LuaModule` builder uses
-  `template<auto>` which requires C++17). Downstream projects must do
-  the same.
 
 ### New features
 
-- `Outrun::LuaModule` builder: `method<&Class::fn>(name)`,
+- `Outrun::LuaModule` builder: `method<Class, &Class::fn>(name)`,
   `staticMethod(name, fn)`, `constant(name, value)` (overloads for `int`,
   `double`, `const char*`, `bool`). `this` recovered via Lua upvalue —
   no more registry-stash + `getFromLua` boilerplate. Const member
-  functions supported.
+  functions supported. C++14-compatible — no compiler-flag changes needed
+  in downstream `platformio.ini`.
 - `Outrun::Extension` base class: shared lifecycle (`begin()`, `update()`,
   `onAppReset()`, `registerModule()`) for driver and pure-Lua extensions.
 - `Outrun::Driver` extends `Outrun::Extension`; adds `onAppRunning(bool)`

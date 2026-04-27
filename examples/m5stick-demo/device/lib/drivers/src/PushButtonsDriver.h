@@ -19,7 +19,7 @@ public:
   void update() override;
   void onAppReset() override;
   void registerModule(Outrun::LuaModule& m) override {
-    m.method<&PushButtonsDriver::pressCount>("press_count");
+    m.method<PushButtonsDriver, &PushButtonsDriver::pressCount>("press_count");
   }
 
   int pressCount(lua_State* L);

@@ -15,20 +15,20 @@ public:
   const char* name() const override { return "screen"; }
 
   void registerModule(Outrun::LuaModule& m) override {
-    m.method<&DisplayDriver::clear>("clear")
-     .method<&DisplayDriver::text>("text")
-     .method<&DisplayDriver::fillRect>("fill_rect")
-     .method<&DisplayDriver::rect>("rect")
-     .method<&DisplayDriver::line>("line")
-     .method<&DisplayDriver::triangle>("triangle")
-     .method<&DisplayDriver::fillTriangle>("fill_triangle")
-     .method<&DisplayDriver::pixel>("pixel")
-     .method<&DisplayDriver::flip>("flip")
-     .method<&DisplayDriver::setBrightness>("set_brightness")
-     .method<&DisplayDriver::width>("width")
-     .method<&DisplayDriver::height>("height");
+    m.method<DisplayDriver, &DisplayDriver::clear>("clear")
+     .method<DisplayDriver, &DisplayDriver::text>("text")
+     .method<DisplayDriver, &DisplayDriver::fillRect>("fill_rect")
+     .method<DisplayDriver, &DisplayDriver::rect>("rect")
+     .method<DisplayDriver, &DisplayDriver::line>("line")
+     .method<DisplayDriver, &DisplayDriver::triangle>("triangle")
+     .method<DisplayDriver, &DisplayDriver::fillTriangle>("fill_triangle")
+     .method<DisplayDriver, &DisplayDriver::pixel>("pixel")
+     .method<DisplayDriver, &DisplayDriver::flip>("flip")
+     .method<DisplayDriver, &DisplayDriver::setBrightness>("set_brightness")
+     .method<DisplayDriver, &DisplayDriver::width>("width")
+     .method<DisplayDriver, &DisplayDriver::height>("height");
 #ifdef HAS_QRCODE
-    m.method<&DisplayDriver::qr>("qr");
+    m.method<DisplayDriver, &DisplayDriver::qr>("qr");
 #endif
   }
 

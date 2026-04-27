@@ -93,7 +93,7 @@ class IMUDriver : public Outrun::Driver {
 public:
     const char* name() const override { return "imu"; }
     void registerModule(Outrun::LuaModule& m) override {
-        m.method<&IMUDriver::accel>("accel");
+        m.method<IMUDriver, &IMUDriver::accel>("accel");
     }
 
     int accel(lua_State* L) {
@@ -175,8 +175,6 @@ Shader messages are converted to Lua via a template function you provide. The ex
 platform = espressif32@6.12.0
 board = esp32-s3-devkitc-1
 framework = arduino
-build_unflags = -std=gnu++11
-build_flags   = -std=gnu++17
 lib_deps =
     https://github.com/inanimate-tech/outrun.git
     https://github.com/inanimate-tech/courier.git
@@ -185,8 +183,6 @@ lib_deps =
     ropg/ezTime@^0.8.3
     fischer-simon/Esp32Lua@^5.4.7
 ```
-
-The `-std=gnu++17` flag is required — Outrun's `LuaModule` builder uses `template<auto>` (a C++17 feature). Arduino-ESP32 defaults to `-std=gnu++11`, hence the unflag/flag pair.
 
 ### ESP-IDF (Arduino as component)
 
