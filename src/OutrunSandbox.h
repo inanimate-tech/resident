@@ -18,8 +18,9 @@ public:
     explicit Sandbox(const SandboxConfig& config);
     ~Sandbox();
 
-    // Configuration after construction (rarely needed; prefer the
-    // constructor overload). Must be called before initialize().
+    // Full replacement of the stored config — not additive. Device::setup()
+    // calls this automatically with the DeviceConfig forward; downstream
+    // subclasses normally don't need to call it directly.
     void configure(const SandboxConfig& config);
 
     void setTelemetryCallback(TelemetryCallback cb) { _telemetryCb = cb; }

@@ -159,7 +159,15 @@ void Device::setup()
   // Status display gets its own lifecycle from Device.
   if (_config.statusDisplay) _config.statusDisplay->begin();
 
+  // Subclass hook — last chance to set telemetry/timezone or add custom setup
+  // before the sandbox initializes its Lua state and walks extensions.
   deviceSetup();
+
+  // Initialize the sandbox now that all configuration is in place. This is
+  // what was previously done manually inside subclass deviceSetup(); after
+  // the driver-DX rework, Device handles it.
+  _sandbox.initialize();
+
   _courier.setup();
 }
 
