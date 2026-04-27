@@ -9,6 +9,7 @@
 namespace Outrun {
 
 struct Extensions {
+  // MAX must stay below 256 because count is uint8_t.
   static constexpr int MAX = 8;
   Extension* items[MAX] = {};
   uint8_t count = 0;
