@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
+#include <cstdarg>
 #include <cassert>
 #include <string>
 
@@ -14,7 +15,8 @@ static constexpr int OUTPUT      = 0x03;
 static constexpr int INPUT       = 0x01;
 static constexpr int INPUT_PULLUP = 0x05;
 
-// Stub timing
+// Stub timing — returns 0 by design; tests needing real elapsed time should
+// use the raw C clock API directly or inject a clock abstraction instead.
 inline unsigned long millis() { return 0; }
 
 // Stub GPIO
@@ -28,8 +30,13 @@ inline uint32_t esp_random()            { return 0; }
 struct Print {
     virtual void write(const char* s) { fputs(s, stdout); }
     virtual void println(const char* s = "") { puts(s); }
-    virtual void printf(const char* fmt, ...) {}
+    virtual void printf(const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(stderr, fmt, args);
+        va_end(args);
+    }
 };
 
-// Serial stub
-static struct Print Serial;
+// Serial stub — inline (C++17) so all TUs share one Print sink.
+inline Print Serial;
