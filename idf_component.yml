@@ -1,3 +1,17 @@
 version: "0.3.0-dev"
 description: "Sandbox with hardware IO and hot reload for ESP32 devices"
 url: "https://github.com/inanimate-tech/outrun"
+
+dependencies:
+  idf:
+    version: ">=5.0.0"
+  espressif/arduino-esp32:
+    version: "^3.0.0"
+  inanimate/courier:
+    version: ">=0.3.2"
+  bblanchon/arduinojson:
+    version: "^7.0.0"
+  # Esp32Lua is not on the ESP component registry. Consumers must provide it
+  # as a local component named `Esp32Lua` (e.g. via a fetch script that clones
+  # https://github.com/Fischer-Simon/Esp32Lua and writes a CMakeLists.txt).
+  # See examples/espidf-basic/tools/fetch-deps.sh for the canonical pattern.

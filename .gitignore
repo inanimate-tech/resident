@@ -20,3 +20,6 @@ __pycache__/
 
 # Git worktrees (created by superpowers' using-git-worktrees skill)
 .worktrees/
+
+# clangd LSP index (per-project)
+.cache/

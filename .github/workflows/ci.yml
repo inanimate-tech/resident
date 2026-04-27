@@ -44,3 +44,16 @@ jobs:
         run: pip install uv platformio
       - name: Build PlatformIO m5stick-demo
         run: ./tools/run-tests.py build
+
+  build-espidf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch Esp32Lua (not on ESP component registry)
+        run: ./examples/espidf-basic/tools/fetch-deps.sh
+      - name: Build espidf-basic example
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.3
+          target: esp32
+          path: examples/espidf-basic
