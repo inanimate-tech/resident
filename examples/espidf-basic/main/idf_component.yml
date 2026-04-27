@@ -1,0 +1,25 @@
+dependencies:
+  idf:
+    version: ">=5.0.0"
+
+  # Outrun itself — built from the in-tree source so the example is also
+  # build verification for the library. Consumers copying this example
+  # should change this to a pinned registry version once outrun publishes.
+  outrun:
+    path: ../../..
+
+  # Registry deps — these are what real consumers depend on.
+  espressif/arduino-esp32:
+    version: "^3.0.0"
+
+  # Courier 0.3.2+ properly declares its transitive deps; earlier versions
+  # require consumers to provide ezTime/ArduinoJson/WiFiManager out of band.
+  inanimate/courier:
+    version: ">=0.3.2"
+
+  bblanchon/arduinojson:
+    version: "^7.0.0"
+
+  # Esp32Lua is not on the ESP component registry. It's fetched and shimmed
+  # into examples/espidf-basic/components/Esp32Lua/ by tools/fetch-deps.sh.
+  # Run that script BEFORE `idf.py build`.
