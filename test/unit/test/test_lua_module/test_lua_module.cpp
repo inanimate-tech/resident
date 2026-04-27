@@ -24,6 +24,15 @@ public:
   }
 };
 
+class ConstReader {
+public:
+  int width() const { return 42; }
+  int luaWidth(lua_State* L) const {
+    lua_pushinteger(L, width());
+    return 1;
+  }
+};
+
 }
 
 static lua_State* L = nullptr;
@@ -97,10 +106,23 @@ void test_constants(void) {
     lua_pop(L, 4);
 }
 
+void test_method_binds_const_member_fn(void) {
+    ConstReader r;
+    lua_newtable(L);
+    Outrun::LuaModule(L, &r).method<&ConstReader::luaWidth>("width");
+    lua_setglobal(L, "r");
+
+    int rc = luaL_dostring(L, "return r.width()");
+    TEST_ASSERT_EQUAL_INT(0, rc);
+    TEST_ASSERT_EQUAL_INT(42, (int)lua_tointeger(L, -1));
+    lua_pop(L, 1);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_method_binds_and_recovers_this);
     RUN_TEST(test_method_chain);
+    RUN_TEST(test_method_binds_const_member_fn);
     RUN_TEST(test_static_method);
     RUN_TEST(test_constants);
     return UNITY_END();

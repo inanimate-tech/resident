@@ -4,7 +4,6 @@
 
 extern "C" {
   #include "lua/lua.h"
-  #include "lua/lauxlib.h"
 }
 
 namespace Outrun {
@@ -13,8 +12,19 @@ namespace Outrun {
 template<class T> struct MemberFnClass;
 template<class C, class R, class... A>
 struct MemberFnClass<R (C::*)(A...)> { using type = C; };
+template<class C, class R, class... A>
+struct MemberFnClass<R (C::*)(A...) const> { using type = C; };
 
 // Trampoline: read this from upvalue 1, call member fn with lua_State*.
+//
+// The void* upvalue is the Extension* registered with Sandbox. Casting
+// void* -> ClassT* is correct only when Extension is the leftmost base of
+// ClassT, so the addresses are numerically equal. This is the case for
+// every single-inheritance driver. For dual-inheritance drivers (e.g. one
+// that is also an Outrun::StatusDisplay), declare Driver first:
+//
+//   class Foo : public Outrun::Driver, public Outrun::StatusDisplay  // OK
+//   class Foo : public Outrun::StatusDisplay, public Outrun::Driver  // BROKEN
 template<auto MemberFn>
 struct Trampoline {
   using ClassT = typename MemberFnClass<decltype(MemberFn)>::type;
