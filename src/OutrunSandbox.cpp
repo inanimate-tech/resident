@@ -129,14 +129,14 @@ void Sandbox::initialize()
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
     Extension* ext = _config.extensions.items[i];
     Serial.printf("  Initializing extension: %s\n", ext->name());
-    Extension::beginExtension(*ext);
 
-    // If this Extension is a Driver, hook its event sink so sendEvent()
-    // calls land in our queue.
+    // Wire event sink first so a Driver's begin() can safely sendEvent().
     Driver* driver = dynamic_cast<Driver*>(ext);
     if (driver) {
       driver->setEventSink(driverEventHandler, this);
     }
+
+    Extension::beginExtension(*ext);
 
     // Register Lua module: push fresh table, let extension populate it,
     // setglobal under the extension's name.
@@ -200,13 +200,17 @@ void Sandbox::setupLuaEnvironment()
 }
 
 void Sandbox::loop() {
-  if (!_lua || !_appRunning) return;
+  if (!_lua) return;
 
-  // Drive every registered extension's update() at full main-loop rate.
-  // (Lua's on_tick stays gated to 10 FPS via TICK_INTERVAL below.)
+  // Drive every registered extension's update() at full main-loop rate
+  // — independent of whether an app is loaded. Drivers like button
+  // pollers depend on continuous polling for debounce and latency.
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
     _config.extensions.items[i]->update();
   }
+
+  // Lua tick + event dispatch only when an app is running.
+  if (!_appRunning) return;
 
   unsigned long now = millis();
   unsigned long elapsed = now - _lastTickTime;
@@ -290,11 +294,6 @@ bool Sandbox::compileApp(const char* code)
   // Reset runtime error rate limiter
   _runtimeErrorCount = 0;
   _lastRuntimeErrorMillis = 0;
-
-  // Reset extensions
-  for (uint8_t i = 0; i < _config.extensions.count; i++) {
-    _config.extensions.items[i]->onAppReset();
-  }
 
   // Clear old global functions
   lua_pushnil(_lua);
