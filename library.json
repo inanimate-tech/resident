@@ -1,6 +1,6 @@
 {
   "name": "outrun",
-  "version": "0.2.0-dev",
+  "version": "0.3.0-dev",
   "description": "Sandbox with hardware IO and hot reload for ESP32 devices",
   "keywords": "esp32, sandbox, iot, hot-reload",
   "repository": {
