@@ -2,20 +2,24 @@
 #define IMU_DRIVER_H
 
 #include <OutrunDriver.h>
+#include <OutrunLuaModule.h>
 
 // Outrun driver wrapping M5Unified's IMU (MPU6886) for Lua access.
-// Lua API: imu.accel() -> ax,ay,az (g-force)
-//          imu.gyro()  -> gx,gy,gz (degrees/sec)
-//          imu.temp()  -> celsius
+// Lua API: imu.accel() -> ax,ay,az (g-force, body frame)
+//          imu.gyro()  -> gx,gy,gz (degrees/sec, body frame)
+//          imu.temp()  -> not supported, returns 0
 class IMUDriver : public Outrun::Driver {
 public:
   const char* name() const override { return "imu"; }
-  void installSandboxModule(lua_State* L) override;
+  void registerModule(Outrun::LuaModule& m) override {
+    m.method<&IMUDriver::accel>("accel")
+     .method<&IMUDriver::gyro>("gyro")
+     .method<&IMUDriver::temp>("temp");
+  }
 
-private:
-  static int lua_imu_accel(lua_State* L);
-  static int lua_imu_gyro(lua_State* L);
-  static int lua_imu_temp(lua_State* L);
+  int accel(lua_State* L);
+  int gyro(lua_State* L);
+  int temp(lua_State* L);
 };
 
 #endif // IMU_DRIVER_H
