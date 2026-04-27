@@ -2,7 +2,7 @@
 #ifndef OUTRUN_DRIVER_H
 #define OUTRUN_DRIVER_H
 
-struct lua_State;
+#include "OutrunExtension.h"
 
 namespace Outrun {
 
@@ -15,13 +15,12 @@ struct EventField {
   };
 };
 
-class Driver {
+class Driver : public Extension {
 public:
-  virtual const char* name() const = 0;
-  virtual void installSandboxModule(lua_State* L) = 0;
-  virtual void onAppReset() {}
-  virtual void onAppRunning(bool running) {}
-  virtual ~Driver() = default;
+  // Most lifecycle (name, registerModule, begin, update, onAppReset) is
+  // inherited from Extension. Driver adds the hardware-state hook and
+  // the event-sink machinery.
+  virtual void onAppRunning(bool running) { (void)running; }
 
 protected:
   void sendEvent(const char* name, const EventField* fields, int fieldCount) {
@@ -32,7 +31,7 @@ protected:
 
 private:
   using EventSinkFn = void(*)(void* ctx, const char* name,
-                               const EventField* fields, int fieldCount);
+                              const EventField* fields, int fieldCount);
   EventSinkFn _eventSinkFn = nullptr;
   void* _eventSinkCtx = nullptr;
 
