@@ -1,14 +1,11 @@
 #include "PushButtonsDriver.h"
 #include <Arduino.h>
 
-#if __has_include("lua/lua.h")
-#define PUSH_BUTTONS_HAS_LUA 1
 extern "C" {
   #include "lua/lua.h"
   #include "lua/lualib.h"
   #include "lua/lauxlib.h"
 }
-#endif
 
 PushButtonsDriver::PushButtonsDriver(const PushButtonsConfig& config)
   : _config(config)
@@ -112,44 +109,8 @@ uint16_t PushButtonsDriver::getTotalPressCount() const
   return total;
 }
 
-#ifdef PUSH_BUTTONS_HAS_LUA
-
-void PushButtonsDriver::installSandboxModule(lua_State* L)
+int PushButtonsDriver::pressCount(lua_State* L)
 {
-  lua_pushlightuserdata(L, this);
-  lua_setfield(L, LUA_REGISTRYINDEX, "PushButtonsDriver_instance");
-
-  lua_newtable(L);
-  lua_pushcfunction(L, lua_button_press_count);
-  lua_setfield(L, -2, "press_count");
-  lua_setglobal(L, "button");
-}
-
-PushButtonsDriver* PushButtonsDriver::getFromLua(lua_State* L, const char* fn)
-{
-  lua_getfield(L, LUA_REGISTRYINDEX, "PushButtonsDriver_instance");
-  PushButtonsDriver* driver = (PushButtonsDriver*)lua_touserdata(L, -1);
-  lua_pop(L, 1);
-
-  if (!driver) {
-    luaL_error(L, "%s: button driver not available", fn);
-    return nullptr;
-  }
-
-  return driver;
-}
-
-int PushButtonsDriver::lua_button_press_count(lua_State* L)
-{
-  PushButtonsDriver* d = getFromLua(L, "button.press_count");
-  if (!d) return 0;
-
-  lua_pushinteger(L, d->getTotalPressCount());
+  lua_pushinteger(L, getTotalPressCount());
   return 1;
 }
-
-#else
-
-void PushButtonsDriver::installSandboxModule(lua_State*) {}
-
-#endif

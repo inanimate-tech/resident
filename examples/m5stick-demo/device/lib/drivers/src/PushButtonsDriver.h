@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <OutrunDriver.h>
+#include <OutrunLuaModule.h>
 
 struct PushButtonsConfig {
   uint8_t numButtons;
@@ -13,12 +14,15 @@ class PushButtonsDriver : public Outrun::Driver {
 public:
   explicit PushButtonsDriver(const PushButtonsConfig& config);
 
-  void begin();
-  void update();
-
   const char* name() const override { return "button"; }
-  void installSandboxModule(lua_State* L) override;
+  void begin() override;
+  void update() override;
   void onAppReset() override;
+  void registerModule(Outrun::LuaModule& m) override {
+    m.method<&PushButtonsDriver::pressCount>("press_count");
+  }
+
+  int pressCount(lua_State* L);
 
   uint16_t getTotalPressCount() const;
 
@@ -48,9 +52,6 @@ private:
     unsigned long thresholdMs = 500;
   };
   LongPressConfig _longPress[MAX_BUTTONS];
-
-  static PushButtonsDriver* getFromLua(lua_State* L, const char* fn);
-  static int lua_button_press_count(lua_State* L);
 };
 
 #endif // PUSH_BUTTONS_DRIVER_H
