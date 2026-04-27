@@ -30,6 +30,8 @@ protected:
   }
 
 private:
+  // Plain fn pointer (not std::function) — keeps Driver allocation-free
+  // for embedded targets; Sandbox provides the ctx for closure-like data.
   using EventSinkFn = void(*)(void* ctx, const char* name,
                               const EventField* fields, int fieldCount);
   EventSinkFn _eventSinkFn = nullptr;
