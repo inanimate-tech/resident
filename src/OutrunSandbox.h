@@ -7,23 +7,21 @@
 #include <map>
 #include <functional>
 #include "OutrunDriver.h"
+#include "OutrunLuaModule.h"
 #include "OutrunSandboxConfig.h"
 
 namespace Outrun {
 
-// Transitional: Module is forward-declared only; _modules[] and addModule()
-// are removed when Sandbox switches to SandboxConfig (next refactor step).
-class Module;
-
 class Sandbox {
 public:
     Sandbox();
+    explicit Sandbox(const SandboxConfig& config);
     ~Sandbox();
 
-    // Configuration (call before initialize)
-    void addDriver(Driver* driver);
-    void addModule(Module* module);
-    void setShaderTemplate(ShaderTemplateFn fn);
+    // Configuration after construction (rarely needed; prefer the
+    // constructor overload). Must be called before initialize().
+    void configure(const SandboxConfig& config);
+
     void setTelemetryCallback(TelemetryCallback cb) { _telemetryCb = cb; }
 
     // Current generation ID (from last app/shader message)
@@ -68,17 +66,8 @@ private:
     Timezone _tz;
     bool _hasTimezone = false;
 
-    // Drivers and modules
-    static constexpr int MAX_DRIVERS = 8;
-    Driver* _drivers[MAX_DRIVERS] = {};
-    int _driverCount = 0;
-
-    static constexpr int MAX_MODULES = 8;
-    Module* _modules[MAX_MODULES] = {};
-    int _moduleCount = 0;
-
-    // Shader template
-    ShaderTemplateFn _shaderTemplate = nullptr;
+    // Configuration
+    SandboxConfig _config;
 
     // Telemetry
     TelemetryCallback _telemetryCb;

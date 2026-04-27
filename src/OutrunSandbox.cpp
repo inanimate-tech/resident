@@ -32,9 +32,18 @@ namespace Outrun {
 // Registry key for accessing the sandbox instance from Lua C functions
 static const char* REGISTRY_KEY = "OutrunSandbox_instance";
 
-Sandbox::Sandbox()
-{
+Sandbox::Sandbox() {
   memset(_events, 0, sizeof(_events));
+}
+
+Sandbox::Sandbox(const SandboxConfig& config) : Sandbox() {
+  configure(config);
+}
+
+void Sandbox::configure(const SandboxConfig& config) {
+  _config = config;
+  if (_config.telemetry) _telemetryCb = _config.telemetry;
+  if (_config.timezone)  setTimezone(_config.timezone);
 }
 
 Sandbox::~Sandbox()
@@ -86,25 +95,6 @@ int Sandbox::luaGlobalIntForTest(const char* name)
   return result;
 }
 
-void Sandbox::addDriver(Driver* driver)
-{
-  if (_driverCount < MAX_DRIVERS && driver != nullptr) {
-    _drivers[_driverCount++] = driver;
-    driver->setEventSink(driverEventHandler, this);
-  }
-}
-
-void Sandbox::addModule(Module* module)
-{
-  if (_moduleCount < MAX_MODULES && module != nullptr) {
-    _modules[_moduleCount++] = module;
-  }
-}
-
-void Sandbox::setShaderTemplate(ShaderTemplateFn fn)
-{
-  _shaderTemplate = fn;
-}
 
 void Sandbox::initialize()
 {
@@ -134,16 +124,26 @@ void Sandbox::initialize()
 
   setupLuaEnvironment();
 
-  // Install driver modules
-  for (int i = 0; i < _driverCount; i++) {
-    Serial.printf("  Installing driver: %s\n", _drivers[i]->name());
-    _drivers[i]->installSandboxModule(_lua);
-  }
+  // Walk extensions in registration order: begin (idempotent), wire
+  // event sink if Driver, build Lua module table.
+  for (uint8_t i = 0; i < _config.extensions.count; i++) {
+    Extension* ext = _config.extensions.items[i];
+    Serial.printf("  Initializing extension: %s\n", ext->name());
+    Extension::beginExtension(*ext);
 
-  // Install modules
-  for (int i = 0; i < _moduleCount; i++) {
-    Serial.printf("  Installing module: %s\n", _modules[i]->name());
-    _modules[i]->installSandboxModule(_lua);
+    // If this Extension is a Driver, hook its event sink so sendEvent()
+    // calls land in our queue.
+    Driver* driver = dynamic_cast<Driver*>(ext);
+    if (driver) {
+      driver->setEventSink(driverEventHandler, this);
+    }
+
+    // Register Lua module: push fresh table, let extension populate it,
+    // setglobal under the extension's name.
+    lua_newtable(_lua);
+    LuaModule m(_lua, ext);
+    ext->registerModule(m);
+    lua_setglobal(_lua, ext->name());
   }
 
   _triggerResetTime = millis();
@@ -199,13 +199,17 @@ void Sandbox::setupLuaEnvironment()
   lua_setglobal(_lua, "time");
 }
 
-void Sandbox::loop()
-{
+void Sandbox::loop() {
   if (!_lua || !_appRunning) return;
+
+  // Drive every registered extension's update() at full main-loop rate.
+  // (Lua's on_tick stays gated to 10 FPS via TICK_INTERVAL below.)
+  for (uint8_t i = 0; i < _config.extensions.count; i++) {
+    _config.extensions.items[i]->update();
+  }
 
   unsigned long now = millis();
   unsigned long elapsed = now - _lastTickTime;
-
   if (elapsed >= TICK_INTERVAL) {
     callOnTick(elapsed);
     _lastTickTime = now;
@@ -222,12 +226,9 @@ void Sandbox::loadApp(const char* luaCode)
     notifyAppRunning(false);
   }
 
-  // Reset drivers
-  for (int i = 0; i < _driverCount; i++) {
-    _drivers[i]->onAppReset();
-  }
-  for (int i = 0; i < _moduleCount; i++) {
-    _modules[i]->onAppReset();
+  // Reset extensions
+  for (uint8_t i = 0; i < _config.extensions.count; i++) {
+    _config.extensions.items[i]->onAppReset();
   }
 
   // Generate new generation ID
@@ -242,19 +243,16 @@ void Sandbox::loadApp(const char* luaCode)
   }
 }
 
-void Sandbox::loadShader(const ShaderFields& fields)
-{
-  if (!_shaderTemplate) {
+void Sandbox::loadShader(const ShaderFields& fields) {
+  if (!_config.shaderTemplate) {
     Serial.println("[sandbox] No shader template set");
     return;
   }
-
-  String luaCode = _shaderTemplate(fields);
+  String luaCode = _config.shaderTemplate(fields);
   if (luaCode.isEmpty()) {
     Serial.println("[sandbox] Shader template returned empty code");
     return;
   }
-
   loadApp(luaCode.c_str());
 }
 
@@ -293,12 +291,9 @@ bool Sandbox::compileApp(const char* code)
   _runtimeErrorCount = 0;
   _lastRuntimeErrorMillis = 0;
 
-  // Notify drivers and modules of app reset
-  for (int i = 0; i < _driverCount; i++) {
-    _drivers[i]->onAppReset();
-  }
-  for (int i = 0; i < _moduleCount; i++) {
-    _modules[i]->onAppReset();
+  // Reset extensions
+  for (uint8_t i = 0; i < _config.extensions.count; i++) {
+    _config.extensions.items[i]->onAppReset();
   }
 
   // Clear old global functions
@@ -660,10 +655,10 @@ void Sandbox::driverEventHandler(void* ctx, const char* name,
   self->_eventHead = nextHead;
 }
 
-void Sandbox::notifyAppRunning(bool running)
-{
-  for (int i = 0; i < _driverCount; i++) {
-    _drivers[i]->onAppRunning(running);
+void Sandbox::notifyAppRunning(bool running) {
+  for (uint8_t i = 0; i < _config.extensions.count; i++) {
+    Driver* driver = dynamic_cast<Driver*>(_config.extensions.items[i]);
+    if (driver) driver->onAppRunning(running);
   }
 }
 
