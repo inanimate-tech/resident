@@ -4,96 +4,78 @@
 
 ### Breaking changes
 
-- `Outrun::Driver::installSandboxModule(lua_State*)` removed. Drivers
-  override `registerModule(Outrun::LuaModule&)` instead and use the
-  builder's `method<&Class::fn>`, `staticMethod`, and `constant`
-  overloads. `this` is recovered via Lua upvalue — no more registry-stash
-  + `getFromLua` boilerplate.
-- `Outrun::Module` class removed. Things that were Modules now extend
+**Driver API rework.** Drivers now extend `Outrun::Extension` (shared
+lifecycle base) instead of overriding `installSandboxModule(lua_State*)`
+directly, and register declaratively at config time. To migrate a driver:
+
+1. Replace `installSandboxModule(lua_State*)` with
+   `registerModule(Outrun::LuaModule&)`. Bind each Lua function with
+   `m.method<Class, &Class::fn>("name")`. Member functions take a
+   `lua_State*`; `this` is recovered automatically. The old
+   `getFromLua` static helper goes away.
+2. Replace `sandbox().addDriver(&driver)` calls with
+   `cfg.extensions = {&a, &b, ...}` in your `DeviceConfig` (or
+   `SandboxConfig` for standalone use). `addDriver`, `addModule`, and
+   `setShaderTemplate` are removed; use `cfg.shaderTemplate = fn` instead.
+3. Delete manual `driver.begin()` / `driver.update()` calls from `setup()`
+   and `loop()` — `Sandbox` calls them. Delete `sandbox().initialize()`
+   from any `deviceSetup()` override — `Device::setup()` calls it after
+   `deviceSetup()` returns.
+
+Other API changes:
+
+- `Outrun::Module` class removed; things that were Modules now extend
   `Outrun::Extension` directly.
-- `Sandbox::addDriver()`, `Sandbox::addModule()`, and
-  `Sandbox::setShaderTemplate()` removed. Drivers and shader template
-  register at config time via `SandboxConfig::extensions` /
-  `DeviceConfig::extensions` and `*::shaderTemplate`.
-  `Sandbox::initialize()` consumes the config.
-- `Sandbox` constructor gains a `(const SandboxConfig&)` overload.
-  `Device::setup()` automatically calls `_sandbox.configure(...)` and
-  `_sandbox.initialize()`. Subclasses no longer need to call
-  `sandbox().initialize()` from `deviceSetup()`.
-- Driver `begin()` and `update()` are now `override`s on the new
-  `Outrun::Extension` base, called automatically by `Sandbox`. Manual
-  calls in user `setup()` / `loop()` should be deleted.
 - `Outrun::StatusDisplay` gains optional `begin()` / `update()` virtuals
-  (default no-op). `Device` now drives them; `Sandbox` does not touch
-  status displays.
-- **ESP-IDF consumers only:** `CMakeLists.txt` `REQUIRES` line now uses
-  namespaced component names: `inanimate__courier` and
-  `bblanchon__arduinojson` instead of bare `courier` and `ArduinoJson`.
-  This matches the names exposed by the ESP component registry, so
-  consumers using registry-resolved deps work out of the box. Downstream
-  IDF projects that vendor courier/ArduinoJson under their bare names
-  (e.g. `vendor/courier/`, `arduino-deps/ArduinoJson/`) must rename them
-  to the namespaced form, or vendor under both names, or switch to
-  registry deps. PlatformIO consumers are unaffected — PIO uses
-  `library.json`, not `CMakeLists.txt`.
+  (default no-op; existing implementations unaffected). `Device` drives
+  them automatically.
+- A `Driver` that also inherits `StatusDisplay` must list `Outrun::Driver`
+  first in its inheritance list (`class : public Driver, public
+  StatusDisplay`) and should guard its `begin()` against double-call,
+  since both `Device` and `Sandbox` reach it.
+- Maximum 8 extensions per `Sandbox` (`Outrun::Extensions::MAX`).
+
+**ESP-IDF consumers only:** `CMakeLists.txt` `REQUIRES` line now uses
+namespaced component names — `inanimate__courier` and
+`bblanchon__arduinojson` instead of `courier` and `ArduinoJson`. Projects
+that vendor courier/ArduinoJson under bare names must rename them, vendor
+under both, or switch to registry deps. PlatformIO consumers unaffected.
 
 ### New features
 
-- `Outrun::LuaModule` builder: `method<Class, &Class::fn>(name)`,
-  `staticMethod(name, fn)`, `constant(name, value)` (overloads for `int`,
-  `double`, `const char*`, `bool`). `this` recovered via Lua upvalue —
-  no more registry-stash + `getFromLua` boilerplate. Const member
-  functions supported. C++14-compatible — no compiler-flag changes needed
-  in downstream `platformio.ini`.
-- `Outrun::Extension` base class: shared lifecycle (`begin()`, `update()`,
-  `onAppReset()`, `registerModule()`) for driver and pure-Lua extensions.
-- `Outrun::Driver` extends `Outrun::Extension`; adds `onAppRunning(bool)`
-  and the event-sink machinery. Inheritance ordering rule: when also
-  inheriting `Outrun::StatusDisplay`, declare `Driver` first to satisfy
-  the `LuaModule` upvalue cast invariant.
-- `Outrun::Extensions` declarative wrapper: `cfg.extensions = {&a, &b}`
-  works in vanilla C++11 with no compiler-flag changes (uses an
-  initializer_list ctor that copies into a fixed-size inline array).
-- `examples/espidf-basic/`: minimal ESP-IDF example demonstrating Outrun
-  integration in a real-consumer style. Uses registry pins for
-  `espressif/arduino-esp32`, `inanimate/courier` (≥0.3.2), and
-  `bblanchon/arduinojson`; a small `tools/fetch-deps.sh` script handles
-  Esp32Lua (the only dep not on the ESP Component Registry, pinned by
-  commit SHA against the upstream Arduino lib).
-- Outrun's `idf_component.yml` now declares its dependencies on the
-  registry (`espressif/arduino-esp32`, `inanimate/courier`,
-  `bblanchon/arduinojson`), so IDF consumers no longer have to
-  re-declare them. `Esp32Lua` remains consumer-supplied (not on the
-  registry) — see the example's fetch script for the canonical pattern.
+- `Outrun::LuaModule` builder: `method<Class, &Class::fn>("name")`,
+  `staticMethod`, `constant`. Const member functions supported.
+  C++14-compatible — no compiler-flag changes needed in downstream
+  `platformio.ini`.
+- `Outrun::Extension` base class for Lua-only modules that have no
+  hardware and emit no events. Same `registerModule` / lifecycle hooks
+  as `Driver`.
+- `Outrun::Extensions` declarative wrapper: `cfg.extensions = {&a, &b}`.
+- `examples/espidf-basic/`: minimal ESP-IDF example demonstrating the
+  new declarative pattern. Uses `tools/fetch-deps.sh` to fetch
+  `Esp32Lua` (the only dep not on the ESP Component Registry).
+- Outrun's `idf_component.yml` declares its registry dependencies, so
+  IDF consumers no longer have to re-declare `arduino-esp32`, `courier`,
+  or `arduinojson`.
+
+### Fixes
+
+- Driver `update()` runs at full main-loop rate even when no app is
+  loaded, so button drivers keep debouncing between app reloads.
+- Driver event-sink is wired before `begin()` is called, so drivers can
+  safely report initial state via `sendEvent()` from `begin()`.
 
 ### Internal
 
-- Added `tools/run-tests.py` (uv inline-script) with `static-analysis`,
-  `unit`, `build`, and `all` subcommands. Local entry point and CI driver.
-- Added `test/unit/` with a native PlatformIO env and a smoke assertion.
-  Slot for future unit tests; no existing source is currently covered.
-- Added `.github/workflows/ci.yml` with four jobs: static analysis
-  (cppcheck), unit tests (PIO native), PlatformIO build of `m5stick-demo`,
-  and ESP-IDF build of `examples/espidf-basic` against IDF v5.5.3.
-- Patched `examples/m5stick-demo/device/platformio.ini` to use the in-tree
-  Outrun source (`symlink://../../..`) and HTTPS for courier, so the demo
-  builds in CI without SSH credentials. Added an explicit
-  `symlink://lib/drivers` line to keep `M5StickDrivers` discoverable
-  (PlatformIO suppresses the project's own `lib/` scan when a parent
-  symlink contains the project). No functional change for local devs.
-- Driver discrimination uses a virtual `Extension::asDriver()` rather
-  than `dynamic_cast<Driver*>` — Arduino ESP32 builds with `-fno-rtti`.
-- Native unit-test environment now links Lua so `LuaModule`, `Extension`,
-  and `Extensions` have direct unit-test coverage. Adds Arduino/Print
-  stubs under `test/unit/include/` so Esp32Lua's C++ wrapper compiles
-  natively.
-- `OutrunSandbox::loop()` now drives extension `update()` at full
-  main-loop rate even when no app is running (so button drivers keep
-  debouncing between apps); Lua `on_tick` and event dispatch remain
-  gated on `_appRunning`.
-- `OutrunSandbox::initialize()` wires extension event sinks before
-  calling `begin()`, so a driver's `begin()` can safely call `sendEvent`
-  (e.g. reporting initial sensor state).
+- Added `tools/run-tests.py` (uv inline-script) and
+  `.github/workflows/ci.yml` with four jobs: static analysis (cppcheck),
+  unit tests (PIO native), PlatformIO build of `m5stick-demo`, ESP-IDF
+  build of `examples/espidf-basic` against IDF v5.5.3.
+- Native unit-test environment under `test/unit/` links Lua and provides
+  direct test coverage for `Extension`, `LuaModule`, and `Extensions`.
+- `examples/m5stick-demo/device/platformio.ini` patched to use the in-tree
+  Outrun source (`symlink://../../..`) and HTTPS for courier so the demo
+  builds in CI without SSH credentials.
 
 ---
 
