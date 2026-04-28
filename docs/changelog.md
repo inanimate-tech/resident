@@ -45,11 +45,23 @@ Other API changes:
   since both `Device` and `Sandbox` reach it.
 - Maximum 8 extensions per `Sandbox` (`Resident::Extensions::MAX`).
 
-**ESP-IDF consumers only:** `CMakeLists.txt` `REQUIRES` line now uses
-namespaced component names — `inanimate__courier` and
-`bblanchon__arduinojson` instead of `courier` and `ArduinoJson`. Projects
-that vendor courier/ArduinoJson under bare names must rename them, vendor
-under both, or switch to registry deps. PlatformIO consumers unaffected.
+**ESP-IDF consumers only — registry vs. vendored deps:** `CMakeLists.txt`
+`REQUIRES` defaults to the namespaced names exposed by the ESP Component
+Registry (`inanimate__courier`, `bblanchon__arduinojson`). PlatformIO
+consumers are unaffected.
+
+If you vendor courier / ArduinoJson / ezTime / Esp32Lua under bare directory
+names rather than fetching them via the registry, override the names from
+your project's root `CMakeLists.txt`:
+
+~~~cmake
+set(RESIDENT_COURIER_DEP     "courier"     CACHE STRING "" FORCE)
+set(RESIDENT_ARDUINOJSON_DEP "ArduinoJson" CACHE STRING "" FORCE)
+~~~
+
+`RESIDENT_EZTIME_DEP` and `RESIDENT_ESP32LUA_DEP` are also exposed as cache
+vars for symmetry; default values are bare (`ezTime`, `Esp32Lua`) since
+neither is currently on the registry.
 
 ### New features
 
