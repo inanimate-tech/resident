@@ -55,8 +55,12 @@ class DemoDevice : public Resident::Device {
 public:
     DemoDevice() : Resident::Device(makeConfig()) {}
 
-    String buildWebSocketPath() override {
-        return "/agents/device-agent/m5stick-demo";
+    // Override the default /agents/<type>-agent/<deviceId> path with a
+    // demo-specific static path (the server-side agent name is fixed).
+    void onTransportsWillConnect() override {
+        _ws.setEndpoint("resident-m5stick-demo.genmon.workers.dev",
+                        443,
+                        "/agents/device-agent/m5stick-demo");
     }
 
     void deviceLoop() override {

@@ -12,10 +12,9 @@ dependencies:
   espressif/arduino-esp32:
     version: "^3.0.0"
 
-  # Courier 0.3.2+ properly declares its transitive deps; earlier versions
-  # require consumers to provide ezTime/ArduinoJson/WiFiManager out of band.
+  # Courier 0.4.1+ for per-transport setEndpoint() + Client::reconnect().
   inanimate/courier:
-    version: ">=0.3.2"
+    version: "^0.4.1"
 
   bblanchon/arduinojson:
     version: "^7.0.0"

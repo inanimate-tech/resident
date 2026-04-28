@@ -1,5 +1,70 @@
 # Changelog
 
+## v0.4.1-dev (dddec28)
+
+Theme: tracking the courier 0.4 surface — namespaced types, JSON-first send,
+per-transport hooks, and per-transport endpoint state.
+
+### Breaking changes
+
+**Requires courier `^0.4.1`.** Resident's `Device` API mirrors courier's
+public surface. Read courier's migration guide
+(`docs/migration-0.3-to-0.4.md` in the courier repo) before migrating
+downstream code.
+
+**`Resident::Device` callback and accessor types tracked the courier rename:**
+
+- `Device::onMessage(const char* type, JsonDocument& doc)` →
+  `Device::onMessage(const char* transportName, const char* type, JsonDocument& doc)`.
+  The new first argument identifies which transport delivered the message
+  (`"ws"`, `"mqtt"`, etc.). Every subclass override must update its signature
+  and the call to `Device::onMessage(...)` super.
+- `Device::onConnectionChange(CourierState)` →
+  `Device::onConnectionChange(Courier::State)`. The enum is now scoped
+  (`Courier::State::Connected`, etc.) — switch statements must update
+  case labels.
+- `Device::courier()` returns `Courier::Client&` (was `Courier&`).
+- The protected `_ws` member is `Courier::WebSocketTransport&`
+  (was `CourierWSTransport&`). Subclasses that referenced the type name
+  directly (e.g. for `onConfigure(...)`) need to update.
+
+**`Device::send`, `Device::sendTo`, `Device::sendBinaryTo` removed.** These
+were thin passthroughs to courier methods that no longer exist. Replace at
+the call site:
+
+- JSON via the default transport: `device.courier().send(doc)` (where `doc`
+  is a `JsonDocument`).
+- Raw text or binary on a specific transport:
+  `device.courier().transport<Courier::WebSocketTransport>(name).sendText(s)`
+  / `.sendBinary(d, len)`.
+- MQTT publish: `device.courier().transport<Courier::MqttTransport>(name).publish(topic, payload)`.
+
+**`Device::buildWebSocketPath()` removed.** Override
+`Device::onTransportsWillConnect()` instead and call
+`_ws.setEndpoint(host, port, path)` directly. The hook fires after WiFi is
+up and before transports begin connecting, on every connect cycle (initial
+and reconnect), so any dynamic state (e.g. roomId from a registration HTTP
+call) can be resolved fresh each time. The default `Device` implementation
+sets the built-in WS endpoint to `/agents/<deviceType>-agent/<deviceId>`;
+subclasses replace or extend it. This also lets a subclass register and
+configure additional WS transports in the same hook (multiple WebSocket
+endpoints on one device — previously awkward).
+
+Migration sketch for a subclass that used `buildWebSocketPath()` to return
+a static path:
+
+```cpp
+// Before
+String buildWebSocketPath() override { return "/agents/foo/bar"; }
+
+// After
+void onTransportsWillConnect() override {
+    _ws.setEndpoint(_config.host, 443, "/agents/foo/bar");
+}
+```
+
+---
+
 ## v0.3.0-dev (d27cda1)
 
 ### Breaking changes

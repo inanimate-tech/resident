@@ -1,6 +1,6 @@
 {
   "name": "resident",
-  "version": "0.3.0-dev",
+  "version": "0.4.1-dev",
   "description": "Sandbox with hardware IO and hot reload for ESP32 devices",
   "keywords": "esp32, sandbox, iot, hot-reload",
   "repository": {
@@ -9,11 +9,12 @@
   },
   "authors": [
     {
-      "name": "Inanimate Technologies"
+      "name": "Inanimate",
+      "url": "https://github.com/inanimate-tech"
     }
   ],
-  "license": "PolyForm-Noncommercial-1.0.0",
-  "frameworks": "arduino",
+  "license": "MIT",
+  "frameworks": ["arduino", "espidf"],
   "platforms": "espressif32",
   "dependencies": {
     "inanimate/courier": "https://github.com/inanimate-tech/courier.git",

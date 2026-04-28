@@ -5,19 +5,20 @@ namespace Resident {
 
 Device* Device::_instance = nullptr;
 
-static CourierConfig buildCourierConfig(const DeviceConfig& config) {
-  CourierConfig cfg;
+static Courier::Config buildCourierConfig(const DeviceConfig& config) {
+  Courier::Config cfg;
   cfg.host = config.host ? config.host : "localhost";
   cfg.port = 443;
-  cfg.path = "/";
+  cfg.path = "/";                  // overridden in onTransportsWillConnect()
   cfg.apName = nullptr;
+  cfg.defaultTransport = "ws";     // built-in WS is the default for Client::send
   return cfg;
 }
 
 Device::Device(const DeviceConfig& config)
     : _config(config),
       _courier(buildCourierConfig(config)),
-      _ws(_courier.builtinWS()),
+      _ws(_courier.transport<Courier::WebSocketTransport>("ws")),
       _deviceId(::getDeviceId())
 {
   _instance = this;
@@ -29,10 +30,10 @@ Device::~Device() {}
 void Device::wireHooks()
 {
   // Courier delivers to Device virtuals — subclasses override and call super
-  _courier.onMessage([this](const char* type, JsonDocument& doc) {
-    onMessage(type, doc);
+  _courier.onMessage([this](const char* transportName, const char* type, JsonDocument& doc) {
+    onMessage(transportName, type, doc);
   });
-  _courier.onConnectionChange([this](CourierState state) {
+  _courier.onConnectionChange([this](Courier::State state) {
     onConnectionChange(state);
   });
   _courier.onTransportsWillConnect([this]() {
@@ -43,28 +44,29 @@ void Device::wireHooks()
   });
 }
 
-void Device::onConnectionChange(CourierState state)
+void Device::onConnectionChange(Courier::State state)
 {
+  using S = Courier::State;
   switch (state) {
-    case COURIER_WIFI_CONNECTING:
+    case S::WifiConnecting:
       showStatusText("WiFi...");
       break;
-    case COURIER_WIFI_CONFIGURING:
+    case S::WifiConfiguring:
       showStatusText("Configure WiFi");
       break;
-    case COURIER_WIFI_CONNECTED:
+    case S::WifiConnected:
       showStatusText("WiFi connected");
       break;
-    case COURIER_TRANSPORTS_CONNECTING:
+    case S::TransportsConnecting:
       showStatusText("Connecting...");
       break;
-    case COURIER_CONNECTED:
+    case S::Connected:
       showStatusText("Connected");
       break;
-    case COURIER_RECONNECTING:
+    case S::Reconnecting:
       showStatusText("Reconnecting...");
       break;
-    case COURIER_CONNECTION_FAILED:
+    case S::ConnectionFailed:
       showStatusText("Connection failed");
       break;
     default:
@@ -73,21 +75,21 @@ void Device::onConnectionChange(CourierState state)
 
   if (_config.statusLED) {
     switch (state) {
-      case COURIER_WIFI_CONNECTING:
-      case COURIER_WIFI_CONFIGURING:
+      case S::WifiConnecting:
+      case S::WifiConfiguring:
         _config.statusLED->solidColor(0xFFFF00); // yellow
         break;
-      case COURIER_WIFI_CONNECTED:
-      case COURIER_TRANSPORTS_CONNECTING:
+      case S::WifiConnected:
+      case S::TransportsConnecting:
         _config.statusLED->solidColor(0x00FFFF); // cyan
         break;
-      case COURIER_CONNECTED:
+      case S::Connected:
         _config.statusLED->solidColor(0x00FF00); // green
         break;
-      case COURIER_RECONNECTING:
+      case S::Reconnecting:
         _config.statusLED->solidColor(0xFF8800); // orange
         break;
-      case COURIER_CONNECTION_FAILED:
+      case S::ConnectionFailed:
         _config.statusLED->solidColor(0xFF0000); // red
         break;
       default:
@@ -98,11 +100,15 @@ void Device::onConnectionChange(CourierState state)
 
 void Device::onTransportsWillConnect()
 {
-  _wsPath = buildWebSocketPath();
-  CourierEndpoint wsEp;
-  wsEp.path = _wsPath.c_str();
-  _courier.setEndpoint("ws", wsEp);
-  Serial.printf("[resident] WS path: %s\n", _wsPath.c_str());
+  // Default: built-in WS gets /agents/<deviceType>-agent/<deviceId>. Re-set
+  // every cycle so reconnects pick up identity changes (deviceType, deviceId).
+  // Subclasses override to register additional transports' endpoints, or to
+  // perform pre-connect HTTP work (e.g. registration that yields a roomId).
+  String wsPath = String("/agents/") + getDeviceType() + "-agent/" + _deviceId;
+  _ws.setEndpoint(_config.host ? _config.host : "localhost",
+                  DEFAULT_PORT,
+                  wsPath.c_str());
+  Serial.printf("[resident] WS path: %s\n", wsPath.c_str());
 }
 
 void Device::onConnected()
@@ -112,7 +118,7 @@ void Device::onConnected()
 
 // Base implementation: routes sandbox messages (app, shader, app_event).
 // Subclasses override and call Device::onMessage() to keep sandbox routing.
-void Device::onMessage(const char* type, JsonDocument& doc)
+void Device::onMessage(const char* /*transportName*/, const char* type, JsonDocument& doc)
 {
   if (strcmp(type, "app") == 0) {
     const char* code = doc["code"];
@@ -190,32 +196,12 @@ const char* Device::getDeviceType()
 
 bool Device::isConnected() const
 {
-  return _courier.getState() == COURIER_CONNECTED;
+  return _courier.getState() == Courier::State::Connected;
 }
 
 bool Device::isTimeSynced() const
 {
   return _courier.isTimeSynced();
-}
-
-bool Device::send(const char* payload)
-{
-  return _courier.send(payload);
-}
-
-bool Device::sendTo(const char* transportName, const char* payload)
-{
-  return _courier.sendTo(transportName, payload);
-}
-
-bool Device::sendBinaryTo(const char* transportName, const uint8_t* data, size_t len)
-{
-  return _courier.sendBinaryTo(transportName, data, len);
-}
-
-String Device::buildWebSocketPath()
-{
-  return String("/agents/") + getDeviceType() + "-agent/" + _deviceId;
 }
 
 void Device::showStatusText(const char* text)

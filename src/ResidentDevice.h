@@ -20,7 +20,7 @@ public:
   virtual void loop();
 
   // Direct access to composed objects
-  Courier& courier() { return _courier; }
+  Courier::Client& courier() { return _courier; }
   Sandbox& sandbox() { return _sandbox; }
 
   // State accessors
@@ -29,23 +29,25 @@ public:
   bool isTimeSynced() const;
   virtual const char* getDeviceType();
 
-  // Sending
-  bool send(const char* payload);
-  bool sendTo(const char* transportName, const char* payload);
-  bool sendBinaryTo(const char* transportName, const uint8_t* data, size_t len);
-
-  // Message handling — override in subclasses, call super to keep sandbox routing
-  virtual void onMessage(const char* type, JsonDocument& doc);
+  // Message handling — override in subclasses, call super to keep sandbox routing.
+  // transportName identifies which transport delivered the message ("ws", "mqtt", ...).
+  virtual void onMessage(const char* transportName, const char* type, JsonDocument& doc);
 
   // Connection lifecycle — override in subclasses, call super to keep base behavior
-  virtual void onConnectionChange(CourierState state);
+  virtual void onConnectionChange(Courier::State state);
+
+  // Fired after WiFi is up, before transports begin connecting. The canonical
+  // place to (re-)resolve and set per-transport endpoints, including any
+  // dynamic state (e.g. roomId from a registration HTTP call). The default
+  // sets the built-in WS endpoint to /agents/<deviceType>-agent/<deviceId>.
+  // Subclasses override and either replace or call Device::onTransportsWillConnect().
   virtual void onTransportsWillConnect();
+
   virtual void onConnected();
 
 protected:
   virtual void deviceSetup() {}
   virtual void deviceLoop() {}
-  virtual String buildWebSocketPath();
 
   // Status helpers for subclasses
   StatusLED* statusLED() const { return _config.statusLED; }
@@ -56,11 +58,11 @@ protected:
 
 private:
   DeviceConfig _config;
-  Courier _courier;
+  Courier::Client _courier;
 
 protected:
-  // Courier accessor for subclasses — declared after _courier
-  CourierWSTransport& _ws;
+  // Built-in WS transport accessor for subclasses — declared after _courier
+  Courier::WebSocketTransport& _ws;
 
   // Device identity — declared after _courier so init order matches constructor
   String _deviceId;
@@ -74,9 +76,6 @@ private:
   // Status display
   void showStatusText(const char* text);
   String _lastStatusText;
-
-  // Persisted path string — CourierEndpoint stores const char* (no copy)
-  String _wsPath;
 
   // Singleton for static callbacks
   static Device* _instance;

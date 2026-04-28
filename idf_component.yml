@@ -1,4 +1,4 @@
-version: "0.3.0-dev"
+version: "0.4.1-dev"
 description: "Sandbox with hardware IO and hot reload for ESP32 devices"
 url: "https://github.com/inanimate-tech/resident"
 
@@ -7,8 +7,11 @@ dependencies:
     version: ">=5.0.0"
   espressif/arduino-esp32:
     version: "^3.0.0"
+  # Courier 0.4.1 adds per-transport endpoint state + Client::reconnect();
+  # Resident's Device sets the WS endpoint via _ws.setEndpoint() inside
+  # onTransportsWillConnect(), which requires that surface.
   inanimate/courier:
-    version: ">=0.3.2"
+    version: "^0.4.1"
   bblanchon/arduinojson:
     version: "^7.0.0"
   # Esp32Lua is not on the ESP component registry. Consumers must provide it

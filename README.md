@@ -202,4 +202,4 @@ dependencies:
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE)
+[MIT](LICENSE)
