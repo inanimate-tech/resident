@@ -19,9 +19,10 @@ idf.py build
 ```
 
 The fetch step clones [Esp32Lua](https://github.com/Fischer-Simon/Esp32Lua)
-and shims it as an IDF component under `components/Esp32Lua/`. It's pinned
-by commit SHA, idempotent (skips if already present), and the `components/`
-directory is gitignored.
+and [ezTime](https://github.com/ropg/ezTime) and shims each as an IDF
+component under `components/`. Neither is on the ESP Component Registry.
+Both are pinned by commit SHA, idempotent (skips if already present), and
+the `components/` directory is gitignored.
 
 ## Flash
 
@@ -40,5 +41,5 @@ Replace `/dev/cu.usbserial-XXXX` with your board's serial device.
   in-tree source via `path: ../../..`; the rest are registry pins.
 - `main/CMakeLists.txt` — IDF component registration.
 - `partitions.csv`, `sdkconfig.defaults` — minimal IDF project config.
-- `tools/fetch-deps.sh` — fetches Esp32Lua (the only dep that isn't on
-  the ESP Component Registry).
+- `tools/fetch-deps.sh` — fetches Esp32Lua and ezTime (neither is on the
+  ESP Component Registry).
