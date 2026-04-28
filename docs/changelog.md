@@ -59,9 +59,14 @@ set(RESIDENT_COURIER_DEP     "courier"     CACHE STRING "" FORCE)
 set(RESIDENT_ARDUINOJSON_DEP "ArduinoJson" CACHE STRING "" FORCE)
 ~~~
 
-`RESIDENT_EZTIME_DEP` and `RESIDENT_ESP32LUA_DEP` are also exposed as cache
-vars for symmetry; default values are bare (`ezTime`, `Esp32Lua`) since
-neither is currently on the registry.
+`RESIDENT_EZTIME_DEP` defaults empty — `inanimate__courier` bundles ezTime
+via CMake FetchContent on the registry path, so no separate component is
+needed. Vendoring consumers who manage ezTime as a standalone component
+should set `RESIDENT_EZTIME_DEP=ezTime` to satisfy the strict
+header-required-component check.
+
+`RESIDENT_ESP32LUA_DEP` defaults bare (`Esp32Lua`); the example's
+`tools/fetch-deps.sh` fetches it locally since it's not on the registry.
 
 ### New features
 

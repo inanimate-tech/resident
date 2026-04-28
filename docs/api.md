@@ -805,7 +805,7 @@ end
 
 Resident's ESP-IDF `CMakeLists.txt` REQUIRES list defaults to ESP Component
 Registry-namespaced names (`inanimate__courier`, `bblanchon__arduinojson`).
-If your project vendors courier / ArduinoJson / ezTime / Esp32Lua under bare
+If your project vendors courier / ArduinoJson / Esp32Lua under bare
 directory names rather than fetching them via the registry, override the
 names from your project's root `CMakeLists.txt` BEFORE the
 `include($ENV{IDF_PATH}/tools/cmake/project.cmake)` line:
@@ -813,7 +813,6 @@ names from your project's root `CMakeLists.txt` BEFORE the
 ~~~cmake
 set(RESIDENT_COURIER_DEP     "courier"     CACHE STRING "" FORCE)
 set(RESIDENT_ARDUINOJSON_DEP "ArduinoJson" CACHE STRING "" FORCE)
-# RESIDENT_EZTIME_DEP and RESIDENT_ESP32LUA_DEP default to bare names already.
 ~~~
 
 Or pass on the `idf.py` command line: `idf.py -DRESIDENT_COURIER_DEP=courier ...`.
@@ -824,8 +823,14 @@ The four cache vars are:
 |-----------|---------|------------------------|
 | `RESIDENT_COURIER_DEP` | `inanimate__courier` | `courier` |
 | `RESIDENT_ARDUINOJSON_DEP` | `bblanchon__arduinojson` | `ArduinoJson` |
-| `RESIDENT_EZTIME_DEP` | `ezTime` | `ezTime` (already bare) |
+| `RESIDENT_EZTIME_DEP` | `""` (empty) | `ezTime` |
 | `RESIDENT_ESP32LUA_DEP` | `Esp32Lua` | `Esp32Lua` (already bare) |
+
+`RESIDENT_EZTIME_DEP` defaults empty because `inanimate__courier` already
+bundles ezTime via CMake FetchContent on the registry path — no separate
+component is needed. Vendoring consumers who manage ezTime as a standalone
+component (e.g. via a git submodule) should set `RESIDENT_EZTIME_DEP=ezTime`
+so that ESP-IDF's strict header-required-component check passes.
 
 `arduino-esp32` is hard-coded as `espressif__arduino-esp32` — vendoring
 consumers don't typically vendor it; it comes from the registry on both paths.
