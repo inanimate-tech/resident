@@ -1,5 +1,5 @@
 #include <M5Unified.h>
-#include <OutrunDevice.h>
+#include <ResidentDevice.h>
 #include "DisplayDriver.h"
 #include "IMUDriver.h"
 #include "BuzzerDriver.h"
@@ -14,15 +14,7 @@ IMUDriver imuDriver;
 BuzzerDriver buzzerDriver{255};
 PushButtonsDriver buttonDriver{buttonConfig};
 
-Outrun::DeviceConfig makeConfig() {
-    Outrun::DeviceConfig cfg;
-    cfg.deviceType = "stick";
-    cfg.host = "outrun-m5stick-demo.genmon.workers.dev";
-    cfg.statusDisplay = &displayDriver;
-    return cfg;
-}
-
-String shaderTemplate(const Outrun::ShaderFields& fields) {
+String shaderTemplate(const Resident::ShaderFields& fields) {
     auto it = fields.find("expr");
     if (it == fields.end()) return "";
 
@@ -49,34 +41,31 @@ String shaderTemplate(const Outrun::ShaderFields& fields) {
 static const char* DEFAULT_SHADER =
     "rgb(sin(time_ms/1000)*0.5+0.5, sin(time_ms/1000+2.094)*0.5+0.5, sin(time_ms/1000+4.189)*0.5+0.5)";
 
-class DemoDevice : public Outrun::Device {
+Resident::DeviceConfig makeConfig() {
+    Resident::DeviceConfig cfg;
+    cfg.deviceType     = "stick";
+    cfg.host           = "resident-m5stick-demo.genmon.workers.dev";
+    cfg.statusDisplay  = &displayDriver;
+    cfg.shaderTemplate = shaderTemplate;
+    cfg.extensions     = {&displayDriver, &imuDriver, &buzzerDriver, &buttonDriver};
+    return cfg;
+}
+
+class DemoDevice : public Resident::Device {
 public:
-    DemoDevice() : Outrun::Device(makeConfig()) {}
+    DemoDevice() : Resident::Device(makeConfig()) {}
 
     String buildWebSocketPath() override {
         return "/agents/device-agent/m5stick-demo";
     }
 
-    void deviceSetup() override {
-        buttonDriver.begin();
-
-        sandbox().addDriver(&displayDriver);
-        sandbox().addDriver(&imuDriver);
-        sandbox().addDriver(&buzzerDriver);
-        sandbox().addDriver(&buttonDriver);
-        sandbox().setShaderTemplate(shaderTemplate);
-        sandbox().initialize();
-    }
-
     void deviceLoop() override {
         M5.update();
-        buttonDriver.update();
 
-        // Load default shader once connected
         static bool loaded = false;
         if (!loaded && isConnected()) {
             loaded = true;
-            Outrun::ShaderFields fields;
+            Resident::ShaderFields fields;
             fields["expr"] = DEFAULT_SHADER;
             sandbox().loadShader(fields);
         }
@@ -91,8 +80,6 @@ void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
     M5.Display.setRotation(1);
-    displayDriver.begin();
-    buzzerDriver.begin();
     device.setup();
 }
 

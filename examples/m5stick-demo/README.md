@@ -1,6 +1,6 @@
 # M5Stick Demo
 
-A minimal example of an M5Stick with an [Outrun](https://github.com/inanimate-tech/outrun) sandbox, receiving apps from a Cloudflare Workers server.
+A minimal example of an M5Stick with an [Resident](https://github.com/inanimate-tech/resident) sandbox, receiving apps from a Cloudflare Workers server.
 
 The device connects to the server via WebSocket managed by [Courier](https://github.com/inanimate-tech/courier).
 
@@ -18,11 +18,11 @@ m5stick-demo/
 
 ## Device
 
-The device firmware runs on M5StickC Plus2. It connects via WebSocket and receives Lua apps to execute in its Outrun sandbox.
+The device firmware runs on M5StickC Plus2. It connects via WebSocket and receives Lua apps to execute in its Resident sandbox.
 
 ### Lua App Callbacks
 
-The Outrun sandbox provides three main callbacks for Lua apps:
+The Resident sandbox provides three main callbacks for Lua apps:
 
 ```lua
 function init(ctx)        -- called once after app loads
@@ -32,7 +32,7 @@ function on_event(ctx, e)     -- called on button presses
 
 ### Drivers and Available Lua APIs
 
-This M5Stick project includes drivers for the display, IMU, and buzzer. An Outrun driver manages a hardware peripheral and exposes an API to Lua apps in the sandbox.
+This M5Stick project includes drivers for the display, IMU, and buzzer. An Resident driver manages a hardware peripheral and exposes an API to Lua apps in the sandbox.
 
 - `screen.clear(r, g, b)` — clear display
 - `screen.text(x, y, str)` — draw text
@@ -66,7 +66,7 @@ pio run -e m5sticks3 -t upload
 
 The device manages its own connectivity.
 
-If it cannot connect to a configured Wi-Fi network, it creates an access point called **Outrun Stick XXXX**.
+If it cannot connect to a configured Wi-Fi network, it creates an access point called **Resident Stick XXXX**.
 
 Connect to this and configure your local Wi-Fi credentials via the captive portal (note that ESP32 does not support 5GHz networks).
 
@@ -102,7 +102,7 @@ POST Lua code to a device:
 ```bash
 curl -X POST -H "Content-Type: text/plain" \
   --data-binary @device-apps/hello.lua \
-  https://outrun-m5stick-demo.YOUR-CF-NAME.workers.dev/agents/device-agent/m5stick-demo
+  https://resident-m5stick-demo.YOUR-CF-NAME.workers.dev/agents/device-agent/m5stick-demo
 ```
 
 

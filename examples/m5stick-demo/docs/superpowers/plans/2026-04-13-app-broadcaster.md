@@ -521,7 +521,7 @@ git commit -m "feat: implement single-page app broadcaster web UI"
 function init(ctx)
   screen.clear(0, 0, 0)
   screen.text(40, 50, "Hello World!")
-  screen.text(40, 80, "from Outrun")
+  screen.text(40, 80, "from Resident")
   screen.flip()
 end
 ```
@@ -721,7 +721,7 @@ git commit -m "feat: add send-app.sh tool for posting Lua apps to devices"
 ```markdown
 # M5Stick Demo
 
-A minimal example of an [Outrun](https://github.com/user/outrun) device connected to a Cloudflare Workers server. The server accepts Lua apps via HTTP POST and broadcasts them to connected M5StickC Plus2 devices over WebSocket.
+A minimal example of an [Resident](https://github.com/user/outrun) device connected to a Cloudflare Workers server. The server accepts Lua apps via HTTP POST and broadcasts them to connected M5StickC Plus2 devices over WebSocket.
 
 ## Structure
 

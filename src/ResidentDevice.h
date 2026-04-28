@@ -1,15 +1,15 @@
-// src/OutrunDevice.h
-#ifndef OUTRUN_DEVICE_H
-#define OUTRUN_DEVICE_H
+// src/ResidentDevice.h
+#ifndef RESIDENT_DEVICE_H
+#define RESIDENT_DEVICE_H
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Courier.h>
-#include "OutrunSandbox.h"
-#include "OutrunDeviceConfig.h"
+#include "ResidentSandbox.h"
+#include "ResidentDeviceConfig.h"
 #include "chipstring.h"
 
-namespace Outrun {
+namespace Resident {
 
 class Device {
 public:
@@ -82,6 +82,6 @@ private:
   static Device* _instance;
 };
 
-} // namespace Outrun
+} // namespace Resident
 
-#endif // OUTRUN_DEVICE_H
+#endif // RESIDENT_DEVICE_H

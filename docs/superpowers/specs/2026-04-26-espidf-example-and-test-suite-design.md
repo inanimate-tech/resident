@@ -6,7 +6,7 @@
 
 Originally two deliverables, one PR. Currently scoped to deliverable 2:
 
-1. ~~A minimal **ESP-IDF example** (`examples/espidf-basic/`) demonstrating how a real consumer integrates Outrun in an ESP-IDF project — analogous to `courier/examples/espidf-basic/`.~~ **Deferred.**
+1. ~~A minimal **ESP-IDF example** (`examples/espidf-basic/`) demonstrating how a real consumer integrates Resident in an ESP-IDF project — analogous to `courier/examples/espidf-basic/`.~~ **Deferred.**
 2. A **test suite + CI** that builds the existing PlatformIO `m5stick-demo`, runs cppcheck on `src/`, and reserves a native unit-test slot for future PRs. (Originally also covered the IDF example build; that job drops out of CI for now.)
 
 The CI must run locally via a single `./tools/run-tests.py` entry point and in GitHub Actions. The unit-test slot starts as one passing assertion; the goal is to give every future "big change" a place to land tests, not to backfill tests for existing code.
@@ -14,7 +14,7 @@ The CI must run locally via a single `./tools/run-tests.py` entry point and in G
 ## Scope
 
 **In scope:**
-- New `examples/espidf-basic/` IDF project that exercises `Outrun::Device`, `Outrun::Sandbox`, and one `OutrunDriver` (a stub LED driver).
+- New `examples/espidf-basic/` IDF project that exercises `Resident::Device`, `Resident::Sandbox`, and one `ResidentDriver` (a stub LED driver).
 - `examples/espidf-basic/tools/fetch-deps.sh` to clone Esp32Lua and shim it as an IDF component.
 - `tools/run-tests.py` (uv inline-script) with `static-analysis` / `unit` / `build` / `all` subcommands.
 - `test/unit/` PlatformIO native env with one smoke assertion.
@@ -24,10 +24,10 @@ The CI must run locally via a single `./tools/run-tests.py` entry point and in G
 - Targeted edit to `examples/m5stick-demo/device/platformio.ini` to make the existing demo buildable in CI: replace the `git+ssh://...outrun.git` dep with `symlink://../../..` (uses in-tree source) and the `git+ssh://...courier.git` dep with `git+https://...courier.git` (courier is public). No other changes to the demo. **Why required:** outrun is a private GitHub repo; CI runners have no SSH key for it, so any `git+ssh://` dep on outrun will fail at lib resolution time.
 
 **Not in scope:**
-- Backfilling unit tests for existing Outrun source.
+- Backfilling unit tests for existing Resident source.
 - Migrating the M5Stick demo to ESP-IDF.
 - Building the M5Stick demo's `server/` (Cloudflare Worker) in CI.
-- Publishing Outrun to the ESP component registry (separate future task).
+- Publishing Resident to the ESP component registry (separate future task).
 - Documentation rewrites beyond the new example's `README.md` and the changelog entry.
 
 ## Repo layout (after this PR)
@@ -91,25 +91,25 @@ The script is idempotent (skips if the target dir exists) and sets `set -euo pip
 
 ### `examples/espidf-basic/main/main.cpp`
 
-Demonstrates the meaningful Outrun surface: subclassing `Outrun::Device`, registering a driver, initializing the sandbox. No real hardware:
+Demonstrates the meaningful Resident surface: subclassing `Resident::Device`, registering a driver, initializing the sandbox. No real hardware:
 
 ```cpp
 #include <Arduino.h>
-#include <OutrunDevice.h>
+#include <ResidentDevice.h>
 #include "StubLEDDriver.h"
 
 StubLEDDriver led;
 
-Outrun::DeviceConfig makeConfig() {
-    Outrun::DeviceConfig cfg;
+Resident::DeviceConfig makeConfig() {
+    Resident::DeviceConfig cfg;
     cfg.deviceType = "espidf-basic";
     cfg.host = "example.com";
     return cfg;
 }
 
-class BasicDevice : public Outrun::Device {
+class BasicDevice : public Resident::Device {
 public:
-    BasicDevice() : Outrun::Device(makeConfig()) {}
+    BasicDevice() : Resident::Device(makeConfig()) {}
 
     void deviceSetup() override {
         sandbox().addDriver(&led);
@@ -133,7 +133,7 @@ extern "C" void app_main() {
 
 ### `StubLEDDriver`
 
-Implements the `OutrunDriver` interface as a no-op. The implementation should match whatever `OutrunDriver`'s contract actually is (read `src/OutrunDriver.h` during implementation — the header dictates the required overrides). The point is to compile-check `addDriver()` against the published API.
+Implements the `ResidentDriver` interface as a no-op. The implementation should match whatever `ResidentDriver`'s contract actually is (read `src/ResidentDriver.h` during implementation — the header dictates the required overrides). The point is to compile-check `addDriver()` against the published API.
 
 ### `examples/espidf-basic/sdkconfig.defaults`
 

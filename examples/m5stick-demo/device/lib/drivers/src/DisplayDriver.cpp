@@ -11,6 +11,9 @@ extern "C" {
 #endif
 
 void DisplayDriver::begin() {
+  if (_initialized) return;   // dual-inherit (Driver + StatusDisplay) →
+                              // Device.setup() and Sandbox.initialize()
+                              // both reach us; guard against re-init.
   // setColorDepth must come BEFORE createSprite — the sprite buffer is
   // allocated at whatever depth is set when create is called.
   _canvas.setColorDepth(16);
@@ -27,56 +30,6 @@ void DisplayDriver::displayText(const char* text) {
   M5.Display.println(text);
 }
 
-void DisplayDriver::installSandboxModule(lua_State* L) {
-  lua_pushlightuserdata(L, this);
-  lua_setfield(L, LUA_REGISTRYINDEX, "DisplayDriver_instance");
-
-  lua_newtable(L);
-
-  lua_pushcfunction(L, lua_display_clear);
-  lua_setfield(L, -2, "clear");
-
-  lua_pushcfunction(L, lua_display_text);
-  lua_setfield(L, -2, "text");
-
-  lua_pushcfunction(L, lua_display_fill_rect);
-  lua_setfield(L, -2, "fill_rect");
-
-  lua_pushcfunction(L, lua_display_rect);
-  lua_setfield(L, -2, "rect");
-
-  lua_pushcfunction(L, lua_display_line);
-  lua_setfield(L, -2, "line");
-
-  lua_pushcfunction(L, lua_display_triangle);
-  lua_setfield(L, -2, "triangle");
-
-  lua_pushcfunction(L, lua_display_fill_triangle);
-  lua_setfield(L, -2, "fill_triangle");
-
-  lua_pushcfunction(L, lua_display_pixel);
-  lua_setfield(L, -2, "pixel");
-
-  lua_pushcfunction(L, lua_display_flip);
-  lua_setfield(L, -2, "flip");
-
-  lua_pushcfunction(L, lua_display_set_brightness);
-  lua_setfield(L, -2, "set_brightness");
-
-  lua_pushcfunction(L, lua_display_width);
-  lua_setfield(L, -2, "width");
-
-  lua_pushcfunction(L, lua_display_height);
-  lua_setfield(L, -2, "height");
-
-#ifdef HAS_QRCODE
-  lua_pushcfunction(L, lua_display_qr);
-  lua_setfield(L, -2, "qr");
-#endif
-
-  lua_setglobal(L, "screen");
-}
-
 void DisplayDriver::onAppReset() {
   if (_initialized) {
     _canvas.fillScreen(TFT_BLACK);
@@ -86,37 +39,20 @@ void DisplayDriver::onAppReset() {
   }
 }
 
-DisplayDriver* DisplayDriver::getFromLua(lua_State* L, const char* fn) {
-  lua_getfield(L, LUA_REGISTRYINDEX, "DisplayDriver_instance");
-  DisplayDriver* d = (DisplayDriver*)lua_touserdata(L, -1);
-  lua_pop(L, 1);
-  if (!d) {
-    luaL_error(L, "%s: screen not available", fn);
-    return nullptr;
-  }
-  return d;
-}
-
 // screen.clear(r, g, b) — fill sprite with color (0-255 per channel)
-int DisplayDriver::lua_display_clear(lua_State* L) {
-  DisplayDriver* d = getFromLua(L, "screen.clear");
-  if (!d) return 0;
-
+int DisplayDriver::clear(lua_State* L) {
   int r = luaL_optinteger(L, 1, 0);
   int g = luaL_optinteger(L, 2, 0);
   int b = luaL_optinteger(L, 3, 0);
 
-  uint16_t color = d->_canvas.color565(r, g, b);
-  d->_canvas.fillScreen(color);
+  uint16_t color = _canvas.color565(r, g, b);
+  _canvas.fillScreen(color);
   return 0;
 }
 
 // screen.text(x, y, str, [size], [r, g, b]) — draw text at position in sprite.
 // Defaults: size=2, colour=white. Any of size/r/g/b can be omitted from the end.
-int DisplayDriver::lua_display_text(lua_State* L) {
-  DisplayDriver* d = getFromLua(L, "screen.text");
-  if (!d) return 0;
-
+int DisplayDriver::text(lua_State* L) {
   int x = (int)luaL_checknumber(L, 1);
   int y = (int)luaL_checknumber(L, 2);
   const char* str = luaL_checkstring(L, 3);
@@ -125,18 +61,15 @@ int DisplayDriver::lua_display_text(lua_State* L) {
   int g = (int)luaL_optinteger(L, 6, 255);
   int b = (int)luaL_optinteger(L, 7, 255);
 
-  d->_canvas.setCursor(x, y);
-  d->_canvas.setTextColor(d->_canvas.color565(r, g, b));
-  d->_canvas.setTextSize(size);
-  d->_canvas.print(str);
+  _canvas.setCursor(x, y);
+  _canvas.setTextColor(_canvas.color565(r, g, b));
+  _canvas.setTextSize(size);
+  _canvas.print(str);
   return 0;
 }
 
 // screen.fill_rect(x, y, w, h, r, g, b) — filled rectangle in sprite
-int DisplayDriver::lua_display_fill_rect(lua_State* L) {
-  DisplayDriver* d = getFromLua(L, "screen.fill_rect");
-  if (!d) return 0;
-
+int DisplayDriver::fillRect(lua_State* L) {
   int x = (int)luaL_checknumber(L, 1);
   int y = (int)luaL_checknumber(L, 2);
   int w = (int)luaL_checknumber(L, 3);
@@ -145,16 +78,13 @@ int DisplayDriver::lua_display_fill_rect(lua_State* L) {
   int g = (int)luaL_checknumber(L, 6);
   int b = (int)luaL_checknumber(L, 7);
 
-  uint16_t color = d->_canvas.color565(r, g, b);
-  d->_canvas.fillRect(x, y, w, h, color);
+  uint16_t color = _canvas.color565(r, g, b);
+  _canvas.fillRect(x, y, w, h, color);
   return 0;
 }
 
 // screen.rect(x, y, w, h, r, g, b) — 1px outline rectangle in sprite
-int DisplayDriver::lua_display_rect(lua_State* L) {
-  DisplayDriver* d = getFromLua(L, "screen.rect");
-  if (!d) return 0;
-
+int DisplayDriver::rect(lua_State* L) {
   int x = (int)luaL_checknumber(L, 1);
   int y = (int)luaL_checknumber(L, 2);
   int w = (int)luaL_checknumber(L, 3);
@@ -163,16 +93,13 @@ int DisplayDriver::lua_display_rect(lua_State* L) {
   int g = (int)luaL_checknumber(L, 6);
   int b = (int)luaL_checknumber(L, 7);
 
-  uint16_t color = d->_canvas.color565(r, g, b);
-  d->_canvas.drawRect(x, y, w, h, color);
+  uint16_t color = _canvas.color565(r, g, b);
+  _canvas.drawRect(x, y, w, h, color);
   return 0;
 }
 
 // screen.line(x0, y0, x1, y1, r, g, b) — 1px line in sprite
-int DisplayDriver::lua_display_line(lua_State* L) {
-  DisplayDriver* d = getFromLua(L, "screen.line");
-  if (!d) return 0;
-
+int DisplayDriver::line(lua_State* L) {
   int x0 = (int)luaL_checknumber(L, 1);
   int y0 = (int)luaL_checknumber(L, 2);
   int x1 = (int)luaL_checknumber(L, 3);
@@ -181,16 +108,13 @@ int DisplayDriver::lua_display_line(lua_State* L) {
   int g = (int)luaL_checknumber(L, 6);
   int b = (int)luaL_checknumber(L, 7);
 
-  uint16_t color = d->_canvas.color565(r, g, b);
-  d->_canvas.drawLine(x0, y0, x1, y1, color);
+  uint16_t color = _canvas.color565(r, g, b);
+  _canvas.drawLine(x0, y0, x1, y1, color);
   return 0;
 }
 
 // screen.triangle(x0, y0, x1, y1, x2, y2, r, g, b) — 1px outline triangle
-int DisplayDriver::lua_display_triangle(lua_State* L) {
-  DisplayDriver* d = getFromLua(L, "screen.triangle");
-  if (!d) return 0;
-
+int DisplayDriver::triangle(lua_State* L) {
   int x0 = (int)luaL_checknumber(L, 1);
   int y0 = (int)luaL_checknumber(L, 2);
   int x1 = (int)luaL_checknumber(L, 3);
@@ -201,16 +125,13 @@ int DisplayDriver::lua_display_triangle(lua_State* L) {
   int g = (int)luaL_checknumber(L, 8);
   int b = (int)luaL_checknumber(L, 9);
 
-  uint16_t color = d->_canvas.color565(r, g, b);
-  d->_canvas.drawTriangle(x0, y0, x1, y1, x2, y2, color);
+  uint16_t color = _canvas.color565(r, g, b);
+  _canvas.drawTriangle(x0, y0, x1, y1, x2, y2, color);
   return 0;
 }
 
 // screen.fill_triangle(x0, y0, x1, y1, x2, y2, r, g, b) — filled triangle
-int DisplayDriver::lua_display_fill_triangle(lua_State* L) {
-  DisplayDriver* d = getFromLua(L, "screen.fill_triangle");
-  if (!d) return 0;
-
+int DisplayDriver::fillTriangle(lua_State* L) {
   int x0 = (int)luaL_checknumber(L, 1);
   int y0 = (int)luaL_checknumber(L, 2);
   int x1 = (int)luaL_checknumber(L, 3);
@@ -221,41 +142,32 @@ int DisplayDriver::lua_display_fill_triangle(lua_State* L) {
   int g = (int)luaL_checknumber(L, 8);
   int b = (int)luaL_checknumber(L, 9);
 
-  uint16_t color = d->_canvas.color565(r, g, b);
-  d->_canvas.fillTriangle(x0, y0, x1, y1, x2, y2, color);
+  uint16_t color = _canvas.color565(r, g, b);
+  _canvas.fillTriangle(x0, y0, x1, y1, x2, y2, color);
   return 0;
 }
 
 // screen.pixel(x, y, r, g, b) — set single pixel in sprite
-int DisplayDriver::lua_display_pixel(lua_State* L) {
-  DisplayDriver* d = getFromLua(L, "screen.pixel");
-  if (!d) return 0;
-
+int DisplayDriver::pixel(lua_State* L) {
   int x = (int)luaL_checknumber(L, 1);
   int y = (int)luaL_checknumber(L, 2);
   int r = (int)luaL_checknumber(L, 3);
   int g = (int)luaL_checknumber(L, 4);
   int b = (int)luaL_checknumber(L, 5);
 
-  uint16_t color = d->_canvas.color565(r, g, b);
-  d->_canvas.drawPixel(x, y, color);
+  uint16_t color = _canvas.color565(r, g, b);
+  _canvas.drawPixel(x, y, color);
   return 0;
 }
 
 // screen.flip() — push sprite framebuffer to display (single SPI transfer).
-int DisplayDriver::lua_display_flip(lua_State* L) {
-  DisplayDriver* d = getFromLua(L, "screen.flip");
-  if (!d) return 0;
-
-  d->_canvas.pushSprite(0, 0);
+int DisplayDriver::flip(lua_State* L) {
+  _canvas.pushSprite(0, 0);
   return 0;
 }
 
 // screen.set_brightness(0-255)
-int DisplayDriver::lua_display_set_brightness(lua_State* L) {
-  DisplayDriver* d = getFromLua(L, "screen.set_brightness");
-  if (!d) return 0;
-
+int DisplayDriver::setBrightness(lua_State* L) {
   int brightness = (int)luaL_checknumber(L, 1);
   if (brightness < 0) brightness = 0;
   if (brightness > 255) brightness = 255;
@@ -264,17 +176,13 @@ int DisplayDriver::lua_display_set_brightness(lua_State* L) {
 }
 
 // screen.width() — returns display width in pixels
-int DisplayDriver::lua_display_width(lua_State* L) {
-  DisplayDriver* d = getFromLua(L, "screen.width");
-  if (!d) { lua_pushinteger(L, 0); return 1; }
+int DisplayDriver::width(lua_State* L) {
   lua_pushinteger(L, M5.Display.width());
   return 1;
 }
 
 // screen.height() — returns display height in pixels
-int DisplayDriver::lua_display_height(lua_State* L) {
-  DisplayDriver* d = getFromLua(L, "screen.height");
-  if (!d) { lua_pushinteger(L, 0); return 1; }
+int DisplayDriver::height(lua_State* L) {
   lua_pushinteger(L, M5.Display.height());
   return 1;
 }
@@ -284,10 +192,7 @@ int DisplayDriver::lua_display_height(lua_State* L) {
 // Auto-picks the smallest QR version (3..10, ECC low) that fits the text.
 // Defaults: scale=4, colour=black. Background is not drawn — caller is
 // responsible for clearing to a light colour behind the QR for scannability.
-int DisplayDriver::lua_display_qr(lua_State* L) {
-  DisplayDriver* d = getFromLua(L, "screen.qr");
-  if (!d) return 0;
-
+int DisplayDriver::qr(lua_State* L) {
   int x = (int)luaL_checknumber(L, 1);
   int y = (int)luaL_checknumber(L, 2);
   const char* str = luaL_checkstring(L, 3);
@@ -311,11 +216,11 @@ int DisplayDriver::lua_display_qr(lua_State* L) {
     return luaL_error(L, "screen.qr: text too long for QR v%d", QR_MAX_VERSION);
   }
 
-  uint16_t color = d->_canvas.color565(r, g, b);
+  uint16_t color = _canvas.color565(r, g, b);
   for (uint8_t py = 0; py < qrcode.size; py++) {
     for (uint8_t px = 0; px < qrcode.size; px++) {
       if (qrcode_getModule(&qrcode, px, py)) {
-        d->_canvas.fillRect(x + px * scale, y + py * scale, scale, scale, color);
+        _canvas.fillRect(x + px * scale, y + py * scale, scale, scale, color);
       }
     }
   }

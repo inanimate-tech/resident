@@ -42,7 +42,7 @@ Add to your project's `.claude/settings.json` (or `~/.claude/settings.json` for 
         "hooks": [
           {
             "type": "http",
-            "url": "https://outrun-m5stick-demo.genmon.workers.dev/agents/device-agent/m5stick-demo/hook/permission-request"
+            "url": "https://resident-m5stick-demo.genmon.workers.dev/agents/device-agent/m5stick-demo/hook/permission-request"
           }
         ]
       }
@@ -66,7 +66,7 @@ function on_event(ctx, e)
 end
 ```
 
-`data` is intentionally flat — the Outrun sandbox's event JSON parser drops nested objects and arrays, and the serialised payload must fit in a 256-byte buffer.
+`data` is intentionally flat — the Resident sandbox's event JSON parser drops nested objects and arrays, and the serialised payload must fit in a 256-byte buffer.
 
 ## Test without Claude Code
 
@@ -76,7 +76,7 @@ With the device connected, send a synthetic payload:
 curl -X POST \
   -H "Content-Type: application/json" \
   -d '{"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules"}}' \
-  https://outrun-m5stick-demo.genmon.workers.dev/agents/device-agent/m5stick-demo/hook/permission-request
+  https://resident-m5stick-demo.genmon.workers.dev/agents/device-agent/m5stick-demo/hook/permission-request
 ```
 
 The device's currently-loaded Lua app will receive an event with `e.name == "permission"` and `e.data == { tool = "Bash", summary = "rm -rf node_modules" }`.

@@ -1,6 +1,6 @@
 # espidf-basic
 
-Minimal ESP-IDF example showing how a consumer project integrates Outrun.
+Minimal ESP-IDF example showing how a consumer project integrates Resident.
 Builds a no-op `BasicDevice` that registers a stub LED driver with the
 sandbox. Doesn't connect to any real network — `host` is `example.com`.
 
@@ -19,9 +19,10 @@ idf.py build
 ```
 
 The fetch step clones [Esp32Lua](https://github.com/Fischer-Simon/Esp32Lua)
-and shims it as an IDF component under `components/Esp32Lua/`. It's pinned
-by commit SHA, idempotent (skips if already present), and the `components/`
-directory is gitignored.
+and [ezTime](https://github.com/ropg/ezTime) and shims each as an IDF
+component under `components/`. Neither is on the ESP Component Registry.
+Both are pinned by commit SHA, idempotent (skips if already present), and
+the `components/` directory is gitignored.
 
 ## Flash
 
@@ -34,11 +35,11 @@ Replace `/dev/cu.usbserial-XXXX` with your board's serial device.
 ## Files
 
 - `main/main.cpp` — `app_main()` entry point and `BasicDevice` class.
-- `main/StubLEDDriver.{h,cpp}` — minimal `Outrun::Driver` implementation
+- `main/StubLEDDriver.{h,cpp}` — minimal `Resident::Driver` implementation
   that exposes a `led.set(r, g, b)` Lua function (no-op).
-- `main/idf_component.yml` — dependency manifest. Outrun comes from the
+- `main/idf_component.yml` — dependency manifest. Resident comes from the
   in-tree source via `path: ../../..`; the rest are registry pins.
 - `main/CMakeLists.txt` — IDF component registration.
 - `partitions.csv`, `sdkconfig.defaults` — minimal IDF project config.
-- `tools/fetch-deps.sh` — fetches Esp32Lua (the only dep that isn't on
-  the ESP Component Registry).
+- `tools/fetch-deps.sh` — fetches Esp32Lua and ezTime (neither is on the
+  ESP Component Registry).

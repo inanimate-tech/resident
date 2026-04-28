@@ -1,29 +1,28 @@
-// src/OutrunSandbox.h
-#ifndef OUTRUN_SANDBOX_H
-#define OUTRUN_SANDBOX_H
+// src/ResidentSandbox.h
+#ifndef RESIDENT_SANDBOX_H
+#define RESIDENT_SANDBOX_H
 
 #include <Arduino.h>
 #include <ezTime.h>
 #include <map>
 #include <functional>
-#include "OutrunDriver.h"
-#include "OutrunModule.h"
+#include "ResidentDriver.h"
+#include "ResidentLuaModule.h"
+#include "ResidentSandboxConfig.h"
 
-namespace Outrun {
-
-using ShaderFields = std::map<String, String>;
-using ShaderTemplateFn = String (*)(const ShaderFields& fields);
-using TelemetryCallback = std::function<void(const char* json)>;
+namespace Resident {
 
 class Sandbox {
 public:
     Sandbox();
+    explicit Sandbox(const SandboxConfig& config);
     ~Sandbox();
 
-    // Configuration (call before initialize)
-    void addDriver(Driver* driver);
-    void addModule(Module* module);
-    void setShaderTemplate(ShaderTemplateFn fn);
+    // Full replacement of the stored config — not additive. Device::setup()
+    // calls this automatically with the DeviceConfig forward; downstream
+    // subclasses normally don't need to call it directly.
+    void configure(const SandboxConfig& config);
+
     void setTelemetryCallback(TelemetryCallback cb) { _telemetryCb = cb; }
 
     // Current generation ID (from last app/shader message)
@@ -68,17 +67,8 @@ private:
     Timezone _tz;
     bool _hasTimezone = false;
 
-    // Drivers and modules
-    static constexpr int MAX_DRIVERS = 8;
-    Driver* _drivers[MAX_DRIVERS] = {};
-    int _driverCount = 0;
-
-    static constexpr int MAX_MODULES = 8;
-    Module* _modules[MAX_MODULES] = {};
-    int _moduleCount = 0;
-
-    // Shader template
-    ShaderTemplateFn _shaderTemplate = nullptr;
+    // Configuration
+    SandboxConfig _config;
 
     // Telemetry
     TelemetryCallback _telemetryCb;
@@ -157,6 +147,6 @@ private:
     static int lua_math_fmod(lua_State* L);
 };
 
-} // namespace Outrun
+} // namespace Resident
 
-#endif // OUTRUN_SANDBOX_H
+#endif // RESIDENT_SANDBOX_H

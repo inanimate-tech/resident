@@ -2,47 +2,107 @@
 
 ## v0.3.0-dev (d27cda1)
 
-### Breaking changes (ESP-IDF consumers only)
+### Breaking changes
 
-**Outrun's `CMakeLists.txt` `REQUIRES` line now uses namespaced component
-names: `inanimate__courier` and `bblanchon__arduinojson` instead of bare
-`courier` and `ArduinoJson`.** This matches the names exposed by the ESP
-component registry, so consumers using registry-resolved deps work out of
-the box. Downstream IDF projects that vendor courier/ArduinoJson under
-their bare names (e.g. `vendor/courier/`, `arduino-deps/ArduinoJson/`)
-must rename them to the namespaced form, or vendor under both names, or
-switch to registry deps. PlatformIO consumers are unaffected — PIO uses
-`library.json`, not `CMakeLists.txt`.
+**Project renamed: Outrun → Resident.** All consumers must update:
+
+1. `lib_deps` URL: `inanimate-tech/outrun` → `inanimate-tech/resident`.
+2. ESP-IDF: `idf_component.yml` dependency name from `inanimate/outrun`
+   to `inanimate/resident`.
+3. C++ namespace: `Outrun::*` → `Resident::*` everywhere.
+4. Include directives: `<OutrunX.h>` → `<ResidentX.h>`.
+5. Cloudflare deployment hostname (m5stick-demo example):
+   `outrun-m5stick-demo.*` → `resident-m5stick-demo.*`.
+
+**Driver API rework.** Drivers now extend `Resident::Extension` (shared
+lifecycle base) instead of overriding `installSandboxModule(lua_State*)`
+directly, and register declaratively at config time. To migrate a driver:
+
+1. Replace `installSandboxModule(lua_State*)` with
+   `registerModule(Resident::LuaModule&)`. Bind each Lua function with
+   `m.method<Class, &Class::fn>("name")`. Member functions take a
+   `lua_State*`; `this` is recovered automatically. The old
+   `getFromLua` static helper goes away.
+2. Replace `sandbox().addDriver(&driver)` calls with
+   `cfg.extensions = {&a, &b, ...}` in your `DeviceConfig` (or
+   `SandboxConfig` for standalone use). `addDriver`, `addModule`, and
+   `setShaderTemplate` are removed; use `cfg.shaderTemplate = fn` instead.
+3. Delete manual `driver.begin()` / `driver.update()` calls from `setup()`
+   and `loop()` — `Sandbox` calls them. Delete `sandbox().initialize()`
+   from any `deviceSetup()` override — `Device::setup()` calls it after
+   `deviceSetup()` returns.
+
+Other API changes:
+
+- `Resident::Module` class removed; things that were Modules now extend
+  `Resident::Extension` directly.
+- `Resident::StatusDisplay` gains optional `begin()` / `update()` virtuals
+  (default no-op; existing implementations unaffected). `Device` drives
+  them automatically.
+- A `Driver` that also inherits `StatusDisplay` must list `Resident::Driver`
+  first in its inheritance list (`class : public Driver, public
+  StatusDisplay`) and should guard its `begin()` against double-call,
+  since both `Device` and `Sandbox` reach it.
+- Maximum 8 extensions per `Sandbox` (`Resident::Extensions::MAX`).
+
+**ESP-IDF consumers only — registry vs. vendored deps:** `CMakeLists.txt`
+`REQUIRES` defaults to the namespaced names exposed by the ESP Component
+Registry (`inanimate__courier`, `bblanchon__arduinojson`). PlatformIO
+consumers are unaffected.
+
+If you vendor courier / ArduinoJson / ezTime / Esp32Lua under bare directory
+names rather than fetching them via the registry, override the names from
+your project's root `CMakeLists.txt`:
+
+~~~cmake
+set(RESIDENT_COURIER_DEP     "courier"     CACHE STRING "" FORCE)
+set(RESIDENT_ARDUINOJSON_DEP "ArduinoJson" CACHE STRING "" FORCE)
+~~~
+
+`RESIDENT_EZTIME_DEP` defaults empty — `inanimate__courier` bundles ezTime
+via CMake FetchContent on the registry path, so no separate component is
+needed. Vendoring consumers who manage ezTime as a standalone component
+should set `RESIDENT_EZTIME_DEP=ezTime` to satisfy the strict
+header-required-component check.
+
+`RESIDENT_ESP32LUA_DEP` defaults bare (`Esp32Lua`); the example's
+`tools/fetch-deps.sh` fetches it locally since it's not on the registry.
 
 ### New features
 
-- `examples/espidf-basic/`: minimal ESP-IDF example demonstrating Outrun
-  integration in a real-consumer style. Uses registry pins for
-  `espressif/arduino-esp32`, `inanimate/courier` (≥0.3.2), and
-  `bblanchon/arduinojson`; a small `tools/fetch-deps.sh` script handles
-  Esp32Lua (the only dep not on the ESP Component Registry, pinned by
-  commit SHA against the upstream Arduino lib).
-- Outrun's `idf_component.yml` now declares its dependencies on the
-  registry (`espressif/arduino-esp32`, `inanimate/courier`,
-  `bblanchon/arduinojson`), so IDF consumers no longer have to
-  re-declare them. `Esp32Lua` remains consumer-supplied (not on the
-  registry) — see the example's fetch script for the canonical pattern.
+- `Resident::LuaModule` builder: `method<Class, &Class::fn>("name")`,
+  `staticMethod`, `constant`. Const member functions supported.
+  C++14-compatible — no compiler-flag changes needed in downstream
+  `platformio.ini`.
+- `Resident::Extension` base class for Lua-only modules that have no
+  hardware and emit no events. Same `registerModule` / lifecycle hooks
+  as `Driver`.
+- `Resident::Extensions` declarative wrapper: `cfg.extensions = {&a, &b}`.
+- `examples/espidf-basic/`: minimal ESP-IDF example demonstrating the
+  new declarative pattern. Uses `tools/fetch-deps.sh` to fetch
+  `Esp32Lua` (the only dep not on the ESP Component Registry).
+- Resident's `idf_component.yml` declares its registry dependencies, so
+  IDF consumers no longer have to re-declare `arduino-esp32`, `courier`,
+  or `arduinojson`.
+
+### Fixes
+
+- Driver `update()` runs at full main-loop rate even when no app is
+  loaded, so button drivers keep debouncing between app reloads.
+- Driver event-sink is wired before `begin()` is called, so drivers can
+  safely report initial state via `sendEvent()` from `begin()`.
 
 ### Internal
 
-- Added `tools/run-tests.py` (uv inline-script) with `static-analysis`,
-  `unit`, `build`, and `all` subcommands. Local entry point and CI driver.
-- Added `test/unit/` with a native PlatformIO env and a smoke assertion.
-  Slot for future unit tests; no existing source is currently covered.
-- Added `.github/workflows/ci.yml` with four jobs: static analysis
-  (cppcheck), unit tests (PIO native), PlatformIO build of `m5stick-demo`,
-  and ESP-IDF build of `examples/espidf-basic` against IDF v5.5.3.
-- Patched `examples/m5stick-demo/device/platformio.ini` to use the in-tree
-  Outrun source (`symlink://../../..`) and HTTPS for courier, so the demo
-  builds in CI without SSH credentials. Added an explicit
-  `symlink://lib/drivers` line to keep `M5StickDrivers` discoverable
-  (PlatformIO suppresses the project's own `lib/` scan when a parent
-  symlink contains the project). No functional change for local devs.
+- Added `tools/run-tests.py` (uv inline-script) and
+  `.github/workflows/ci.yml` with four jobs: static analysis (cppcheck),
+  unit tests (PIO native), PlatformIO build of `m5stick-demo`, ESP-IDF
+  build of `examples/espidf-basic` against IDF v5.5.3.
+- Native unit-test environment under `test/unit/` links Lua and provides
+  direct test coverage for `Extension`, `LuaModule`, and `Extensions`.
+- `examples/m5stick-demo/device/platformio.ini` patched to use the in-tree
+  Resident source (`symlink://../../..`) and HTTPS for courier so the demo
+  builds in CI without SSH credentials.
 
 ---
 
@@ -54,12 +114,12 @@ Initial version of this changelog. The state of the repo at commit `82a34e4` is 
 
 ## Usage (for agents)
 
-### Consuming Outrun
+### Consuming Resident
 
-Outrun is a foundational library that other projects build on. If you are an agent working in a downstream project that depends on Outrun:
+Resident is a foundational library that other projects build on. If you are an agent working in a downstream project that depends on Resident:
 
-1. Check the version of Outrun your project currently uses (look at the dependency pin in your project's manifest, or the vendored copy's `library.json` / `idf_component.yml`).
-2. Check the latest version of Outrun in this changelog.
+1. Check the version of Resident your project currently uses (look at the dependency pin in your project's manifest, or the vendored copy's `library.json` / `idf_component.yml`).
+2. Check the latest version of Resident in this changelog.
 3. Read every section between those two versions and update your project's code accordingly — paying particular attention to **Breaking changes**.
 
 ### Updating this changelog

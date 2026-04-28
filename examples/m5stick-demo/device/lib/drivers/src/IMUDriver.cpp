@@ -28,23 +28,8 @@ static inline void remapToBodyFrame(float& x, float& y) {
   }
 }
 
-void IMUDriver::installSandboxModule(lua_State* L) {
-  lua_newtable(L);
-
-  lua_pushcfunction(L, lua_imu_accel);
-  lua_setfield(L, -2, "accel");
-
-  lua_pushcfunction(L, lua_imu_gyro);
-  lua_setfield(L, -2, "gyro");
-
-  lua_pushcfunction(L, lua_imu_temp);
-  lua_setfield(L, -2, "temp");
-
-  lua_setglobal(L, "imu");
-}
-
 // imu.accel() -> ax, ay, az (g-force, body frame)
-int IMUDriver::lua_imu_accel(lua_State* L) {
+int IMUDriver::accel(lua_State* L) {
   M5.Imu.update();
   auto data = M5.Imu.getImuData();
   float ax = data.accel.x, ay = data.accel.y, az = data.accel.z;
@@ -56,7 +41,7 @@ int IMUDriver::lua_imu_accel(lua_State* L) {
 }
 
 // imu.gyro() -> gx, gy, gz (degrees/sec, body frame)
-int IMUDriver::lua_imu_gyro(lua_State* L) {
+int IMUDriver::gyro(lua_State* L) {
   M5.Imu.update();
   auto data = M5.Imu.getImuData();
   float gx = data.gyro.x, gy = data.gyro.y, gz = data.gyro.z;
@@ -68,7 +53,7 @@ int IMUDriver::lua_imu_gyro(lua_State* L) {
 }
 
 // imu.temp() -> not supported by M5Unified IMU_Class, returns 0
-int IMUDriver::lua_imu_temp(lua_State* L) {
+int IMUDriver::temp(lua_State* L) {
   lua_pushnumber(L, 0);
   return 1;
 }

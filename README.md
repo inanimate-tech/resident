@@ -1,37 +1,35 @@
-# Outrun
+# Resident
 
 Sandbox with hardware IO and hot reload for ESP32 devices.
 
-Outrun provides a sandboxed Lua runtime that can be loaded with new code over the network at any time. Hardware peripherals are exposed to Lua through a driver interface, so apps can draw to displays, read sensors, and control outputs without touching C++.
+Resident provides a sandboxed Lua runtime that can be loaded with new code over the network at any time. Hardware peripherals are exposed to Lua through a driver interface, so apps can draw to displays, read sensors, and control outputs without touching C++.
 
 ## Quick Start
 
-### With `Outrun::Device` (network-connected)
+### With `Resident::Device` (network-connected)
 
-`Outrun::Device` composes [Courier](https://github.com/inanimate-tech/courier) for connectivity with the sandbox runtime. It handles WiFi, WebSocket transport, and message routing automatically.
+`Resident::Device` composes [Courier](https://github.com/inanimate-tech/courier) for connectivity with the sandbox runtime. It handles WiFi, WebSocket transport, and message routing automatically.
 
 ```cpp
-#include <OutrunDevice.h>
+#include <ResidentDevice.h>
 #include "MyDisplayDriver.h"
+#include "MyButtonDriver.h"
 
 MyDisplayDriver display;
+MyButtonDriver button{...};   // however your driver takes config
 
-Outrun::DeviceConfig makeConfig() {
-    Outrun::DeviceConfig cfg;
-    cfg.deviceType = "demo";
-    cfg.host = "your-server.example.com";
+Resident::DeviceConfig makeConfig() {
+    Resident::DeviceConfig cfg;
+    cfg.deviceType    = "demo";
+    cfg.host          = "your-server.example.com";
     cfg.statusDisplay = &display;
+    cfg.extensions    = {&display, &button};
     return cfg;
 }
 
-class MyDevice : public Outrun::Device {
+class MyDevice : public Resident::Device {
 public:
-    MyDevice() : Outrun::Device(makeConfig()) {}
-
-    void deviceSetup() override {
-        sandbox().addDriver(&display);
-        sandbox().initialize();
-    }
+    MyDevice() : Resident::Device(makeConfig()) {}
 };
 
 MyDevice device;
@@ -42,21 +40,28 @@ void loop()  { device.loop(); }
 
 The device connects to WiFi (with a captive portal for configuration), opens a WebSocket to your server, and accepts Lua apps and shader expressions as JSON messages.
 
-### Standalone `Outrun::Sandbox` (no network)
+For telemetry callback or timezone, call `sandbox().setTelemetryCallback(...)` / `sandbox().setTimezone(...)` from your `deviceSetup()` override.
+
+### Standalone `Resident::Sandbox` (no network)
 
 Use the sandbox directly without any network stack:
 
 ```cpp
-#include <OutrunSandbox.h>
+#include <ResidentSandbox.h>
 #include "MyLEDDriver.h"
 
 MyLEDDriver led;
-Outrun::Sandbox sandbox;
+
+Resident::SandboxConfig makeConfig() {
+    Resident::SandboxConfig cfg;
+    cfg.extensions = {&led};
+    return cfg;
+}
+
+Resident::Sandbox sandbox{makeConfig()};
 
 void setup() {
-    sandbox.addDriver(&led);
     sandbox.initialize();
-
     sandbox.loadApp(
         "function on_tick(ctx, dt_ms)\n"
         "  local t = ctx.time_ms / 1000\n"
@@ -72,10 +77,11 @@ void loop() {
 
 ## Writing a Driver
 
-Drivers expose hardware to Lua by registering global functions:
+Drivers expose hardware to Lua via a builder API:
 
 ```cpp
-#include <OutrunDriver.h>
+#include <ResidentDriver.h>
+#include <ResidentLuaModule.h>
 #include <M5Unified.h>
 
 extern "C" {
@@ -83,19 +89,14 @@ extern "C" {
   #include "lua/lauxlib.h"
 }
 
-class IMUDriver : public Outrun::Driver {
+class IMUDriver : public Resident::Driver {
 public:
     const char* name() const override { return "imu"; }
-
-    void installSandboxModule(lua_State* L) override {
-        lua_newtable(L);
-        lua_pushcfunction(L, lua_accel);
-        lua_setfield(L, -2, "accel");
-        lua_setglobal(L, "imu");
+    void registerModule(Resident::LuaModule& m) override {
+        m.method<IMUDriver, &IMUDriver::accel>("accel");
     }
 
-private:
-    static int lua_accel(lua_State* L) {
+    int accel(lua_State* L) {
         M5.Imu.update();
         auto d = M5.Imu.getImuData();
         lua_pushnumber(L, d.accel.x);
@@ -115,15 +116,25 @@ function on_tick(ctx, dt_ms)
 end
 ```
 
+For Lua-only extensions that don't expose hardware or emit events, extend `Resident::Extension` directly instead of `Resident::Driver` — the same `registerModule(LuaModule&)` and lifecycle hooks apply.
+
 ### Driver lifecycle
 
-- `installSandboxModule(L)` — called once during `sandbox.initialize()` to register Lua globals
-- `onAppReset()` — called when a new app is loaded, before compilation
-- `onAppRunning(bool)` — called when an app starts or stops running
+- `begin()` — called once by `Sandbox::initialize()` in registration order.
+  Hardware init goes here. Idempotent: a manual early call is safe (the
+  Sandbox's call becomes a no-op).
+- `update()` — called every iteration of `Sandbox::loop()`. Use for
+  per-tick driver work like polling and debouncing. Runs at full main-loop
+  rate, distinct from Lua's 10 FPS `on_tick`.
+- `registerModule(LuaModule& m)` — called once by `Sandbox::initialize()`
+  to register the driver's Lua-visible global. Use the builder's
+  `method<>`, `staticMethod`, and `constant` overloads.
+- `onAppReset()` — called when a new app is loaded (before compilation).
+- `onAppRunning(bool)` — called when an app starts or stops running.
 
 ## Message Protocol
 
-When using `Outrun::Device`, the base `onMessage()` routes these types to the sandbox:
+When using `Resident::Device`, the base `onMessage()` routes these types to the sandbox:
 
 Subclasses can override `onMessage()` to handle custom types, then call `Device::onMessage()` for sandbox routing. The same pattern applies to `onConnected()`, `onConnectionChange()`, and `onTransportsWillConnect()` — override and call super.
 
@@ -165,7 +176,7 @@ platform = espressif32@6.12.0
 board = esp32-s3-devkitc-1
 framework = arduino
 lib_deps =
-    https://github.com/inanimate-tech/outrun.git
+    https://github.com/inanimate-tech/resident.git
     https://github.com/inanimate-tech/courier.git
     tzapu/WiFiManager@^2.0.17
     bblanchon/ArduinoJson@^7.4.2
@@ -185,7 +196,7 @@ And in `idf_component.yml`:
 
 ```yaml
 dependencies:
-  inanimate/outrun:
+  inanimate/resident:
     version: "^0.1.0"
 ```
 

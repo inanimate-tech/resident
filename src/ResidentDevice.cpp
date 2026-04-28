@@ -1,7 +1,7 @@
-// src/OutrunDevice.cpp
-#include "OutrunDevice.h"
+// src/ResidentDevice.cpp
+#include "ResidentDevice.h"
 
-namespace Outrun {
+namespace Resident {
 
 Device* Device::_instance = nullptr;
 
@@ -102,7 +102,7 @@ void Device::onTransportsWillConnect()
   CourierEndpoint wsEp;
   wsEp.path = _wsPath.c_str();
   _courier.setEndpoint("ws", wsEp);
-  Serial.printf("[outrun] WS path: %s\n", _wsPath.c_str());
+  Serial.printf("[resident] WS path: %s\n", _wsPath.c_str());
 }
 
 void Device::onConnected()
@@ -146,17 +146,36 @@ void Device::setup()
   String apName = String(getDeviceType());
   apName[0] = toupper(apName[0]);
   String idSuffix = _deviceId.substring(0, 4);
-  _courier.setAPName((String("Outrun ") + apName + " " + idSuffix).c_str());
+  _courier.setAPName((String("Resident ") + apName + " " + idSuffix).c_str());
 
-  Serial.printf("[outrun] Device: %s (%s)\n", getDeviceType(), _deviceId.c_str());
+  Serial.printf("[resident] Device: %s (%s)\n", getDeviceType(), _deviceId.c_str());
 
+  // Forward extension/shader config from DeviceConfig into the internal sandbox.
+  Resident::SandboxConfig sandboxCfg;
+  sandboxCfg.extensions     = _config.extensions;
+  sandboxCfg.shaderTemplate = _config.shaderTemplate;
+  _sandbox.configure(sandboxCfg);
+
+  // Status display gets its own lifecycle from Device.
+  if (_config.statusDisplay) _config.statusDisplay->begin();
+
+  // Subclass hook — last chance to set telemetry/timezone or add custom setup
+  // before the sandbox initializes its Lua state and walks extensions.
   deviceSetup();
+
+  // Initialize the sandbox now that all configuration is in place. This is
+  // what was previously done manually inside subclass deviceSetup(); after
+  // the driver-DX rework, Device handles it.
+  _sandbox.initialize();
+
   _courier.setup();
 }
 
 void Device::loop()
 {
   _courier.loop();
+
+  if (_config.statusDisplay) _config.statusDisplay->update();
 
   if (isConnected()) {
     _sandbox.loop();
@@ -207,4 +226,4 @@ void Device::showStatusText(const char* text)
   _config.statusDisplay->displayText(text);
 }
 
-} // namespace Outrun
+} // namespace Resident

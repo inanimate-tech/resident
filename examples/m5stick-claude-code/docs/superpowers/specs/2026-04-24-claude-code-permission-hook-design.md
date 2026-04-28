@@ -22,7 +22,7 @@ Claude Code PermissionRequest
   → broadcast {"type":"app_event","name":"permission","data":{tool, summary}}
     to both "device" and "monitor" connections
   → 204 No Content back to Claude Code
-  → Device: base Outrun::Device::onMessage routes to sandbox
+  → Device: base Resident::Device::onMessage routes to sandbox
   → Lua app's on_event(ctx, e) fires with e.name == "permission"
 ```
 
@@ -67,8 +67,8 @@ field from `tool_input` based on `tool_name`:
 | *fallback*  | first string value in `tool_input`, or `""` |
 
 The picked string is truncated to 180 characters. This keeps the serialised
-`data` JSON under the Outrun sandbox's 256-byte per-event buffer
-(`OutrunDevice.cpp` — `char dataJson[256]`).
+`data` JSON under the Resident sandbox's 256-byte per-event buffer
+(`ResidentDevice.cpp` — `char dataJson[256]`).
 
 ## Broadcast Shape
 
@@ -93,8 +93,8 @@ frames.
 
 ## Device Side
 
-**Unchanged.** The base `Outrun::Device::onMessage` in
-`outrun/src/OutrunDevice.cpp:115-139` already handles
+**Unchanged.** The base `Resident::Device::onMessage` in
+`outrun/src/ResidentDevice.cpp:115-139` already handles
 `type: "app_event"` — it reads `name` and `data`, then calls
 `_sandbox.sendAppEvent(name, dataJson)`. Whatever Lua app is currently
 loaded receives the event through `on_event(ctx, e)`:
