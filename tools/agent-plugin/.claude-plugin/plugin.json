@@ -1,0 +1,5 @@
+{
+  "name": "resident",
+  "version": "0.1.0",
+  "description": "Skills for building, debugging, and extending Resident ESP32 sandbox devices."
+}
