@@ -50,6 +50,28 @@ nil-dereferences. It does not catch: hardware-specific behavior, timing
 issues, or modules referenced in code but absent from DEVICE-SKILL.md
 (those will fall back to a global `__index` no-op trap).
 
+## Optional: validation stubs in DEVICE-SKILL.md
+
+If auto-deduced stubs are too loose for your apps (e.g. apps do
+arithmetic on the result of `screen.width()`), add a `## Validation stubs`
+section to your DEVICE-SKILL.md with a Lua block that provides concrete
+return values for getter-style functions. validate-app injects that
+block after the auto-deduced stubs, so it overrides them.
+
+Example (m5stick-demo's DEVICE-SKILL.md):
+
+```lua
+screen = setmetatable({
+  width  = function() return 240 end,
+  height = function() return 135 end,
+}, { __index = function() return function() end end })
+
+imu = setmetatable({
+  accel = function() return 0, 0, 1 end,
+  gyro  = function() return 0, 0, 0 end,
+}, { __index = function() return function() end end })
+```
+
 ## Composing with other skills
 
 `validate-app` is independent. The expected pattern is:

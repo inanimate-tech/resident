@@ -72,6 +72,19 @@ if [[ -n "$device_skill" && -f "$device_skill" ]]; then
   done < <("$DEDUCE" "$device_skill")
 fi
 
+# Optional: extract `## Validation stubs` Lua block from DEVICE-SKILL.md.
+# Override the auto-deduced loose stubs with concrete return values.
+validation_stubs=""
+if [[ -n "$device_skill" && -f "$device_skill" ]]; then
+  validation_stubs=$(awk '
+    /^## Validation stubs/ { in_section = 1; next }
+    in_section && /^## /   { in_section = 0; next }
+    in_section && /^```lua/ { in_block = 1; next }
+    in_section && /^```/    { in_block = 0; next }
+    in_section && in_block  { print }
+  ' "$device_skill")
+fi
+
 # A catch-all metatable on _G so any unknown global access also gets a no-op.
 # Apps that reference truly unknown things won't crash on simple .x access.
 fallback_stub='
@@ -86,6 +99,7 @@ trap 'rm -f "$tmp"' EXIT
 {
   cat "$BUILTINS"
   echo "$device_stubs"
+  echo "$validation_stubs"
   echo "$fallback_stub"
   echo '-- ===== USER APP ====='
   echo "$app_code"

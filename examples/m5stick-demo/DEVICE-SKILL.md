@@ -213,3 +213,29 @@ end
 - Use `e.index` (0 or 1) to distinguish buttons in `on_event`.
 - Precompute lookup tables in `init()` to avoid math in hot paths.
 - For shake detection, threshold against magnitude, not individual axes.
+
+## Validation stubs
+
+Optional Lua block consumed by `validate-app` to provide concrete return
+values for getter-style functions. Without these, getter calls return
+`nil` and apps that do arithmetic on the result crash inside the
+validator.
+
+```lua
+screen = setmetatable({
+  width  = function() return 240 end,
+  height = function() return 135 end,
+}, { __index = function() return function() end end })
+
+imu = setmetatable({
+  accel = function() return 0, 0, 1 end,  -- face-up resting orientation
+  gyro  = function() return 0, 0, 0 end,
+  temp  = function() return 0 end,
+}, { __index = function() return function() end end })
+
+button = setmetatable({
+  press_count = function() return 0 end,
+}, { __index = function() return function() end end })
+
+buzzer = setmetatable({}, { __index = function() return function() end end })
+```
