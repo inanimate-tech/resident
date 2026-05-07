@@ -1,93 +1,88 @@
 # M5Stick Demo
 
-A minimal example of an M5Stick with an [Resident](https://github.com/inanimate-tech/resident) sandbox, receiving apps from a Cloudflare Workers server.
+A working example of an M5StickC Plus2 running the [Resident](https://github.com/inanimate-tech/resident) Lua sandbox, receiving apps over WebSocket from the canonical Resident relay at [resident.inanimate.tech](https://resident.inanimate.tech) — or from a self-hosted Cloudflare Worker bundled in `server/`.
 
-The device connects to the server via WebSocket managed by [Courier](https://github.com/inanimate-tech/courier).
-
-The server accepts Lua apps via HTTP POST and relays them to connected devices.
+The example is the on-ramp: **flash the device, try it against the public relay, then optionally deploy the bundled server as the starting point for your own back-end.**
 
 ## Structure
 
 ```
 m5stick-demo/
 ├── device/          # PlatformIO firmware for M5StickC Plus2
-├── server/          # Cloudflare Worker (Durable Object + web UI)
 ├── device-apps/     # Example Lua apps for the sandbox
-├── send-app.sh      # CLI tool to send apps to devices
+├── send-app.sh      # CLI tool to push apps without installing the agent plugin
+├── server/          # Optional self-hosted Cloudflare Worker (Durable Object + UI)
 └── DEVICE-SKILL.md  # Lua-side device surface (used by /resident:create-app etc.)
 ```
 
-## Device IDs as auth
+---
 
-This example uses the deviceId `m5stick-demo` — guessable on purpose,
-because it's a public demo. **For a real deployment**, generate a long
-random ID (≥ 128 bits of entropy, e.g. UUIDv4 or 32 hex chars) and treat
-it like an API key:
+## 1. Flash the device
 
-- Anyone with the deviceId can push apps to or connect as that device.
-- The default Resident relay (`resident.inanimate.tech`) does no other
-  authentication in v1.
-- Self-hosted relays inherit the same model unless you add auth on top.
-
-## Device
-
-The device firmware runs on M5StickC Plus2. It connects via WebSocket and receives Lua apps to execute in its Resident sandbox.
-
-### Lua App Callbacks
-
-The Resident sandbox provides three main callbacks for Lua apps:
-
-```lua
-function init(ctx)        -- called once after app loads
-function on_tick(ctx, dt_ms)  -- called ~10 times per second
-function on_event(ctx, e)     -- called on button presses
-```
-
-### Drivers and Available Lua APIs
-
-This M5Stick project includes drivers for the display, IMU, and buzzer. An Resident driver manages a hardware peripheral and exposes an API to Lua apps in the sandbox.
-
-- `screen.clear(r, g, b)` — clear display
-- `screen.text(x, y, str)` — draw text
-- `screen.fill_rect(x, y, w, h, r, g, b)` — draw filled rectangle
-- `screen.pixel(x, y, r, g, b)` — draw pixel
-- `screen.flip()` — flush buffer to screen
-- `screen.width()`, `screen.height()` — display dimensions
-- `imu.accel()` — returns ax, ay, az (g-force)
-- `imu.gyro()` — returns gx, gy, gz (degrees/sec)
-- `buzzer.beep(freq, duration_ms)` — play tone
-- `buzzer.tone(freq)` — continuous tone
-- `buzzer.stop()` — stop sound
-
-### Build & Flash
-
-First [install the PlatformIO CLI](https://docs.platformio.org/en/stable/core/installation/index.html). Then connect your M5Stick, and build and flash the firmware:
+First [install the PlatformIO CLI](https://docs.platformio.org/en/stable/core/installation/index.html). Then connect your M5StickC Plus2 over USB:
 
 ```bash
 cd device
 pio run -t upload
 ```
 
-If you're using an **M5StickS3**, specify the environment:
+For an M5StickS3:
 
 ```bash
 cd device
 pio run -e m5sticks3 -t upload
 ```
 
-### Connect to Wi-Fi
+The first time the device boots, it creates a Wi-Fi access point named **Resident Stick XXXX**. Connect to it and use the captive portal to give the device your local Wi-Fi credentials. (ESP32 only does 2.4 GHz.)
 
-The device manages its own connectivity.
+Once connected to Wi-Fi, the device opens a WebSocket to `wss://resident.inanimate.tech/devices/<deviceId>` and displays its 8-character **device ID** on screen — something like `abc12345`. Note it down; you'll need it to push apps.
 
-If it cannot connect to a configured Wi-Fi network, it creates an access point called **Resident Stick XXXX**.
+The deviceId is derived from the chip's MAC address. It's stable across reboots.
 
-Connect to this and configure your local Wi-Fi credentials via the captive portal (note that ESP32 does not support 5GHz networks).
+> **Heads up.** `resident.inanimate.tech` is a public relay with no authentication beyond the deviceId itself. Anyone who knows your deviceId can push apps to your device. That's fine for hacking, but for anything more permanent, deploy your own server (see step 3).
 
-The device screen will show "Connecting..." until the server is deployed.
+---
 
-## Server
+## 2. Push an app
 
-The server is a Cloudflare Worker with a single Durable Object (`DeviceAgent`). Each device gets its own DO instance identified by device ID.
+You don't need to install anything — `send-app.sh` is a small bash script that requires only `curl` and `jq` (`brew install jq`).
+
+```bash
+# Read the device ID off the device's screen, then:
+./send-app.sh --device-id abc12345 device-apps/hello.lua
+
+# Or pipe Lua source via stdin:
+echo 'function init(ctx) screen.clear(255,0,0) screen.flip() end' | \
+  ./send-app.sh --device-id abc12345
+
+# To avoid retyping the deviceId, save it once:
+echo 'abc12345' > .resident-device-id
+./send-app.sh device-apps/bounce.lua
+```
+
+The `device-apps/` directory has a few sample apps to try: `hello.lua`, `bounce.lua`, `accel.lua`, `rainbow.lua`.
+
+If you've installed the [resident agent plugin](https://github.com/inanimate-tech/agent-plugins), the `/resident:push-app` skill does the same thing from inside Claude Code.
+
+### What's actually happening
+
+`send-app.sh` does this:
+
+```bash
+curl -X POST https://resident.inanimate.tech/devices/abc12345/send \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"app","code":"<your lua source>"}'
+```
+
+The relay validates the JSON shape, then forwards it verbatim to the device's WebSocket. The Resident sandbox on the device parses the message, compiles the Lua, and runs it. Any previously-loaded app is stopped first.
+
+`type: "shader"` and `type: "app_event"` work the same way — the relay forwards any well-formed JSON object; it never inspects the contents.
+
+---
+
+## 3. Run your own server (optional)
+
+The bundled `server/` is a Cloudflare Worker that mirrors the canonical relay protocol. Use it as a starting point for your own back-end — for example, to add authentication, persistence, or a richer admin UI than the basic React monitor included here.
 
 ### Setup
 
@@ -97,6 +92,8 @@ npm install
 npm run dev
 ```
 
+Open http://localhost:5173 in a browser. Enter the device ID and you can push apps from a textarea, with live status of whether the device is connected.
+
 ### Deploy
 
 ```bash
@@ -104,32 +101,46 @@ cd server
 npm run deploy
 ```
 
-### Web UI
+Wrangler will deploy to your own Cloudflare account. Once deployed, point the device at it: edit `device/src/main.cpp`, change `RESIDENT_HOST` to your worker's URL, and `pio run -t upload` again.
 
-Open the server URL in a browser. Enter a device ID to monitor its connection status and send Lua apps interactively.
-
-### API
-
-POST Lua code to a device:
-
-```bash
-curl -X POST -H "Content-Type: text/plain" \
-  --data-binary @device-apps/hello.lua \
-  https://resident-m5stick-demo.YOUR-CF-NAME.workers.dev/agents/device-agent/m5stick-demo
+```cpp
+static constexpr const char* RESIDENT_HOST = "your-worker.example.workers.dev";
 ```
 
-
-## send-app.sh
-
-Send a Lua app to a device from the command line:
+Then push from the CLI with the same `send-app.sh`, just with `--base-url`:
 
 ```bash
-# From a file
-./send-app.sh device-apps/hello.lua
-
-# From stdin
-echo 'function init(ctx) screen.clear(255,0,0) screen.flip() end' | ./send-app.sh
-
-# Local dev
-./send-app.sh --dev device-apps/hello.lua
+./send-app.sh \
+  --base-url https://your-worker.example.workers.dev \
+  --device-id abc12345 \
+  device-apps/hello.lua
 ```
+
+### How the server is built
+
+`server/src/server.ts` is a single Durable Object — `DeviceAgent` — extending `Agent` from the Cloudflare Agents SDK. The Worker routes `/devices/<id>/*` directly into the DO via `getAgentByName`. The DO:
+
+- Accepts a device WebSocket on `/devices/<id>` (untagged → `device` tag).
+- Accepts a monitor WebSocket on `/devices/<id>?monitor=1` (used by the bundled UI; an extension on top of the canonical protocol).
+- Handles `POST /devices/<id>/send`: validates JSON shape, forwards verbatim to the device WS, echoes to monitors.
+- Handles `GET /devices/<id>`: returns the deviceId and current connection count as plain text.
+
+The relay never reads `code`, `expr`, or `name` fields — the protocol is defined by the firmware library and the skill, not the relay.
+
+### Why the relay is dumb
+
+This is the **end-to-end principle**: the relay forwards bytes; the firmware library and the skill agree on the JSON shape. New protocol message types (e.g. `app_event` for two-way coordination) work without redeploying the worker. See the [resident sandbox tooling spec](../../docs/superpowers/specs/2026-05-07-resident-sandbox-tooling-design.md) for the full design.
+
+---
+
+## Lua API on this device
+
+See [`DEVICE-SKILL.md`](./DEVICE-SKILL.md) for the complete Lua-side surface (screen, IMU, buzzer, buttons). The `/resident:create-app` skill reads this file to write apps for the device.
+
+---
+
+## Device IDs as auth
+
+The deviceId is the *only* secret. Anyone who knows it can push apps to or read your device. The example uses an 8-character hex string derived from the chip's MAC address — fine for development and for the public demo, but **for anything you actually deploy, switch to a longer random ID** (≥ 128 bits of entropy, e.g. UUIDv4 or 32 hex chars) and treat it like an API key.
+
+To do that today, replace the call to `getDeviceId()` in `device/src/main.cpp` (`onTransportsWillConnect`) with a constant or NVS-backed value, and use the same value in `send-app.sh`.

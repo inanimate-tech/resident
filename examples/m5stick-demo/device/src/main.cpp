@@ -5,6 +5,14 @@
 #include "BuzzerDriver.h"
 #include "PushButtonsDriver.h"
 
+// Default endpoint: the canonical Resident relay. Devs can self-host by
+// changing RESIDENT_HOST below (or extending Courier with a config portal).
+// The relay speaks the Resident canonical protocol:
+//   wss://<host>/devices/<deviceId>            ← device WS (here)
+//   POST https://<host>/devices/<deviceId>/send  ← skill/curl pushes JSON
+static constexpr const char* RESIDENT_HOST = "resident.inanimate.tech";
+static constexpr uint16_t RESIDENT_PORT = 443;
+
 // M5StickC Plus2: Button A = GPIO 37, Button B = GPIO 39
 static constexpr uint8_t BUTTON_PINS[] = {37, 39};
 static constexpr PushButtonsConfig buttonConfig = {.numButtons = 2, .pins = BUTTON_PINS};
@@ -14,39 +22,11 @@ IMUDriver imuDriver;
 BuzzerDriver buzzerDriver{255};
 PushButtonsDriver buttonDriver{buttonConfig};
 
-String shaderTemplate(const Resident::ShaderFields& fields) {
-    auto it = fields.find("expr");
-    if (it == fields.end()) return "";
-
-    String lua = "function on_tick(ctx, dt_ms)\n";
-    lua += "  local time_ms = ctx.time_ms\n";
-    lua += "  local c = (" + it->second + ")\n";
-    lua += "  local r, g, b\n";
-    lua += "  if c < -1 then\n";
-    lua += "    c = -c\n";
-    lua += "    b = math.floor(c) % 256\n";
-    lua += "    g = math.floor(c / 256) % 256\n";
-    lua += "    r = math.floor(c / 65536) % 256\n";
-    lua += "  elseif c > 0.5 then\n";
-    lua += "    r, g, b = 255, 255, 255\n";
-    lua += "  else\n";
-    lua += "    r, g, b = 0, 0, 0\n";
-    lua += "  end\n";
-    lua += "  screen.clear(r, g, b)\n";
-    lua += "  screen.flip()\n";
-    lua += "end\n";
-    return lua;
-}
-
-static const char* DEFAULT_SHADER =
-    "rgb(sin(time_ms/1000)*0.5+0.5, sin(time_ms/1000+2.094)*0.5+0.5, sin(time_ms/1000+4.189)*0.5+0.5)";
-
 Resident::DeviceConfig makeConfig() {
     Resident::DeviceConfig cfg;
     cfg.deviceType     = "stick";
-    cfg.host           = "resident-m5stick-demo.genmon.workers.dev";
+    cfg.host           = RESIDENT_HOST;
     cfg.statusDisplay  = &displayDriver;
-    cfg.shaderTemplate = shaderTemplate;
     cfg.extensions     = {&displayDriver, &imuDriver, &buzzerDriver, &buttonDriver};
     return cfg;
 }
@@ -55,23 +35,33 @@ class DemoDevice : public Resident::Device {
 public:
     DemoDevice() : Resident::Device(makeConfig()) {}
 
-    // Override the default /agents/<type>-agent/<deviceId> path with a
-    // demo-specific static path (the server-side agent name is fixed).
+    // Override the default /agents/<type>-agent/<deviceId> path with the
+    // canonical /devices/<deviceId> path used by resident.inanimate.tech.
     void onTransportsWillConnect() override {
-        _ws.setEndpoint("resident-m5stick-demo.genmon.workers.dev",
-                        443,
-                        "/agents/device-agent/m5stick-demo");
+        String wsPath = String("/devices/") + getDeviceId();
+        _ws.setEndpoint(RESIDENT_HOST, RESIDENT_PORT, wsPath.c_str());
     }
 
     void deviceLoop() override {
         M5.update();
 
+        // On first successful connection, replace the StatusDisplay's
+        // "Connected" text with a sandbox app that shows the device ID
+        // prominently (so the user knows what to push to). A real app sent
+        // via push-app or send-app.sh will replace this.
         static bool loaded = false;
         if (!loaded && isConnected()) {
             loaded = true;
-            Resident::ShaderFields fields;
-            fields["expr"] = DEFAULT_SHADER;
-            sandbox().loadShader(fields);
+            String app = "function init(ctx)\n"
+                         "  screen.clear()\n"
+                         "  screen.text(10, 15, 'Resident', 3)\n"
+                         "  screen.text(10, 60, 'Device ID:', 2)\n"
+                         "  screen.text(10, 90, '";
+            app += getDeviceId();
+            app += "', 3, 0, 255, 0)\n"
+                   "  screen.flip()\n"
+                   "end\n";
+            sandbox().loadApp(app.c_str());
         }
     }
 };
