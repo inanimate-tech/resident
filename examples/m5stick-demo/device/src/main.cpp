@@ -13,8 +13,15 @@
 static constexpr const char* RESIDENT_HOST = "resident.inanimate.tech";
 static constexpr uint16_t RESIDENT_PORT = 443;
 
-// M5StickC Plus2: Button A = GPIO 37, Button B = GPIO 39
+// Board-specific button pins. M5StickC Plus2 (ESP32 classic): GPIO 37 + 39.
+// M5StickS3 (ESP32-S3 with OPI PSRAM): GPIO 11 + 12. On the S3, GPIO 37 is
+// part of the OPI PSRAM interface — reading it via digitalRead() triggers a
+// watchdog reset.
+#if defined(BOARD_M5STICKS3)
+static constexpr uint8_t BUTTON_PINS[] = {11, 12};
+#else  // BOARD_M5STICK_C_PLUS2 (default)
 static constexpr uint8_t BUTTON_PINS[] = {37, 39};
+#endif
 static constexpr PushButtonsConfig buttonConfig = {.numButtons = 2, .pins = BUTTON_PINS};
 
 DisplayDriver displayDriver;
