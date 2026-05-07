@@ -3,15 +3,16 @@ name: create-app
 description: >-
   Use to generate a Resident Lua app from a natural-language description.
   Reads embedded sandbox docs and the firmware project's DEVICE-SKILL.md
-  to know the runtime surface, then writes Lua source to --out or stdout.
-  Triggered by /resident:create-app or "write a Lua app for this device".
+  to know the runtime surface, generates Lua source, validates it, and
+  writes the result via --out (or stdout). Triggered by
+  /resident:create-app or "write a Lua app for this device".
 ---
 
 # create-app
 
-Generate a Resident Lua app from a description. Output is plain Lua
-source — no validation, no push. The agent composes those steps via the
-sibling `validate-app` and `push-app` skills.
+Generate a Resident Lua app from a description. The output is validated
+Lua source — `create-app` chains through `validate-app` before reporting
+done. It does NOT push to a device; that's `push-app`'s job.
 
 ## What you need
 
@@ -40,25 +41,35 @@ sibling `validate-app` and `push-app` skills.
    - Follows DEVICE-SKILL.md's "Practical Tips" section if present
      (e.g. `screen.flip()` MUST after every draw).
 5. Write the result via `tools/write-out.sh`:
-   - With `--out path/to/app.lua` → writes the file. Tell the user the path.
-   - Without `--out` → prints to stdout.
-
-## Composition
-
-`create-app` does not call `validate-app` or `push-app`. The agent is
-expected to compose them after generation:
-
-1. `create-app --out device-apps/foo.lua "<description>"`
-2. `validate-app device-apps/foo.lua` — if fails, re-prompt yourself
-   (the agent) with the error and regenerate.
-3. `push-app --base-url <url> --device-id <id> device-apps/foo.lua`
+   - With `--out path/to/app.lua` → writes the file. Default to
+     `device-apps/<short-slug>.lua` if the user didn't pick a path.
+   - Without `--out` → prints to stdout (skip step 6 in that case;
+     validation needs a file).
+6. **Validate.** Invoke `/resident:validate-app` (the sibling skill) on
+   the file you just wrote. It loads the file under a permissive Lua
+   harness and checks compile, lifecycle presence, and a few simulated
+   ticks. Two outcomes:
+   - **PASS:** report the file path and a tight summary of what the app
+     does. Done.
+   - **FAIL:** the validator stderr names a line and a Lua error. Read
+     the error, fix the Lua source (regenerate from the original
+     description plus the error context), write again, and re-validate.
+     Up to 3 retries; if it still fails, surface the most recent error
+     to the user and stop.
 
 ## Output conventions
 
 - The conventional location for app files in a Resident firmware project
-  is `device-apps/<name>.lua`. Suggest this when asking the user for
-  an `--out` path; don't create the directory unless the user agrees.
+  is `device-apps/<name>.lua`. Default to that when the user didn't
+  pass `--out`.
 - The user's description is short — DON'T inflate it with comments or
   multi-line docstrings in the generated Lua. Keep generated code tight.
 - The user can iterate. If they ask "make it slower / red instead of
   green / etc.", regenerate with the changed brief.
+
+## Composition with push-app
+
+`push-app` is the user-facing entry point that accepts either a Lua file
+(push directly) or a description (which it routes through `create-app`).
+When the user invokes `/resident:create-app` directly, you don't push —
+they want the source for inspection or downstream use.

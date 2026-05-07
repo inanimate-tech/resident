@@ -1,50 +1,85 @@
 ---
 name: push-app
 description: >-
-  Use to push a Resident Lua app to a connected device via the relay.
-  Required flags: --base-url and --device-id. Reads the app from a
-  positional file argument or stdin. Triggered by /resident:push-app or
-  "push this app to my device".
+  Use to push a Resident Lua app to a connected device. Accepts either a
+  Lua file (push directly) or a natural-language description (chains
+  through create-app + validate-app first, then pushes the result).
+  Triggered by /resident:push-app or "push this app to my device".
 ---
 
 # push-app
 
-Send a Lua app to a Resident relay's `POST /devices/<id>/send` endpoint.
-The relay forwards the JSON verbatim to the device's WebSocket.
+The user-facing entry point for getting Lua running on a Resident
+device. Accepts two shapes of input:
 
-## What you need
+1. **A Lua file (or stdin):** push directly via the relay.
+2. **A natural-language description:** chain through `create-app` to
+   generate the Lua, `validate-app` to check it, then push the result.
 
-- **`--base-url <url>`** — required. e.g. `https://resident.inanimate.tech`,
-  `http://localhost:8787` for local dev. Probe with `curl -i $base/devices/test/send -X POST` if unsure.
-- **`--device-id <id>`** — required. Treat as an unguessable secret —
-  anyone holding the deviceId can push to or connect as that device.
-- **The Lua app** — pass as a positional file argument, or pipe via stdin.
+This makes the common "I have an idea, run it on the device" path one
+command. For tighter control, invoke `create-app`, `validate-app`, and
+the push step independently.
 
-## Usage
+## Required configuration
+
+You always need:
+
+- **`--device-id <id>`** — the deviceId your firmware reports (read it
+  off the device's screen, or check whatever your firmware persists).
+  Treat as an unguessable secret — anyone with the deviceId can push to
+  or read your device.
+- **`--base-url <url>`** — defaults to `https://resident.inanimate.tech`
+  if not provided. Override for self-hosted relays
+  (e.g. `http://localhost:8787` during `wrangler dev`).
+
+Both can be persisted across invocations:
+- Env vars: `RESIDENT_DEVICE_ID`, `RESIDENT_BASE_URL`.
+- Local file: `./.resident-device-id` (deviceId only).
+
+Ask the user once per session if these aren't set; don't re-ask.
+
+## Workflow — file input
+
+If the user gives a Lua file path, OR a Lua source via stdin, OR a
+specific path that already exists, just push it:
 
 ```bash
 ./tools/push.sh \
   --base-url https://resident.inanimate.tech \
-  --device-id abc123…  \
+  --device-id abc12345 \
   device-apps/foo.lua
 
 cat device-apps/foo.lua | ./tools/push.sh \
   --base-url http://localhost:8787 \
-  --device-id test-1234
+  --device-id abc12345
 ```
 
-## Exit codes
+## Workflow — natural-language description
+
+If the user gives a description (no file, no Lua source on stdin —
+just a sentence like "make the screen flash red on shake"):
+
+1. **Generate.** Invoke `/resident:create-app` (the sibling skill) with
+   the description and an `--out` path under `device-apps/<slug>.lua`.
+   That skill embeds the sandbox docs + reads `./DEVICE-SKILL.md` and
+   produces tight Lua source. It also chains through
+   `/resident:validate-app` automatically; a returned source is already
+   compile- and lifecycle-checked.
+
+2. **Push.** Run `tools/push.sh` against the file produced in step 1.
+
+3. **Show the user the Lua you generated.** They want to see it. Print
+   the file path and a preview.
+
+If create-app stops with a missing-DEVICE-SKILL.md error, surface that
+error to the user verbatim and stop — don't try to skip validation.
+
+## Exit codes (for the underlying push.sh script)
 
 - `0` — sent (HTTP 200)
 - `1` — device not connected (HTTP 503)
 - `2` — environment / argument error (missing flag, file not found, no `jq`)
 - `3` — other HTTP error (full body printed to stderr)
-
-## Composition
-
-`push-app` does not validate. Run `validate-app` first if you want a
-pre-flight check; otherwise the device will receive whatever you send and
-report errors via telemetry (which v1 does not surface back to the skill).
 
 ## Self-hosted vs hosted
 
