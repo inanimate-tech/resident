@@ -13,8 +13,21 @@ m5stick-demo/
 ├── device/          # PlatformIO firmware for M5StickC Plus2
 ├── server/          # Cloudflare Worker (Durable Object + web UI)
 ├── device-apps/     # Example Lua apps for the sandbox
-└── send-app.sh      # CLI tool to send apps to devices
+├── send-app.sh      # CLI tool to send apps to devices
+└── DEVICE-SKILL.md  # Lua-side device surface (used by /resident:create-app etc.)
 ```
+
+## Device IDs as auth
+
+This example uses the deviceId `m5stick-demo` — guessable on purpose,
+because it's a public demo. **For a real deployment**, generate a long
+random ID (≥ 128 bits of entropy, e.g. UUIDv4 or 32 hex chars) and treat
+it like an API key:
+
+- Anyone with the deviceId can push apps to or connect as that device.
+- The default Resident relay (`resident.inanimate.tech`) does no other
+  authentication in v1.
+- Self-hosted relays inherit the same model unless you add auth on top.
 
 ## Device
 
