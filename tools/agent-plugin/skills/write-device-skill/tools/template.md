@@ -31,3 +31,20 @@ that shapes generated code.>
 ## Practical Tips
 
 <device-specific idioms (shake detection, menu nav, etc.). Optional.>
+
+## Validation stubs
+
+Optional. Consumed by `validate-app` to provide concrete return values
+for getter-style functions (e.g. `screen.width()`, `imu.accel()`).
+Without these, getters return `nil` and apps that do arithmetic on the
+result crash inside the validator.
+
+```lua
+<module> = setmetatable({
+  width  = function() return <number> end,
+  height = function() return <number> end,
+}, { __index = function() return function() end end })
+
+-- Repeat for any module whose getters return numbers, strings, or
+-- multiple values that apps actually consume.
+```

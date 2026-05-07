@@ -40,6 +40,11 @@ Resident's own docs and is loaded by the create-app skill.
      these from the hardware description; user confirms.
    - Constraints (dimensions, ranges, memory).
    - Optional: device-specific practical tips.
+   - Optional: a `## Validation stubs` Lua block (see template.md and
+     example.md for format). This makes `validate-app` produce realistic
+     getter return values instead of `nil`, so apps that compute against
+     `screen.width()` etc. validate cleanly. Skip if the device has no
+     numeric or multi-value getters.
 4. Write the result to `<project-root>/DEVICE-SKILL.md`. Do NOT include
    sandbox-generic content (lifecycle, ctx, log/time/kv, math globals).
 5. Show the user a diff/summary and confirm before writing.
