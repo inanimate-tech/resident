@@ -26,9 +26,15 @@ Resident's own docs and is loaded by the create-app skill.
 
 ## Workflow
 
-1. Read the template at `tools/template.md` (this skill's directory).
-2. Read the reference example at `tools/example.md` — that's the seeded
-   M5StickC Plus2 DEVICE-SKILL.md, useful as a quality bar.
+1. Read the template at
+   `${CLAUDE_PLUGIN_ROOT}/skills/write-device-skill/tools/template.md`.
+   `${CLAUDE_PLUGIN_ROOT}` is set by Claude Code to the absolute path of
+   the installed plugin — always use it to reference bundled files; the
+   CWD is the user's project, not the skill directory.
+2. Read the reference example at
+   `${CLAUDE_PLUGIN_ROOT}/skills/write-device-skill/tools/example.md` —
+   that's the seeded M5StickC Plus2 DEVICE-SKILL.md, useful as a quality
+   bar.
 3. Ask the user (one question at a time):
    - Device name + a one-paragraph overview.
    - Hardware list (screen? sensors? audio? buttons? indicators?).

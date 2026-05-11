@@ -44,15 +44,19 @@ If the user gives a Lua file path, OR a Lua source via stdin, OR a
 specific path that already exists, just push it:
 
 ```bash
-./tools/push.sh \
+"${CLAUDE_PLUGIN_ROOT}/skills/push-app/tools/push.sh" \
   --base-url https://resident.inanimate.tech \
   --device-id abc12345 \
   device-apps/foo.lua
 
-cat device-apps/foo.lua | ./tools/push.sh \
+cat device-apps/foo.lua | "${CLAUDE_PLUGIN_ROOT}/skills/push-app/tools/push.sh" \
   --base-url http://localhost:8787 \
   --device-id abc12345
 ```
+
+`${CLAUDE_PLUGIN_ROOT}` is set by Claude Code to the absolute path of the
+installed plugin — always use it to reference bundled tools; the CWD is
+the user's project, not the skill directory.
 
 ## Workflow — natural-language description
 
@@ -66,7 +70,8 @@ just a sentence like "make the screen flash red on shake"):
    `/resident:validate-app` automatically; a returned source is already
    compile- and lifecycle-checked.
 
-2. **Push.** Run `tools/push.sh` against the file produced in step 1.
+2. **Push.** Run `${CLAUDE_PLUGIN_ROOT}/skills/push-app/tools/push.sh`
+   against the file produced in step 1.
 
 3. **Show the user the Lua you generated.** They want to see it. Print
    the file path and a preview.

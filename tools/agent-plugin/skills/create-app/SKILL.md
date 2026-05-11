@@ -21,13 +21,16 @@ done. It does NOT push to a device; that's `push-app`'s job.
 2. **DEVICE-SKILL.md at the firmware project root (cwd)** — describes
    the device-specific Lua module surface. If missing, stop and tell the
    user to run `/resident:write-device-skill` first.
-3. **The embedded sandbox docs** — read `docs/sandbox.md` (this skill's
-   directory). Covers lifecycle, ctx, log, time, kv, shader globals,
-   math globals, constraints.
+3. **The embedded sandbox docs** — read
+   `${CLAUDE_PLUGIN_ROOT}/skills/create-app/docs/sandbox.md`. Covers
+   lifecycle, ctx, log, time, kv, shader globals, math globals,
+   constraints. `${CLAUDE_PLUGIN_ROOT}` is set by Claude Code to the
+   absolute path of the installed plugin — always use it to reference
+   bundled files; the CWD is the user's project, not the skill directory.
 
 ## Workflow
 
-1. Read `docs/sandbox.md`.
+1. Read `${CLAUDE_PLUGIN_ROOT}/skills/create-app/docs/sandbox.md`.
 2. Read `./DEVICE-SKILL.md`. If absent → tell the user:
    > "I need a DEVICE-SKILL.md at the firmware project root. Invoke
    > /resident:write-device-skill to author one, then re-run me."
@@ -40,7 +43,8 @@ done. It does NOT push to a device; that's `push-app`'s job.
    - Stays small — keep apps tight; long apps risk hitting memory limits.
    - Follows DEVICE-SKILL.md's "Practical Tips" section if present
      (e.g. `screen.flip()` MUST after every draw).
-5. Write the result via `tools/write-out.sh`:
+5. Write the result via
+   `${CLAUDE_PLUGIN_ROOT}/skills/create-app/tools/write-out.sh`:
    - With `--out path/to/app.lua` → writes the file. Default to
      `device-apps/<short-slug>.lua` if the user didn't pick a path.
    - Without `--out` → prints to stdout (skip step 6 in that case;

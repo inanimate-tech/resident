@@ -26,10 +26,14 @@ runtime bugs before sending it to a device.
 ## Usage
 
 ```bash
-./tools/validate.sh path/to/app.lua
-cat app.lua | ./tools/validate.sh
-./tools/validate.sh --device-skill path/to/DEVICE-SKILL.md path/to/app.lua
+"${CLAUDE_PLUGIN_ROOT}/skills/validate-app/tools/validate.sh" path/to/app.lua
+cat app.lua | "${CLAUDE_PLUGIN_ROOT}/skills/validate-app/tools/validate.sh"
+"${CLAUDE_PLUGIN_ROOT}/skills/validate-app/tools/validate.sh" --device-skill path/to/DEVICE-SKILL.md path/to/app.lua
 ```
+
+`${CLAUDE_PLUGIN_ROOT}` is set by Claude Code to the absolute path of the
+installed plugin — always use it to reference bundled tools; the CWD is
+the user's project, not the skill directory.
 
 Exit codes:
 - `0` — passed (compile + lifecycle + 5 ticks all OK)
