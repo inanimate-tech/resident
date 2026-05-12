@@ -22,6 +22,13 @@ runtime bugs before sending it to a device.
    absent, only sandbox-generic stubs are applied.
 3. **`lua`** — the Lua interpreter must be on PATH. If missing, the skill
    exits with a clear hint to install it (`brew install lua`).
+4. **Optional `--ref <path>` flags** — additional Markdown files
+   describing extra modules. validate-app processes each ref file the
+   same way as DEVICE-SKILL.md: deduces module names from fenced Lua
+   code blocks and appends any `## Validation stubs` block. Repeatable.
+   Plain `.lua` refs (no Markdown structure) are silently ignored.
+   Useful when an app uses sandbox extensions documented outside
+   DEVICE-SKILL.md.
 
 ## Usage
 
@@ -29,6 +36,7 @@ runtime bugs before sending it to a device.
 "${CLAUDE_PLUGIN_ROOT}/skills/validate-app/tools/validate.sh" path/to/app.lua
 cat app.lua | "${CLAUDE_PLUGIN_ROOT}/skills/validate-app/tools/validate.sh"
 "${CLAUDE_PLUGIN_ROOT}/skills/validate-app/tools/validate.sh" --device-skill path/to/DEVICE-SKILL.md path/to/app.lua
+"${CLAUDE_PLUGIN_ROOT}/skills/validate-app/tools/validate.sh" --device-skill path/to/DEVICE-SKILL.md --ref path/to/extensions.md path/to/app.lua
 ```
 
 `${CLAUDE_PLUGIN_ROOT}` is set by Claude Code to the absolute path of the
