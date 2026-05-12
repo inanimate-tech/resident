@@ -9,6 +9,7 @@ A hardware bring-up sketch for the [Adafruit ESP32-S2 Feather](https://learn.ada
 - **Onboard NeoPixel** — cycles red → green → blue → off, also at 500 ms. Drives `NEOPIXEL_POWER` HIGH first so the pixel actually gets power.
 - **I2C bus scan** — drives `I2C_POWER` HIGH, then scans 0x01–0x7F and prints whatever responds. The onboard LC709203 should show up at `0x0B`. The BME280 variant of the board also shows `0x77`.
 - **Battery fuel gauge (LC709203)** — initializes the chip and prints cell voltage + state-of-charge once per second.
+- **Status splash** — at the end of setup, the NeoPixel turns **solid green for 2 seconds** if everything came up cleanly, **solid red** if the LC709203 wasn't detected. This is the visible "ready" signal after a fresh upload — the board has no display, so the pixel is the only at-a-glance check.
 
 ## How to flash
 
@@ -31,12 +32,13 @@ PSRAM: 2048 KB
 I2C scan:
   device at 0x0B
 LC709203 OK
+READY
 [1234 ms] heartbeat #1 — battery: 4.12V (87%)
 [2234 ms] heartbeat #2 — battery: 4.12V (87%)
 ...
 ```
 
-You should also see the red LED toggling at 2 Hz and the NeoPixel cycling colors at the same rate.
+After the boot banner, the NeoPixel holds solid green for 2 s (bring-up succeeded) or solid red (LC709203 not found). After that, the red LED toggles at 2 Hz and the NeoPixel cycles colors at the same rate.
 
 ## Known quirks
 

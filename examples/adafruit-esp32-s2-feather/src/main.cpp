@@ -56,6 +56,17 @@ void setup() {
   } else {
     Serial.println("LC709203 not found — continuing without battery readings");
   }
+
+  // Status splash. This board has no display, so the NeoPixel is the only
+  // visible "ready" signal after a fresh upload: solid green = bring-up
+  // succeeded, solid red = bring-up degraded (LC709203 not found). Held
+  // for 2 s, then the loop() cycling takes over.
+  digitalWrite(LED_BUILTIN, HIGH);
+  pixel.setPixelColor(0, batteryReady ? 0x00FF00 : 0xFF0000);
+  pixel.show();
+  delay(2000);
+  digitalWrite(LED_BUILTIN, LOW);
+  Serial.println(batteryReady ? "READY" : "READY (degraded)");
 }
 
 void loop() {
