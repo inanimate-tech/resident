@@ -12,6 +12,8 @@ static Courier::Config buildCourierConfig(const DeviceConfig& config) {
   cfg.path = "/";                  // overridden in onTransportsWillConnect()
   cfg.apName = nullptr;
   cfg.defaultTransport = "ws";     // built-in WS is the default for Client::send
+  cfg.dns1 = config.dns1;
+  cfg.dns2 = config.dns2;
   return cfg;
 }
 

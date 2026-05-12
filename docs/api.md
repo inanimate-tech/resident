@@ -34,6 +34,8 @@ void loop()  { device.loop(); }
 |-------|------|---------|-------------|
 | `deviceType` | `const char*` | `nullptr` | Device type string — sent to the server during WebSocket handshake |
 | `host` | `const char*` | `nullptr` | Server hostname |
+| `dns1` | `uint32_t` | `0` | Optional primary DNS server, as a packed IPv4 address (e.g. `IPAddress(1,1,1,1)`). `0` leaves the DHCP-supplied DNS in place. |
+| `dns2` | `uint32_t` | `0` | Optional secondary DNS server, packed IPv4. Ignored unless `dns1` is also set. |
 | `statusLED` | `StatusLED*` | `nullptr` | Optional LED indicator; `Device` drives it on connection state changes |
 | `statusDisplay` | `StatusDisplay*` | `nullptr` | Optional text display; `Device` drives it with status messages |
 | `shaderTemplate` | `ShaderTemplateFn` | `nullptr` | Function that converts shader fields into Lua source (see [Message Protocol](#message-protocol)) |

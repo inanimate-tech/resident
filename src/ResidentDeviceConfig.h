@@ -11,6 +11,8 @@ namespace Resident {
 struct DeviceConfig {
   const char* deviceType = nullptr;
   const char* host = nullptr;
+  uint32_t dns1 = 0;
+  uint32_t dns2 = 0;
   StatusLED* statusLED = nullptr;
   StatusDisplay* statusDisplay = nullptr;
   ShaderTemplateFn shaderTemplate = nullptr;
