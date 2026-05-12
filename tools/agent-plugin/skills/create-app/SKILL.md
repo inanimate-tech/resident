@@ -60,9 +60,9 @@ Example:
 ```bash
 /resident:create-app \
   --device-skill ./examples/m5stick-demo/DEVICE-SKILL.md \
-  --ref ./examples/m5stick-demo/device-apps/clock.lua \
-  --out device-apps/big-clock.lua \
-  "show the time, big digits"
+  --ref ./examples/m5stick-demo/device-apps/bounce.lua \
+  --out device-apps/fast-bounce.lua \
+  "make the ball red and twice as fast"
 ```
 
 ## Workflow
