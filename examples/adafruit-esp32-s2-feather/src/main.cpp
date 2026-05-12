@@ -2,17 +2,64 @@
 #include <Wire.h>
 #include <Adafruit_NeoPixel.h>
 #include <Adafruit_LC709203F.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7789.h>
 
 static Adafruit_NeoPixel pixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
 static Adafruit_LC709203F battery;
+static Adafruit_ST7789 tft(TFT_CS, TFT_DC, TFT_RST);
 static bool batteryReady = false;
+
+static void drawStatic() {
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setTextWrap(false);
+
+  tft.setTextColor(ST77XX_CYAN);
+  tft.setTextSize(2);
+  tft.setCursor(5, 5);
+  tft.print("ESP32-S2 TFT");
+
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setTextSize(1);
+  tft.setCursor(5, 30);
+  tft.printf("Chip:  %s @ %lu MHz", ESP.getChipModel(),
+             (unsigned long)ESP.getCpuFreqMHz());
+  tft.setCursor(5, 42);
+  tft.printf("Flash: %lu KB",
+             (unsigned long)(ESP.getFlashChipSize() / 1024));
+  tft.setCursor(5, 54);
+  tft.printf("PSRAM: %lu KB",
+             (unsigned long)(ESP.getPsramSize() / 1024));
+}
+
+static void drawDynamic(uint32_t now, uint32_t count) {
+  // Clear the bottom half (dynamic area) without flicker on the static area.
+  tft.fillRect(0, 75, 240, 60, ST77XX_BLACK);
+
+  tft.setTextSize(1);
+  tft.setCursor(5, 80);
+  if (batteryReady) {
+    tft.setTextColor(ST77XX_GREEN);
+    tft.printf("Battery: %.2fV (%.0f%%)",
+               battery.cellVoltage(), battery.cellPercent());
+  } else {
+    tft.setTextColor(ST77XX_YELLOW);
+    tft.print("Battery: not connected");
+  }
+
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setCursor(5, 100);
+  tft.printf("Heartbeat: #%lu", (unsigned long)count);
+  tft.setCursor(5, 115);
+  tft.printf("Uptime: %lu s", (unsigned long)(now / 1000));
+}
 
 void setup() {
   Serial.begin(115200);
   delay(2000);  // Wait for USB-CDC enumeration on the host.
 
   Serial.println();
-  Serial.println("=== Adafruit ESP32-S2 Feather bring-up ===");
+  Serial.println("=== Adafruit ESP32-S2 TFT Feather bring-up ===");
   Serial.printf("Chip:  %s, %d core(s) @ %lu MHz\n",
                 ESP.getChipModel(),
                 ESP.getChipCores(),
@@ -24,20 +71,30 @@ void setup() {
 
   pinMode(LED_BUILTIN, OUTPUT);
 
-  // Onboard NeoPixel: data on PIN_NEOPIXEL, but power gated by NEOPIXEL_POWER.
-  // Drive HIGH before talking to the pixel.
+  // Onboard NeoPixel: data on PIN_NEOPIXEL, power gated by NEOPIXEL_POWER.
+  // The variant header declares NEOPIXEL_POWER_ON = HIGH for this rev.
   pinMode(NEOPIXEL_POWER, OUTPUT);
-  digitalWrite(NEOPIXEL_POWER, HIGH);
+  digitalWrite(NEOPIXEL_POWER, NEOPIXEL_POWER_ON);
   pixel.begin();
   pixel.setBrightness(20);
   pixel.show();
 
-  // STEMMA QT + onboard LC709203 share an I2C bus gated by I2C_POWER.
-  pinMode(I2C_POWER, OUTPUT);
-  digitalWrite(I2C_POWER, HIGH);
+  // TFT_I2C_POWER gates both the TFT and the I2C bus (STEMMA QT + onboard
+  // LC709203). One pin, two rails. Drive HIGH to enable.
+  pinMode(TFT_I2C_POWER, OUTPUT);
+  digitalWrite(TFT_I2C_POWER, HIGH);
   delay(10);
-  Wire.begin();
 
+  // TFT backlight is a separate pin; drive HIGH to turn it on.
+  pinMode(TFT_BACKLITE, OUTPUT);
+  digitalWrite(TFT_BACKLITE, HIGH);
+
+  // ST7789, 240x135 portrait native; we want landscape (USB-C on the right).
+  tft.init(135, 240);
+  tft.setRotation(3);
+  drawStatic();
+
+  Wire.begin();
   Serial.println("I2C scan:");
   uint8_t found = 0;
   for (uint8_t addr = 1; addr < 127; addr++) {
@@ -54,19 +111,19 @@ void setup() {
     batteryReady = true;
     Serial.println("LC709203 OK");
   } else {
-    Serial.println("LC709203 not found — continuing without battery readings");
+    Serial.println("LC709203 not found — likely no battery plugged in");
   }
 
-  // Status splash. This board has no display, so the NeoPixel is the only
-  // visible "ready" signal after a fresh upload: solid green = bring-up
-  // succeeded, solid red = bring-up degraded (LC709203 not found). Held
-  // for 2 s, then the loop() cycling takes over.
+  // Status splash on the NeoPixel: green = LC709203 responded (battery
+  // plugged in and gauge talking); yellow = no LC709203, almost always
+  // because no battery is connected (the gauge is powered by VBAT).
+  // Held for 2 s, then loop() takes over.
   digitalWrite(LED_BUILTIN, HIGH);
-  pixel.setPixelColor(0, batteryReady ? 0x00FF00 : 0xFF0000);
+  pixel.setPixelColor(0, batteryReady ? 0x00FF00 : 0xFFFF00);
   pixel.show();
   delay(2000);
   digitalWrite(LED_BUILTIN, LOW);
-  Serial.println(batteryReady ? "READY" : "READY (degraded)");
+  Serial.println(batteryReady ? "READY" : "READY (no battery)");
 }
 
 void loop() {
@@ -99,5 +156,6 @@ void loop() {
       Serial.printf("[%lu ms] heartbeat #%lu\n",
                     (unsigned long)now, (unsigned long)count);
     }
+    drawDynamic(now, count);
   }
 }
