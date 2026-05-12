@@ -239,3 +239,12 @@ button = setmetatable({
 
 buzzer = setmetatable({}, { __index = function() return function() end end })
 ```
+
+## App mode / Shader mode
+
+In app mode this device uses the normal app lifecycle (`init`,
+`on_tick`, `on_event`) against the `screen`, `imu`, `buzzer`, and
+`button` modules described above.
+
+Shader mode is not available on this device — only app mode is
+supported.

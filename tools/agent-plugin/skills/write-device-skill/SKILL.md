@@ -16,6 +16,18 @@ examples, constraints. Sandbox-generic content (lifecycle callbacks, ctx,
 log, time, kv, math globals) is NOT in DEVICE-SKILL.md; it lives in
 Resident's own docs and is loaded by the create-app skill.
 
+## Audience
+
+DEVICE-SKILL.md is written for **Lua app and shader authors** targeting
+the device sandbox. The reader is someone composing a Lua app or a
+shader expression and pushing it to a running device — they do not have
+the firmware source open and cannot change it. Frame everything from
+that perspective: the runtime contract (what modules and variables
+exist, what they do, what ranges are valid). Do NOT describe the C++
+firmware layer — no `DeviceConfig` fields, no driver registration, no
+"to enable X the firmware would need to..." asides. If a capability
+isn't exposed to Lua, just say so plainly and move on.
+
 ## What you need
 
 1. **Firmware project root** — defaults to `cwd`. Ask if not in one.
@@ -51,6 +63,20 @@ Resident's own docs and is loaded by the create-app skill.
      getter return values instead of `nil`, so apps that compute against
      `screen.width()` etc. validate cleanly. Skip if the device has no
      numeric or multi-value getters.
+   - App mode vs. shader mode. Always include the `## App mode /
+     Shader mode` section. Establish (by asking the user, or by
+     checking the firmware source if you have it) whether shader
+     mode is exposed to Lua authors on this device. If yes, find
+     out (a) what the evaluated expression's return value controls
+     — pixel colour, servo angle, fan speed, fill colour, etc.; (b)
+     what extra variables are in scope on each evaluation beyond
+     the sandbox-generic `ctx.time_ms` / `ctx.trigger_count` / time
+     fields and the shader-compatible globals — typically things
+     like a pixel index `i`, a strip length `n`, or normalised
+     coordinates. Document those as the runtime contract from the
+     app author's point of view. If shader mode is not available,
+     say so in one sentence and stop — do not explain what the
+     firmware would need to change.
 4. Write the result to `<project-root>/DEVICE-SKILL.md`. Do NOT include
    sandbox-generic content (lifecycle, ctx, log/time/kv, math globals).
 5. Show the user a diff/summary and confirm before writing.

@@ -48,3 +48,27 @@ result crash inside the validator.
 -- Repeat for any module whose getters return numbers, strings, or
 -- multiple values that apps actually consume.
 ```
+
+## App mode / Shader mode
+
+In app mode this device uses the normal app lifecycle (`init`,
+`on_tick`, `on_event`). In shader mode, a single expression is
+evaluated <how often / on what trigger — e.g. "once per pixel per
+frame", "once per tick"> and the result is used to control <what the
+return value drives on the device — e.g. "the colour of each pixel",
+"the angle of the servo">.
+
+Additional variables are available on each evaluation in shader mode
+only (on top of the sandbox-generic `ctx.time_ms`, `ctx.trigger_count`,
+the time fields, and the shader-compatible globals `rgb` / `fract` /
+`beat` / `noise2d` / math globals):
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `<name>` | `<type>` | <what it represents, range, units> |
+
+If this device does not support shader mode, replace the body of this
+section with a single sentence: "Shader mode is not available on this
+device — only app mode is supported." Omit the table. Do not describe
+how the firmware could be extended to add shader mode — that is not
+useful to an app author and does not belong in this document.
