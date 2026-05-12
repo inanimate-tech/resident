@@ -16,8 +16,10 @@ pass=0
 run() {
   local fixture="$1"
   local expected="$2"
+  shift 2
+  local extra_args=("$@")
   local out err code
-  out=$("$VALIDATE" --device-skill "$SKILL" "$fixture" 2>&1)
+  out=$("$VALIDATE" --device-skill "$SKILL" ${extra_args[@]+"${extra_args[@]}"} "$fixture" 2>&1)
   code=$?
   if [[ "$expected" == "ok" && "$code" -eq 0 ]]; then
     echo "PASS  $fixture"
@@ -37,6 +39,7 @@ run "$FIXTURES/ok-bouncing-ball.lua"  "ok"
 run "$FIXTURES/fail-no-lifecycle.lua" "fail"
 run "$FIXTURES/fail-syntax-error.lua" "fail"
 run "$FIXTURES/fail-runtime-error.lua" "fail"
+run "$FIXTURES/ok-uses-extension.lua" "ok" --ref "$FIXTURES/extensions.md"
 
 echo
 echo "$pass passed, $fail failed"

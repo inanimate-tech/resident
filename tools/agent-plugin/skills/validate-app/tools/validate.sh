@@ -20,17 +20,24 @@ HARNESS="$SCRIPT_DIR/harness.lua"
 DEDUCE="$SCRIPT_DIR/deduce-modules.sh"
 
 device_skill=""
+ref_files=()
 app_file=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device-skill) device_skill="$2"; shift 2 ;;
+    --ref)          ref_files+=("$2"); shift 2 ;;
     -h|--help)
       cat <<EOF
-Usage: $0 [--device-skill PATH] [APP_FILE]
-       cat app.lua | $0 [--device-skill PATH]
+Usage: $0 [--device-skill PATH] [--ref PATH ...] [APP_FILE]
+       cat app.lua | $0 [--device-skill PATH] [--ref PATH ...]
 
 Validates a Resident Lua app locally. Reads from APP_FILE or stdin.
+--ref may be passed multiple times. Each ref file is processed the
+same way as DEVICE-SKILL.md: module names are auto-deduced from
+\`\`\`lua blocks, and a \`## Validation stubs\` Lua block (if any) is
+appended after auto-deduced stubs. Plain .lua refs are silently
+ignored (no Markdown structure to extract).
 EOF
       exit 0
       ;;
@@ -62,28 +69,38 @@ else
   exit 2
 fi
 
-# Build device-module stubs by deducing module names from DEVICE-SKILL.md.
-# Each module gets a permissive metatable.
+# Build stubs by processing each input file (DEVICE-SKILL.md first, then
+# each --ref in argv order). For each file:
+#   1. Deduce module identifiers from ```lua blocks → permissive metatables.
+#   2. Extract `## Validation stubs` Lua block → concrete getter returns.
+# Later writes override earlier ones at Lua runtime.
 device_stubs=""
-if [[ -n "$device_skill" && -f "$device_skill" ]]; then
+validation_stubs=""
+
+process_stubs_file() {
+  local file="$1"
+  [[ -z "$file" || ! -f "$file" ]] && return 0
   while IFS= read -r module; do
     [[ -z "$module" ]] && continue
     device_stubs+=$'\n'"$module = setmetatable({}, { __index = function() return function() end end })"
-  done < <("$DEDUCE" "$device_skill")
-fi
-
-# Optional: extract `## Validation stubs` Lua block from DEVICE-SKILL.md.
-# Override the auto-deduced loose stubs with concrete return values.
-validation_stubs=""
-if [[ -n "$device_skill" && -f "$device_skill" ]]; then
-  validation_stubs=$(awk '
+  done < <("$DEDUCE" "$file")
+  local extracted
+  extracted=$(awk '
     /^## Validation stubs/ { in_section = 1; next }
     in_section && /^## /   { in_section = 0; next }
     in_section && /^```lua/ { in_block = 1; next }
     in_section && /^```/    { in_block = 0; next }
     in_section && in_block  { print }
-  ' "$device_skill")
-fi
+  ' "$file")
+  if [[ -n "$extracted" ]]; then
+    validation_stubs+=$'\n'"$extracted"
+  fi
+}
+
+process_stubs_file "$device_skill"
+for ref in ${ref_files[@]+"${ref_files[@]}"}; do
+  process_stubs_file "$ref"
+done
 
 # A catch-all metatable on _G so any unknown global access also gets a no-op.
 # Apps that reference truly unknown things won't crash on simple .x access.
