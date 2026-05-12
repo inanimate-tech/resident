@@ -65,8 +65,11 @@ just a sentence like "make the screen flash red on shake"):
 
 1. **Generate.** Invoke `/resident:create-app` (the sibling skill) with
    the description and an `--out` path under `device-apps/<slug>.lua`.
-   That skill embeds the sandbox docs + reads `./DEVICE-SKILL.md` and
-   produces tight Lua source. It also chains through
+   If the user also passed `--device-skill <path>` and/or one or more
+   `--ref <path>` flags to push-app, forward them verbatim to
+   create-app. That skill embeds the sandbox docs, resolves
+   DEVICE-SKILL.md (caller path → cwd → prompt), reads any `--ref`
+   files, and produces tight Lua source. It also chains through
    `/resident:validate-app` automatically; a returned source is already
    compile- and lifecycle-checked.
 
@@ -76,8 +79,9 @@ just a sentence like "make the screen flash red on shake"):
 3. **Show the user the Lua you generated.** They want to see it. Print
    the file path and a preview.
 
-If create-app stops with a missing-DEVICE-SKILL.md error, surface that
-error to the user verbatim and stop — don't try to skip validation.
+If create-app stops asking for a DEVICE-SKILL.md path, surface its
+prompt to the user verbatim and stop — don't try to skip validation
+or guess a path.
 
 ## Exit codes (for the underlying push.sh script)
 
