@@ -44,8 +44,8 @@ done. It does NOT push to a device; that's `push-app`'s job.
 
 ## Inputs
 
-Recognised by `/resident:create-app` (also accepted in natural language
-by the calling agent):
+These may be passed on the slash-command line or expressed in natural
+language in the invocation:
 
 - `--device-skill <path>` — DEVICE-SKILL.md anywhere on disk. Optional;
   falls back to `./DEVICE-SKILL.md`, then prompts the user.
@@ -76,7 +76,7 @@ Example:
      > "I need a DEVICE-SKILL.md to know this device's Lua surface.
      > Either tell me where it is (path) or invoke
      > `/resident:write-device-skill` and I'll help you author one."
-     > Exit without writing anything.
+     > Exit without writing.
 3. If the caller supplied `--ref <path>` (one or more), Read each file.
    These are extra context — example apps, firmware notes, etc.
 4. Read the user's description.
