@@ -94,9 +94,12 @@ Example:
    - Without `--out` → prints to stdout (skip step 7 in that case;
      validation needs a file).
 7. **Validate.** Invoke `/resident:validate-app` (the sibling skill) on
-   the file you just wrote. It loads the file under a permissive Lua
-   harness and checks compile, lifecycle presence, and a few simulated
-   ticks. Two outcomes:
+   the file you just wrote. If the caller passed any `--ref <path>`
+   flags to create-app, forward each one to validate-app as the same
+   `--ref <path>` argument — validate-app uses them to stub extra
+   modules. It loads the file under a permissive Lua harness and
+   checks compile, lifecycle presence, and a few simulated ticks.
+   Two outcomes:
    - **PASS:** report the file path and a tight summary of what the app
      does. Done.
    - **FAIL:** the validator stderr names a line and a Lua error. Read
