@@ -1,0 +1,165 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_NeoPixel.h>
+#include <Adafruit_LC709203F.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7789.h>
+#include <ResidentDevice.h>
+
+// The canonical Resident relay. Devs can self-host by changing this; see the
+// m5stick-demo example for the self-hosted Cloudflare Worker pattern.
+static constexpr const char* RESIDENT_HOST = "resident.inanimate.tech";
+static constexpr uint16_t RESIDENT_PORT = 443;
+
+static Adafruit_NeoPixel pixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
+static Adafruit_LC709203F battery;
+static Adafruit_ST7789 tft(TFT_CS, TFT_DC, TFT_RST);
+static bool batteryReady = false;
+
+// TFT-backed StatusDisplay. Resident calls displayText() with short status
+// strings like "WiFi", "Connecting", "Connected" — and (once we open a WS)
+// the device id, which is what the user needs to push apps. We draw it big.
+class TFTStatusDisplay : public Resident::StatusDisplay {
+public:
+  void begin() override {
+    tft.fillScreen(ST77XX_BLACK);
+    tft.setTextWrap(false);
+  }
+
+  void displayText(const char* text) override {
+    // The device-id splash (8 hex chars) gets a big rendering; shorter
+    // status strings get medium. Keep the header static across redraws.
+    tft.fillScreen(ST77XX_BLACK);
+
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setTextSize(2);
+    tft.setCursor(5, 5);
+    tft.print("Resident");
+
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setTextSize(1);
+    tft.setCursor(5, 30);
+    tft.print("ESP32-S2 TFT Feather");
+
+    // Status / device-id occupies the lower half.
+    bool looksLikeId = (strlen(text) == 8);
+    tft.setTextColor(looksLikeId ? ST77XX_GREEN : ST77XX_YELLOW);
+    tft.setTextSize(looksLikeId ? 3 : 2);
+    tft.setCursor(5, 75);
+    tft.print(text);
+  }
+};
+
+static TFTStatusDisplay tftStatus;
+
+static Resident::DeviceConfig makeConfig() {
+  Resident::DeviceConfig cfg;
+  cfg.deviceType    = "feather-tft";
+  cfg.host          = RESIDENT_HOST;
+  cfg.statusDisplay = &tftStatus;
+  // No Lua hardware modules yet — apps get only the sandbox-generic
+  // surface (log, time, kv, math, shader globals). Next steps: expose
+  // screen.* (TFT), led.* (NeoPixel), battery.* (LC709203).
+  cfg.extensions    = {};
+  return cfg;
+}
+
+class FeatherDevice : public Resident::Device {
+ public:
+  FeatherDevice() : Resident::Device(makeConfig()) {}
+
+  // Override the default /agents/<type>-agent/<id> path with the canonical
+  // /devices/<id> path used by resident.inanimate.tech.
+  void onTransportsWillConnect() override {
+    String wsPath = String("/devices/") + getDeviceId();
+    _ws.setEndpoint(RESIDENT_HOST, RESIDENT_PORT, wsPath.c_str());
+  }
+
+  void deviceLoop() override {
+    // On first successful connection, switch the StatusDisplay from
+    // "Connected" to a sandbox app showing the device ID prominently
+    // (so the user knows what to push to). Any real app sent via
+    // push-app will replace this.
+    static bool loaded = false;
+    if (!loaded && isConnected()) {
+      loaded = true;
+      String app = "function init(ctx)\n"
+                   "  log.info('feather-tft ready, id=" + getDeviceId() + "')\n"
+                   "end\n";
+      sandbox().loadApp(app.c_str());
+      // We also redraw the TFT with the device id explicitly, since the
+      // StatusDisplay path may have been suppressed once an app is running.
+      tftStatus.displayText(getDeviceId().c_str());
+    }
+  }
+};
+
+static FeatherDevice device;
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000);  // Wait for USB-CDC enumeration on the host.
+
+  Serial.println();
+  Serial.println("=== Adafruit ESP32-S2 TFT Feather — Resident ===");
+  Serial.printf("Chip:  %s, %d core(s) @ %lu MHz\n",
+                ESP.getChipModel(),
+                ESP.getChipCores(),
+                (unsigned long)ESP.getCpuFreqMHz());
+
+  pinMode(LED_BUILTIN, OUTPUT);
+
+  // NeoPixel: data on PIN_NEOPIXEL, power on NEOPIXEL_POWER. Variant
+  // declares NEOPIXEL_POWER_ON = HIGH for this rev.
+  pinMode(NEOPIXEL_POWER, OUTPUT);
+  digitalWrite(NEOPIXEL_POWER, NEOPIXEL_POWER_ON);
+  pixel.begin();
+  pixel.setBrightness(20);
+  pixel.setPixelColor(0, 0x0000FF);  // blue = booting
+  pixel.show();
+
+  // TFT_I2C_POWER gates both the TFT and the I2C bus (one pin, two rails).
+  pinMode(TFT_I2C_POWER, OUTPUT);
+  digitalWrite(TFT_I2C_POWER, HIGH);
+  delay(10);
+
+  pinMode(TFT_BACKLITE, OUTPUT);
+  digitalWrite(TFT_BACKLITE, HIGH);
+
+  // ST7789, 240x135 portrait native; rotate to landscape (USB-C right).
+  tft.init(135, 240);
+  tft.setRotation(3);
+
+  Wire.begin();
+  if (battery.begin()) {
+    battery.setPackSize(LC709203F_APA_500MAH);
+    batteryReady = true;
+    Serial.println("LC709203 OK");
+  } else {
+    Serial.println("LC709203 not found — likely no battery plugged in");
+  }
+
+  // Hand off to Resident. It owns: WiFi (via WiFiManager captive portal
+  // on first boot, persisted to NVS thereafter), time sync (via ezTime),
+  // WebSocket connection (via Courier), Lua sandbox lifecycle, and
+  // routing inbound `app`/`shader`/`app_event` messages to the sandbox.
+  device.setup();
+}
+
+void loop() {
+  device.loop();
+
+  // Bring-up indicators stay alive alongside Resident's loop:
+  //   - red LED toggles at 2 Hz (the firmware is running)
+  //   - NeoPixel reflects connection state (green=connected, yellow=not)
+  static uint32_t lastBlink = 0;
+  uint32_t now = millis();
+  if (now - lastBlink >= 500) {
+    lastBlink = now;
+    static bool ledOn = false;
+    ledOn = !ledOn;
+    digitalWrite(LED_BUILTIN, ledOn);
+    pixel.setPixelColor(0, device.isConnected() ? 0x00FF00 : 0xFFFF00);
+    pixel.show();
+  }
+}
