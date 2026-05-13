@@ -10,7 +10,7 @@ There are two steps:
 
 Each step finishes with something you can flash, run, and see working. That matters: if the Resident layer misbehaves, you can flash the bring-up sketch as a sanity check that the hardware is fine.
 
-This guide refers to `examples/adafruit-esp32-s2-feather/` throughout as the worked example. The `device-no-resident/` subdirectory is the end state of step 1; `device/` is the end state of step 2. Both are buildable PlatformIO projects — flash either with `pio run -t upload` from its own directory.
+This guide refers to `examples/adafruit-esp32-s2-feather/` throughout as the worked example. The `device-no-resident/` subdirectory is the end state of step 1; `device/` is the end state of step 2 (Resident bootstrap + the three hardware Lua modules). A third subdirectory, `device-minimal-resident/`, is preserved as an intermediate snapshot — Resident running but with no hardware Lua modules registered yet — useful as a reference and a fallback. All three are buildable PlatformIO projects; flash any of them with `pio run -t upload` from its own directory.
 
 ---
 
@@ -88,7 +88,12 @@ Most of these have a sensible default. The doc lists them so you know what knob 
 
 - **What goes on the screen once connected?** This example loads a tiny built-in Lua app (printing the device ID via `log.info`) so the user immediately sees an interactive demo. A real app sent via `push-app` replaces it. Alternatively, you could draw the device ID directly from C++ and skip the bootstrap app. The bootstrap-app pattern means the user's first impression of "this is a Resident device" is *a Lua app running*, which is the right mental model.
 
-- **Which Lua hardware modules to expose?** **None in this step.** The minimum-viable Resident device is one that connects and runs Lua, even if that Lua can only `log` and do math. Once it works, you'll add hardware modules one at a time — `screen.*` (TFT), `led.*` (NeoPixel), `battery.*` (LC709203). Each module is a separate `Resident::Driver` subclass with a `registerModule()` that binds C++ methods to Lua names. See `examples/m5stick-demo/device/lib/drivers/` for the pattern. **This is step 3** (not in this doc yet).
+- **Which Lua hardware modules to expose?** This is the largest design decision. The minimum-viable Resident device (preserved at `device-minimal-resident/`) is one that connects and runs Lua, even if that Lua can only `log` and do math. The full version (`device/`) adds three drivers — `screen.*` (TFT), `led.*` (NeoPixel), `battery.*` (LC709203) — and a `DEVICE-SKILL.md` documenting them so `/resident:create-app` can generate Lua against the device's actual surface. Each driver is a separate `Resident::Driver` subclass with a `registerModule()` that binds C++ methods to Lua names. Conventions worth following:
+  - One driver per hardware unit. Don't merge `screen` and `led` into one driver just because they share `main.cpp`.
+  - Double-buffer the screen via an off-screen canvas (`GFXcanvas16` in `device/`, `M5Canvas` in `m5stick-demo`). `screen.flip()` pushes a single frame in one SPI transfer. Drawing one shape at a time directly to the TFT is too slow for a game loop.
+  - On `onAppReset()` (called when a new app is loaded or the current one errors), restore a safe state: clear the canvas, turn the NeoPixel off. Don't leak the previous app's pixels into the next app's first frame.
+  - Build the Adafruit GFX / TFT object in `main.cpp` and `init()` it *before* `device.setup()` runs. The driver's `begin()` (canvas alloc, backlight PWM setup) gets called from inside Resident's lifecycle and assumes the hardware is already up.
+  - PIO quirk: with `symlink://...` in `lib_deps`, your local `lib/drivers` directory gets skipped by LDF's auto-scan. Add `symlink://lib/drivers` to `lib_deps` explicitly (see `device/platformio.ini`).
 
 - **Partition table.** The Feather has 4 MB flash. The default layout splits this into `app0` (~1.4 MB) and a big SPIFFS, but Resident's stack pushes the binary toward 1.2–1.4 MB, leaving almost no head-room. Custom layout: 2.5 MB app, 1.4 MB SPIFFS. If you add OTA later you'll need `app0` + `app1`; for now single-slot is fine.
 
@@ -103,10 +108,14 @@ Most of these have a sensible default. The doc lists them so you know what knob 
 
 ### What's deliberately not done yet
 
-- No `screen.*`, `led.*`, or `battery.*` Lua module. Apps can run, but they can't draw on the TFT, light the NeoPixel, or read the battery from Lua. **Step 3** will add these as `Resident::Driver` subclasses, following the m5stick-demo pattern.
-- No `DEVICE-SKILL.md` for `/resident:create-app` yet. Worth writing once the Lua surface above exists; for now there's nothing device-specific for `create-app` to generate against.
 - No `partitions.csv` reservation for OTA. If you want over-the-air updates later, double the `app` partition and add an `app1`.
+- No buttons / IMU / buzzer exposed to Lua — this board doesn't have any. If your board does, the m5stick-demo's `IMUDriver`, `PushButtonsDriver`, and `BuzzerDriver` show how to expose them, including the event-sink machinery for button presses (driver calls `sendEvent("button", ...)` and the sandbox surfaces it to Lua's `on_event`).
 
 ### Falling back
 
-The bring-up project is preserved at `examples/adafruit-esp32-s2-feather/device-no-resident/`. If something in the Resident layer regresses your hardware bring-up, `cd` to that directory, `pio run -t upload`, and you're back to a known-good baseline. (Keeping the bring-up as a separate PlatformIO project — not just a stashed `main.cpp` — means the full set of decisions, `platformio.ini` deps, and partition layout for step 1 stay intact and re-flashable.)
+Two known-good fallbacks are preserved as separate PlatformIO projects:
+
+- `examples/adafruit-esp32-s2-feather/device-no-resident/` — pure hardware bring-up, no Resident at all. Confirms the board is fine.
+- `examples/adafruit-esp32-s2-feather/device-minimal-resident/` — Resident connects to the relay, but no hardware Lua modules. Confirms the Resident stack is fine; useful for isolating driver bugs.
+
+Keeping these as separate projects (not just stashed `main.cpp` files) means the full set of decisions, `platformio.ini` deps, and partition layouts stay intact and re-flashable.

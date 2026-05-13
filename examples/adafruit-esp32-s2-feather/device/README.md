@@ -1,6 +1,8 @@
-# Adafruit ESP32-S2 TFT Feather — Resident integration
+# Adafruit ESP32-S2 TFT Feather — Resident (full)
 
-Step 2 of the two-step walkthrough in [`docs/start-building.md`](../../../docs/start-building.md). Builds on the hardware bring-up in [`../device-no-resident/`](../device-no-resident/) and layers the [Resident](https://github.com/inanimate-tech/resident) Lua sandbox on top.
+Step 2 of the [`docs/start-building.md`](../../../docs/start-building.md) walkthrough. Builds on the hardware bring-up in [`../device-no-resident/`](../device-no-resident/) and layers the [Resident](https://github.com/inanimate-tech/resident) Lua sandbox plus three hardware Lua modules on top.
+
+For the smaller intermediate version that brings Resident up *without* exposing hardware to Lua, see [`../device-minimal-resident/`](../device-minimal-resident/).
 
 ## What it does
 
@@ -10,8 +12,16 @@ Step 2 of the two-step walkthrough in [`docs/start-building.md`](../../../docs/s
   - Time sync (ezTime).
   - WebSocket transport to `resident.inanimate.tech` via Courier.
   - Lua sandbox lifecycle and routing of inbound `app` / `shader` / `app_event` messages.
-- Draws status on the TFT via a custom `TFTStatusDisplay`. Once the relay opens a WS, the 8-character device ID is shown in big green text — that's what you push apps to.
-- The NeoPixel turns green once connected (yellow otherwise); the red LED keeps blinking at 2 Hz so you can tell the firmware is alive.
+- Registers three hardware drivers with Resident as Lua modules:
+  - **`screen.*`** — the TFT, backed by a 135×240 `GFXcanvas16` framebuffer. Double-buffered: draw with `clear`/`text`/`fill_rect`/etc., then `screen.flip()` to push the frame.
+  - **`led.*`** — the onboard NeoPixel. `set(r,g,b)`, `set_brightness(n)`, `off()`.
+  - **`battery.*`** — the LC709203F fuel gauge. `voltage()`, `percent()`, `present()`.
+- The TFT display is in portrait orientation (135×240, USB-C at the bottom).
+- Once connected, auto-loads a tiny Lua app that paints the device ID big and green and sets the NeoPixel green. Any real app sent via `push-app` replaces it.
+
+## Lua surface for app authors
+
+See [`DEVICE-SKILL.md`](./DEVICE-SKILL.md) for the complete Lua API documentation. The `/resident:create-app` skill reads this file to generate Lua apps for the device.
 
 ## How to flash
 
@@ -24,31 +34,39 @@ pio device monitor
 
 ## Wi-Fi setup (first boot only)
 
-On first boot the device hosts an open AP named something like `Resident feather-tft XXXX`. Join it from a phone, the captive portal pops, enter your real Wi-Fi credentials. Saved to NVS — every subsequent boot uses the saved credentials silently.
+On first boot the device hosts an open AP named something like `Resident feather-tft XXXX`. Join from a phone, the captive portal pops, enter your real Wi-Fi credentials. Saved to NVS — every subsequent boot connects silently.
 
 ## Pushing apps
 
-Read the device ID off the TFT, then:
+Read the device ID off the TFT, then either:
 
 ```bash
-# from the resident repo root, or anywhere that has push-app:
-./examples/m5stick-demo/send-app.sh --device-id <id> path/to/your/app.lua
+# Using m5stick-demo's send-app.sh (until the Feather grows its own):
+./../../m5stick-demo/send-app.sh --device-id <id> path/to/your/app.lua
 ```
 
-Or, with the agent plugin installed, `/resident:push-app` does the same thing from inside Claude Code.
+Or via Claude Code:
 
-## What Lua apps can do today
+```
+/resident:push-app --device-id <id> path/to/app.lua
+```
 
-Only the **sandbox-generic** surface — `log.*`, `time.*`, `kv.*`, math, shader globals. Hardware Lua modules (`screen.*` for the TFT, `led.*` for the NeoPixel, `battery.*` for the LC709203) are not exposed yet — they're step 3. Apps that reference `screen` (e.g. the m5stick-demo's `hello.lua`) will hit a Lua runtime error like `attempt to index a nil value (global 'screen')` and the rest of the app won't run.
+Or describe an app and let `/resident:create-app` write it using this directory's `DEVICE-SKILL.md`.
 
-## Why a custom `partitions.csv`
+## Indicators (what's on the screen / pixel / LED)
 
-Resident + WiFiManager + Courier + ArduinoJson + Esp32Lua + ezTime push the binary toward 1.2 MB. The default 4 MB layout splits that across `app0` and a big SPIFFS in a way that leaves no head-room. The bundled `partitions.csv` gives `app0` 2.5 MB and `spiffs` 1.4 MB — comfortable.
+| State | TFT | NeoPixel | Red LED |
+|---|---|---|---|
+| Booting | "Resident / ESP32-S2 TFT Feather / WiFi" (yellow) | Blue | Blinks at 2 Hz |
+| Captive portal active (first boot) | "WiFi" / "Connecting" (yellow) | Blue | Blinks at 2 Hz |
+| Connected, no app loaded yet | "Resident / feather-tft / Device ID: XXXXXXXX" (green) | Green | Blinks at 2 Hz |
+| Lua app running | Whatever the app draws | Whatever the app sets | Blinks at 2 Hz (firmware alive) |
 
-## Why a Resident symlink in `lib_deps`
-
-`symlink://../../..` resolves to the repo root, where Resident lives. Means the example tracks the in-tree Resident source — change a Resident header, re-`pio run`, and your firmware picks it up immediately. The trade-off is a PIO LDF quirk that hides `Adafruit BusIO` (a transitive dep of LC709203F + ST7789); the explicit `adafruit/Adafruit BusIO` line in `lib_deps` re-adds it.
+The red LED blink is always-on as a "firmware is running" indicator independent of anything Lua does.
 
 ## Falling back
 
-If something here regresses your hardware, [`../device-no-resident/`](../device-no-resident/) is a known-good baseline — flash it to confirm the board itself is fine and the issue is in the Resident layer.
+If the Resident integration regresses your hardware bring-up:
+
+- [`../device-no-resident/`](../device-no-resident/) — pure hardware bring-up, no Resident at all. Known-good baseline that confirms the board is fine.
+- [`../device-minimal-resident/`](../device-minimal-resident/) — Resident connects to the relay, but no hardware Lua modules are exposed. Useful if you suspect a driver bug.
