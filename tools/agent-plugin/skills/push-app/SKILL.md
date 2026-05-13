@@ -38,6 +38,26 @@ Both can be persisted across invocations:
 
 Ask the user once per session if these aren't set; don't re-ask.
 
+## Targeting the simulator
+
+Device IDs that start with `sim-` target the in-browser simulator on
+[resident.inanimate.tech](https://resident.inanimate.tech/#try-it-now).
+The simulator emulates an M5StickC Plus2 — a bundled DEVICE-SKILL.md
+for that surface ships at
+`${CLAUDE_PLUGIN_ROOT}/skills/create-app/docs/m5stick/DEVICE-SKILL.md`.
+
+When the user-supplied device ID starts with `sim-` AND no
+`--device-skill` was provided AND no `./DEVICE-SKILL.md` exists in cwd,
+**forward** the bundled path to `create-app` (and to `validate-app`
+if you're calling it directly) as `--device-skill
+${CLAUDE_PLUGIN_ROOT}/skills/create-app/docs/m5stick/DEVICE-SKILL.md`.
+This lets a marketplace user with no local Resident checkout push apps
+to the simulator with zero setup.
+
+If the user has their own `./DEVICE-SKILL.md` in cwd, that takes
+precedence — they presumably know what they're doing. The `sim-`
+auto-forward is a convenience for the bare quick-start path.
+
 ## Workflow — file input
 
 If the user gives a Lua file path, OR a Lua source via stdin, OR a
@@ -67,11 +87,14 @@ just a sentence like "make the screen flash red on shake"):
    the description and an `--out` path under `device-apps/<slug>.lua`.
    If the user also passed `--device-skill <path>` and/or one or more
    `--ref <path>` flags to push-app, forward them verbatim to
-   create-app. That skill embeds the sandbox docs, resolves
-   DEVICE-SKILL.md (caller path → cwd → prompt), reads any `--ref`
-   files, and produces tight Lua source. It also chains through
-   `/resident:validate-app` automatically; a returned source is already
-   compile- and lifecycle-checked.
+   create-app. If neither was passed AND the device ID starts with
+   `sim-` AND there's no `./DEVICE-SKILL.md` in cwd, forward
+   `--device-skill ${CLAUDE_PLUGIN_ROOT}/skills/create-app/docs/m5stick/DEVICE-SKILL.md`
+   (the bundled simulator surface). That skill embeds the sandbox
+   docs, resolves DEVICE-SKILL.md (caller path → cwd → prompt), reads
+   any `--ref` files, and produces tight Lua source. It also chains
+   through `/resident:validate-app` automatically; a returned source
+   is already compile- and lifecycle-checked.
 
 2. **Push.** Run `${CLAUDE_PLUGIN_ROOT}/skills/push-app/tools/push.sh`
    against the file produced in step 1.

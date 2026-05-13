@@ -3,12 +3,19 @@
 
 #include <ResidentDriver.h>
 #include <ResidentLuaModule.h>
+#include <ResidentStatusLED.h>
 #include <Adafruit_NeoPixel.h>
 
-// Resident driver for the single onboard NeoPixel. Exposes the `led.*` Lua
-// module. The Adafruit_NeoPixel must already be `begin()`'d in main.cpp
-// before Resident::Device::setup() runs.
-class LEDDriver : public Resident::Driver {
+// Resident driver for the single onboard NeoPixel. Dual role:
+//   - Resident::Driver       → exposes the `led.*` Lua module
+//   - Resident::StatusLED    → Resident drives the pixel for connection
+//                              state (yellow=connecting, cyan=transports,
+//                              green=connected, orange=reconnecting,
+//                              red=failed) until a Lua app loads.
+// Once an app is running, `solidColor()` no-ops so the app fully owns
+// the pixel. The Adafruit_NeoPixel must already be `begin()`'d in
+// main.cpp before Resident::Device::setup() runs.
+class LEDDriver : public Resident::Driver, public Resident::StatusLED {
 public:
   explicit LEDDriver(Adafruit_NeoPixel* pixel) : _pixel(pixel) {}
 
@@ -20,14 +27,21 @@ public:
      .method<LEDDriver, &LEDDriver::off>("off");
   }
 
-  // On app reset, clear the pixel so a misbehaving app doesn't leave it on.
+  // Sandbox lifecycle: clear on app reset; track app-running so the
+  // StatusLED stops touching the pixel once Lua takes over.
   void onAppReset() override {
     _pixel->setPixelColor(0, 0);
     _pixel->show();
   }
+  void onAppRunning(bool running) override { _appRunning = running; }
+
+  // Resident::StatusLED — Resident calls this during the connection
+  // lifecycle. Suppressed once a Lua app owns the pixel.
+  void solidColor(uint32_t color) override;
 
 private:
   Adafruit_NeoPixel* _pixel;
+  bool _appRunning = false;
 
   int set(lua_State* L);
   int setBrightness(lua_State* L);

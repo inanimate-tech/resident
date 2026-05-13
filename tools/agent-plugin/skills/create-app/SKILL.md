@@ -26,8 +26,12 @@ done. It does NOT push to a device; that's `push-app`'s job.
    2. **cwd fallback.** Otherwise look for `./DEVICE-SKILL.md`.
    3. **Ask.** If neither resolves, stop and tell the user:
       > "I need a DEVICE-SKILL.md to know this device's Lua surface.
-      > Either tell me where it is (path) or invoke
-      > `/resident:write-device-skill` and I'll help you author one."
+      > Either tell me where it is (path), or invoke
+      > `/resident:write-device-skill` to author one. If you're
+      > targeting the in-browser simulator on resident.inanimate.tech,
+      > a bundled M5StickC Plus2 surface ships at
+      > `${CLAUDE_PLUGIN_ROOT}/skills/create-app/docs/m5stick/DEVICE-SKILL.md`
+      > — pass that as `--device-skill`."
       > Exit without writing.
 3. **The embedded sandbox docs** — read
    `${CLAUDE_PLUGIN_ROOT}/skills/create-app/docs/sandbox.md`. Covers

@@ -4,7 +4,17 @@ Sandbox with hardware IO and hot reload for ESP32 devices.
 
 Resident provides a sandboxed Lua runtime that can be loaded with new code over the network at any time. Hardware peripherals are exposed to Lua through a driver interface, so apps can draw to displays, read sensors, and control outputs without touching C++.
 
-## Quick Start
+## What Resident includes
+
+1. The Resident firmware library for a sandbox on ESP32 devices and custom hardware integration, with optional managed connectivity to load sandbox apps remotely.
+2. A default websocket backend at `resident.inanimate.tech/devices/<deviceId>` to relay apps and events during development.
+3. Agent skills to create, validate and push sandbox apps. [Install the Resident skills plug-in](tools/agent-plugin/README.md).
+
+Point your agent at [docs/start-building.md](docs/start-building.md) to add the Resident sandbox to your hardware.
+
+## Examples
+
+Working PlatformIO projects for specific boards live under [examples/](examples/) — currently the M5StickC Plus2 and the Adafruit ESP32-S2 TFT Feather. Each is buildable as-is; use them as templates for bringing up your own hardware.
 
 ### With `Resident::Device` (network-connected)
 
@@ -146,7 +156,7 @@ Incoming JSON messages with these types are handled by the sandbox:
 { "type": "app_event", "name": "button_press", "data": { "id": 1 } }
 ```
 
-### Lua app callbacks
+### Sandbox lifecycle
 
 - `init(ctx)` — called once after compilation
 - `on_tick(ctx, dt_ms)` — called at 10 FPS with elapsed time

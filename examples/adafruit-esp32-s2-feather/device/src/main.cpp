@@ -27,8 +27,11 @@ static Resident::DeviceConfig makeConfig() {
   cfg.deviceType    = "feather-tft";
   cfg.host          = RESIDENT_HOST;
   // DisplayDriver dual-inherits as the StatusDisplay so connection-state
-  // text gets drawn straight to the TFT before any app loads.
+  // text gets drawn straight to the TFT before any app loads. LEDDriver
+  // dual-inherits as the StatusLED so the NeoPixel reflects connection
+  // state (yellow→cyan→green) until an app takes over.
   cfg.statusDisplay = &displayDriver;
+  cfg.statusLED     = &ledDriver;
   cfg.extensions    = {&displayDriver, &ledDriver, &batteryDriver};
   return cfg;
 }
@@ -83,6 +86,7 @@ void setup() {
                 (unsigned long)ESP.getCpuFreqMHz());
 
   pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);  // Red user LED off — NeoPixel + TFT carry status now.
 
   // NeoPixel: data on PIN_NEOPIXEL, power on NEOPIXEL_POWER. Variant
   // declares NEOPIXEL_POWER_ON = HIGH for this rev.
@@ -123,15 +127,4 @@ void setup() {
 
 void loop() {
   device.loop();
-
-  // Red LED toggles at 2 Hz — a no-Lua "firmware alive" indicator,
-  // independent of whatever the Lua app is doing on the NeoPixel.
-  static uint32_t lastBlink = 0;
-  uint32_t now = millis();
-  if (now - lastBlink >= 500) {
-    lastBlink = now;
-    static bool ledOn = false;
-    ledOn = !ledOn;
-    digitalWrite(LED_BUILTIN, ledOn);
-  }
 }

@@ -5,6 +5,19 @@ extern "C" {
   #include "lua/lauxlib.h"
 }
 
+// Resident::StatusLED — drives the NeoPixel through connection states.
+// Silently drops calls once a Lua app is running so the app fully owns
+// the pixel.
+void LEDDriver::solidColor(uint32_t color) {
+  if (_appRunning) return;
+  uint8_t r = (color >> 16) & 0xFF;
+  uint8_t g = (color >> 8) & 0xFF;
+  uint8_t b = color & 0xFF;
+  _pixel->setBrightness(60);  // moderate, visible in normal indoor light
+  _pixel->setPixelColor(0, _pixel->Color(r, g, b));
+  _pixel->show();
+}
+
 // led.set(r, g, b) — set the onboard NeoPixel colour (0-255 per channel).
 int LEDDriver::set(lua_State* L) {
   int r = (int)luaL_checknumber(L, 1);

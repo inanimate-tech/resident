@@ -1,121 +1,175 @@
 # Start building
 
-This guide walks through adding a new device to Resident. It's the path the Adafruit ESP32-S2 TFT Feather example took from "out of the bag" to "running Lua apps over the relay", and the same shape should work for any ESP32-family board you bring.
+**This guide is written for coding agents** to follow when adding a new ESP32 device to Resident. It assumes a working PlatformIO toolchain and the ability to flash firmware over USB. The Adafruit ESP32-S2 TFT Feather under [`examples/adafruit-esp32-s2-feather/`](../examples/adafruit-esp32-s2-feather/) is the worked example throughout; adapt the specifics to your hardware.
 
-There are two steps:
+There are four steps:
 
-1. **Bring up your hardware** — prove the board boots, USB serial works, and you can drive each peripheral you care about. *No Resident yet.* Output of this step is a small PlatformIO project that you can flash and watch the LEDs / screen / sensors respond.
+1. **Bring up your hardware** — prove the board boots and each peripheral works. *No Resident yet.*
+2. **Add Resident** — layer the Lua sandbox + Wi-Fi + WebSocket transport on top. Apps can run, but they only see built-in modules (`log`, `time`, `kv`, math).
+3. **Add Resident drivers** — expose your hardware as Lua modules (`screen.*`, `led.*`, `battery.*`, …).
+4. **Create and push apps** — use the agent skills to author a `DEVICE-SKILL.md`, generate Lua against it, and push to the default backend.
 
-2. **Add Resident** — keep the same project, layer Resident's sandbox, WebSocket transport, and Lua runtime on top. Output of this step is a device that boots, joins your Wi-Fi, opens a WS to the relay, displays its device ID, and accepts Lua apps over `push-app`.
+Each step finishes with something flashable. If a later step regresses, drop back to an earlier project as a known-good baseline.
 
-Each step finishes with something you can flash, run, and see working. That matters: if the Resident layer misbehaves, you can flash the bring-up sketch as a sanity check that the hardware is fine.
+The Feather example preserves three buildable PlatformIO projects matching steps 1, 2 baseline, and 2+3 combined:
 
-This guide refers to `examples/adafruit-esp32-s2-feather/` throughout as the worked example. The `device-no-resident/` subdirectory is the end state of step 1; `device/` is the end state of step 2 (Resident bootstrap + the three hardware Lua modules). A third subdirectory, `device-minimal-resident/`, is preserved as an intermediate snapshot — Resident running but with no hardware Lua modules registered yet — useful as a reference and a fallback. All three are buildable PlatformIO projects; flash any of them with `pio run -t upload` from its own directory.
+```
+examples/adafruit-esp32-s2-feather/
+├── device-no-resident/        ← end of step 1
+├── device-minimal-resident/   ← end of step 2 (Resident, no hardware modules)
+└── device/                    ← end of step 3 (full drivers)
+```
 
 ---
 
 ## Step 1 — Bring up your hardware
 
-The goal here is **not** to build anything that connects to a network. It's to exercise the chip and each peripheral with the smallest possible PlatformIO project, so you find hardware/library/pin-mapping problems while the surface area is tiny.
+**Goal:** the smallest PlatformIO project that boots, prints chip identity over USB serial, and exercises each peripheral. No networking, no Lua, no Resident.
 
-### What to write
+### What the agent should produce
 
-A `src/main.cpp` that, in `setup()`, prints chip identity over Serial (chip model, cores, MHz, flash, PSRAM) and initialises each peripheral. In `loop()`, it does something visible at a known cadence — blink an LED, cycle a NeoPixel, redraw a screen — so you can tell at a glance whether the firmware is running.
+A `src/main.cpp` that, in `setup()`, prints chip stats (model, cores, MHz, flash, PSRAM) and initialises each peripheral the board ships with. In `loop()`, something visible at a known cadence — a heartbeat blink, a NeoPixel cycle, a redrawn screen region — so success or failure is readable at a glance.
 
-For the Feather TFT, that meant:
+For the Feather: chip banner, I2C bus scan, LC709203 fuel gauge init, TFT init drawing chip info + a live "uptime / battery" block, NeoPixel cycling, status splash at the end of `setup()` (green = full success, yellow = soft warn like "no battery"). See [`device-no-resident/src/main.cpp`](../examples/adafruit-esp32-s2-feather/device-no-resident/src/main.cpp).
 
-- Serial banner with chip stats.
-- Red user LED toggling at 2 Hz.
-- NeoPixel cycling red → green → blue → off at 2 Hz (after a 2 s splash colour that conveys a yes/no result).
-- I2C bus power-on, then a 0x01–0x7F scan that prints whatever responds.
-- LC709203 battery fuel gauge init + read.
-- A 240×135 ST7789 TFT showing chip info up top and a live battery / heartbeat / uptime block at the bottom.
+### Decisions to make
 
-### Decisions you'll face
-
-- **Which board ID does PlatformIO use?** Adafruit ships several visually-similar boards under the same family name. Check the *exact* PlatformIO board ID — the wrong one gives you wrong default SDA/SCL pins, wrong NeoPixel power pin, etc., and silent misbehaviour (an I2C scan with no devices is hard to attribute to "wrong pins" vs "no devices"). For the TFT Feather it's `adafruit_feather_esp32s2_tft`, not the very similarly-named `adafruit_feather_esp32s2`. When in doubt, read `~/.platformio/packages/framework-arduinoespressif32/variants/<board>/pins_arduino.h` directly — it's the source of truth.
-
-- **USB-CDC on boot.** Native-USB ESP32-S2 / S3 boards need `-DARDUINO_USB_CDC_ON_BOOT=1` so `Serial` writes go out over the USB-C port instead of UART0 (which usually isn't broken out to a pin). Without this you'll think the chip is dead.
-
-- **Hands-free uploads.** Native USB has no DTR/RTS bridge, so esptool needs `board_upload.use_1200bps_touch = true` + `board_upload.wait_for_upload_port = true` to tell the running firmware "reboot to bootloader" via a 1200-baud port open. The very first flash (or any flash on top of CircuitPython, or after a sketch that breaks USB-CDC) still needs the BOOT + RESET button dance; everything after is automatic.
-
-- **Power-gated peripherals.** Many Adafruit boards put the NeoPixel and the I2C bus behind transistor power gates so they can be cut for low-power modes. The variant header declares the active polarity (e.g. `NEOPIXEL_POWER_ON HIGH`) — trust it. *Don't* implement an INPUT-then-invert "polarity sniff" — the pin may sit at the active state at rest from a board pull, and the sniff gives the wrong answer. (The Adafruit demo sketches do this for portability across board revisions, but we know our variant.)
-
-- **Library Dependency Finder mode.** Adafruit BusIO (a transitive dep of most Adafruit sensor libs) `#include`s `SPI.h` without declaring SPI cleanly in metadata. PlatformIO's default chain LDF can't find it. Set `lib_ldf_mode = deep`.
-
-- **What's a "ready" signal on a screen-less board?** If the board has a display, draw chip info on it. If it doesn't, hold a status colour on a NeoPixel for 2 s at the end of `setup()` before the cycling pattern takes over (green = full success, yellow = soft warning like "no battery"). Save red for hard failures.
-
-- **Things that look like firmware bugs but aren't.** The Feather's amber CHG LED flashes at 5–10 Hz when no battery is plugged in — that's the charger IC, not your code. Document those quirks in the README so the next person doesn't go hunting.
+- **PlatformIO board ID.** Many vendors ship visually-similar boards under the same family name with different pin maps. Pick the *exact* board ID and verify by reading `~/.platformio/packages/framework-arduinoespressif32/variants/<board>/pins_arduino.h` — that file is the source of truth for `LED_BUILTIN`, `PIN_NEOPIXEL`, `SDA`/`SCL`, and any board-specific power-gate pins.
+- **Serial routing.** On native-USB boards (ESP32-S2/S3 without a USB-to-serial bridge) `Serial` only reaches the USB-C jack if USB-CDC-on-boot is enabled. On the Feather that means `-DARDUINO_USB_CDC_ON_BOOT=1` in `build_flags`. Without it the chip seems dead.
+- **Upload reset method.** Boards with a CP210x-style bridge auto-reset on DTR/RTS. Native-USB boards need esptool to issue a 1200-baud touch to the running firmware. Add `board_upload.use_1200bps_touch = true` and `board_upload.wait_for_upload_port = true` if the variant supports it. (The very first flash after a non-Arduino firmware still needs the manual BOOT + RESET button dance.)
+- **Library Dependency Finder mode.** Some Adafruit sensor libs `#include` `SPI.h` from headers that PlatformIO's default `chain` LDF can't resolve. If you see fatal-error: `Adafruit_BusIO_*` not found, set `lib_ldf_mode = deep`.
+- **A "ready" signal.** Decide how the board says "everything booted" without serial. If there's a display, draw chip info on it. If not, end `setup()` with a 1–2 s solid status colour on a NeoPixel (green for full pass, yellow for soft warning, red reserved for hard failures), then resume the running pattern.
+- **Quirks worth documenting.** Note in the README anything that looks like a firmware bug but isn't — the Feather's amber CHG LED flashes fast when no battery is connected (charger IC, not your code). Future readers shouldn't go hunting.
 
 ### Why this matters before Resident
 
-Resident pulls in WiFi, ezTime, WiFiManager, Courier, ArduinoJson, Esp32Lua, and the in-tree Resident library. That's a *lot* of code surface, and any of those can fail in ways that look like "the board doesn't work". If your bare bring-up sketch already runs cleanly, you know which side of the fence a problem is on.
+Resident pulls in WiFi, ezTime, WiFiManager, Courier, ArduinoJson, Esp32Lua, and the in-tree Resident library — a lot of code surface, any of which can fail in ways that look like "the board doesn't work". If the bare bring-up sketch already runs cleanly, the bug in the next step has to be in Resident's layer.
 
 ---
 
 ## Step 2 — Add Resident
 
-Now layer Resident on top. The bring-up code stays — TFT init, NeoPixel power, LC709203 init still run in `setup()` before we hand off to Resident — and we add a `Resident::Device` instance that owns the Wi-Fi, time sync, WebSocket transport, and Lua sandbox.
+**Goal:** the same hardware, now with Wi-Fi + Lua sandbox + WebSocket transport to the default relay. The device displays its 8-character device ID once connected and accepts apps over `push-app`. Apps can only call built-in modules (`log`, `time`, `kv`, math globals); hardware bindings come in step 3.
 
-### What to write
+### What the agent should produce
 
-In `platformio.ini`:
+The bring-up `setup()` code stays — peripheral init still happens before Resident takes over. On top:
 
-- Add the in-tree Resident library via `symlink://../..` (relative from the example back to the repo root).
-- Add Resident's runtime deps: `git+https://github.com/inanimate-tech/courier.git`, `tzapu/WiFiManager`, `bblanchon/ArduinoJson`, `ropg/ezTime`, `fischer-simon/Esp32Lua`.
-- Add a custom `partitions.csv` — Resident + Lua + WiFiManager + Courier eat far more flash than the default 4 MB layout allows for `app0`. The Feather example gives the app 2.5 MB.
-- **PIO quirk** — once you add the `symlink://...` line, LDF's auto-resolution of `Adafruit BusIO` (transitive via LC709203F + ST7789) stops working. Re-add `adafruit/Adafruit BusIO@^1.17.0` explicitly. Same kind of symptom as the m5stick-demo's `lib/drivers` quirk.
+- Add the in-tree Resident library to `lib_deps` (`symlink://<path-to-resident-root>`) along with its runtime deps: Courier (git URL), `tzapu/WiFiManager`, `bblanchon/ArduinoJson`, `ropg/ezTime`, `fischer-simon/Esp32Lua`.
+- Add a custom `partitions.csv` — Resident's stack pushes the binary toward 1.2 MB; the default 4 MB layout's `app0` slice (~1.4 MB) leaves no head-room. The Feather example uses 2.5 MB app + 1.4 MB SPIFFS.
+- Implement a `Resident::StatusDisplay` subclass that paints connection-state text (`"WiFi"`, `"Connecting"`, `"Connected"`, then the device ID) on whatever output the board has — a TFT, an OLED, a NeoPixel, or just plain serial.
+- Build a `Resident::DeviceConfig`: set `deviceType`, `host = "resident.inanimate.tech"`, point `statusDisplay` at the subclass, leave `extensions` empty for this step.
+- Subclass `Resident::Device`, override `onTransportsWillConnect()` to set the canonical relay path `/devices/<id>` (the relay's URL convention; the default `/agents/<type>-agent/<id>` is for self-hosted deployments).
+- `setup()` calls `device.setup()` after the hardware init block; `loop()` calls `device.loop()`.
 
-In `src/main.cpp`:
+See [`device-minimal-resident/`](../examples/adafruit-esp32-s2-feather/device-minimal-resident/) for the Feather's version (~100 lines of `main.cpp`).
 
-- Keep the bring-up initialisation block (TFT power, NeoPixel power, I2C power, `Wire.begin()`, `tft.init()`, `tft.setRotation()`, `battery.begin()`).
-- Add a `Resident::StatusDisplay` subclass that draws to the TFT. Resident calls `displayText("WiFi")`, `displayText("Connecting")`, `displayText("Connected")`, and finally `displayText(deviceId)` once the WS opens. Render the device ID big and green; render other status strings in yellow at a medium size.
-- Build a `Resident::DeviceConfig`: set `deviceType`, `host = "resident.inanimate.tech"`, point `statusDisplay` at your TFT subclass, and (for now) leave `extensions` empty.
-- Subclass `Resident::Device`, override `onTransportsWillConnect()` to set the canonical relay path `/devices/<id>` instead of the default `/agents/<type>-agent/<id>` (the relay's URL convention).
-- In `loop()`, call `device.loop()` and keep the bring-up's LED toggle + NeoPixel update — green when connected, yellow when not.
+### Decisions to make
 
-### Decisions you'll face
+- **Relay endpoint.** The default public relay (`resident.inanimate.tech`) is the simplest path; `push-app` defaults to it. To self-host, deploy the Cloudflare Worker under `examples/m5stick-demo/server/` and replace the host constant. The protocol is identical.
+- **`deviceType` string.** Logged on the relay side and used to seed the captive-portal AP name (`Resident <DeviceType> <ID-short>`). Keep it short and meaningful.
+- **Wi-Fi UX.** Courier defaults to a WiFiManager captive portal: first boot exposes an open AP, credentials persist in NVS thereafter. For headless deployments, hardcode `WiFi.begin(ssid, pass)` instead — but the captive portal is friendlier for examples.
+- **Pre-connection display.** What the board shows during `"WiFi"` / `"Connecting"` states is up to you. The Feather renders status text in yellow at size 2 and switches to green at size 2 once a real device ID arrives.
+- **Bootstrap "I'm connected" app.** Once a WS connects, you can either draw the device ID directly from C++ or have the firmware auto-load a tiny built-in Lua app that does the drawing. The Lua-app pattern means the user's first impression of a Resident device is *a Lua app running*, which is the right mental model — and a real app pushed via `push-app` replaces it cleanly.
 
-Most of these have a sensible default. The doc lists them so you know what knob you're tweaking, not because every project needs to change them.
+### What the agent should be able to demonstrate at this point
 
-- **Which relay endpoint?** The canonical public relay (`resident.inanimate.tech`) is the simplest path and the one `push-app` defaults to. If you want auth, persistence, or richer state, self-host a Cloudflare Worker from `examples/m5stick-demo/server/`. The change is one line: replace `RESIDENT_HOST`.
+1. Flash; open serial monitor.
+2. On first boot, join the captive-portal AP and enter Wi-Fi credentials.
+3. Watch the display cycle `WiFi` → `Connecting` → `Connected` → device ID.
+4. `/resident:push-app --device-id <id> some-app.lua` with an app that only calls `log.info(...)` — confirm the message reaches the device and runs. (Apps using `screen.*` etc. will hit a Lua runtime error here — that's expected; step 3 fixes it.)
 
-- **What's the `deviceType` string?** It's the identifier the relay uses for its default WebSocket path (`/agents/<deviceType>-agent/<id>`). When you also override `onTransportsWillConnect()` to use `/devices/<id>` instead, `deviceType` becomes mostly cosmetic — but it's still useful for logs and (eventually) for routing different types of devices on the relay side. The Feather uses `"feather-tft"`.
+---
 
-- **WiFi setup UX.** Courier defaults to a WiFiManager captive portal: on first boot the device hosts an open AP named `Resident <DeviceType> <ID-short>`; you join it on your phone and enter your real SSID + password. Credentials persist in NVS thereafter. If you don't want a captive portal, swap in a hardcoded `WiFi.begin(ssid, pass)` — but the captive portal is friendly for example projects.
+## Step 3 — Add Resident drivers
 
-- **What does the device show before it's connected?** The TFT StatusDisplay subclass receives short status strings ("WiFi", "Connecting", "Connected"). Decide whether to render them prominently or quietly. The Feather renders them in yellow at size 2; once a real 8-char device ID arrives, it switches to size 3, green.
+**Goal:** expose each hardware peripheral as a Lua module so apps can drive it. Each peripheral becomes its own `Resident::Driver` subclass; drivers live in a project-local `lib/drivers/` directory and are registered as extensions in the `DeviceConfig`.
 
-- **What goes on the screen once connected?** This example loads a tiny built-in Lua app (printing the device ID via `log.info`) so the user immediately sees an interactive demo. A real app sent via `push-app` replaces it. Alternatively, you could draw the device ID directly from C++ and skip the bootstrap app. The bootstrap-app pattern means the user's first impression of "this is a Resident device" is *a Lua app running*, which is the right mental model.
+### Pattern
 
-- **Which Lua hardware modules to expose?** This is the largest design decision. The minimum-viable Resident device (preserved at `device-minimal-resident/`) is one that connects and runs Lua, even if that Lua can only `log` and do math. The full version (`device/`) adds three drivers — `screen.*` (TFT), `led.*` (NeoPixel), `battery.*` (LC709203) — and a `DEVICE-SKILL.md` documenting them so `/resident:create-app` can generate Lua against the device's actual surface. Each driver is a separate `Resident::Driver` subclass with a `registerModule()` that binds C++ methods to Lua names. Conventions worth following:
-  - One driver per hardware unit. Don't merge `screen` and `led` into one driver just because they share `main.cpp`.
-  - Double-buffer the screen via an off-screen canvas (`GFXcanvas16` in `device/`, `M5Canvas` in `m5stick-demo`). `screen.flip()` pushes a single frame in one SPI transfer. Drawing one shape at a time directly to the TFT is too slow for a game loop.
-  - On `onAppReset()` (called when a new app is loaded or the current one errors), restore a safe state: clear the canvas, turn the NeoPixel off. Don't leak the previous app's pixels into the next app's first frame.
-  - Build the Adafruit GFX / TFT object in `main.cpp` and `init()` it *before* `device.setup()` runs. The driver's `begin()` (canvas alloc, backlight PWM setup) gets called from inside Resident's lifecycle and assumes the hardware is already up.
-  - PIO quirk: with `symlink://...` in `lib_deps`, your local `lib/drivers` directory gets skipped by LDF's auto-scan. Add `symlink://lib/drivers` to `lib_deps` explicitly (see `device/platformio.ini`).
+A driver is a class that inherits `Resident::Driver` and implements:
 
-- **Partition table.** The Feather has 4 MB flash. The default layout splits this into `app0` (~1.4 MB) and a big SPIFFS, but Resident's stack pushes the binary toward 1.2–1.4 MB, leaving almost no head-room. Custom layout: 2.5 MB app, 1.4 MB SPIFFS. If you add OTA later you'll need `app0` + `app1`; for now single-slot is fine.
+- `name()` returning the Lua module name (e.g. `"screen"`, `"led"`, `"imu"`).
+- `registerModule(LuaModule&)` chaining `.method<Class, &Class::cMethod>("lua_name")` calls. Each C++ method takes `lua_State*` and returns the number of Lua return values, pushing them with `lua_pushnumber` / `lua_pushinteger` / `lua_pushboolean`.
+- Optionally: `begin()` for one-shot hardware init that happens inside `device.setup()`; `onAppReset()` to clear per-app state (canvas, LED off) when a new app loads; `onAppRunning(bool)` to track sandbox state.
 
-### What the user sees end-to-end
+A driver can dual-inherit `Resident::StatusDisplay` or `Resident::StatusLED` — that's how the Feather's `DisplayDriver` and `LEDDriver` both serve as boot-time status indicators *and* as Lua-accessible modules. The handoff is automatic: once a Lua app loads, the driver gates its `displayText` / `solidColor` calls on `_appRunning` so Lua owns the hardware.
 
-1. Flash the firmware via `pio run -t upload`.
-2. TFT shows `Resident / ESP32-S2 TFT Feather / WiFi` (yellow).
-3. On first boot, the device hosts an open Wi-Fi AP named `Resident feather-tft XXXX`. Join it on a phone, enter real Wi-Fi credentials. (On subsequent boots, this step is skipped — credentials persist in NVS.)
-4. TFT cycles through `Connecting`, then `Connected`, then the 8-character device ID in big green text.
-5. NeoPixel turns green; red LED keeps blinking at 2 Hz.
-6. `push-app --device-id <id> some-app.lua` sends Lua to the device. Resident runs it. Built-in modules (`log`, `time`, `kv`, math) are available; hardware modules will come in step 3.
+For each driver in `device/lib/drivers/`:
 
-### What's deliberately not done yet
+- One header + one cpp per driver.
+- A single `library.json` at `lib/drivers/library.json` so PlatformIO picks them up as a project-local library.
+- Add `symlink://lib/drivers` to `lib_deps` explicitly — once a parent `symlink://` is in the list (for Resident itself), PlatformIO's LDF stops auto-scanning the project's own `lib/`.
 
-- No `partitions.csv` reservation for OTA. If you want over-the-air updates later, double the `app` partition and add an `app1`.
-- No buttons / IMU / buzzer exposed to Lua — this board doesn't have any. If your board does, the m5stick-demo's `IMUDriver`, `PushButtonsDriver`, and `BuzzerDriver` show how to expose them, including the event-sink machinery for button presses (driver calls `sendEvent("button", ...)` and the sandbox surfaces it to Lua's `on_event`).
+### Feather case study
 
-### Falling back
+The Feather exposes three drivers — see [`device/lib/drivers/src/`](../examples/adafruit-esp32-s2-feather/device/lib/drivers/src/):
 
-Two known-good fallbacks are preserved as separate PlatformIO projects:
+- **`DisplayDriver`** wraps `Adafruit_ST7789`. Allocates a `GFXcanvas16` framebuffer in `begin()`, exposes `screen.{clear, text, fill_rect, rect, line, triangle, fill_triangle, pixel, flip, set_brightness, width, height}`. `flip()` pushes the canvas to the TFT in a single SPI transfer via `drawRGBBitmap` — double-buffering is essential for anything resembling a game loop, drawing primitives straight to the TFT one-at-a-time is too slow. Backlight brightness is on a LEDC PWM channel. Dual-inherits `Resident::StatusDisplay`.
+- **`LEDDriver`** wraps `Adafruit_NeoPixel`. Exposes `led.{set, set_brightness, off}`. Dual-inherits `Resident::StatusLED` — Resident drives the pixel yellow/cyan/green/orange/red through connection states until an app loads, then `onAppRunning(true)` flips a flag and `solidColor()` becomes a no-op so the app fully owns the pixel.
+- **`BatteryDriver`** wraps `Adafruit_LC709203F`. Exposes `battery.{voltage, percent, present}`. Returns zeros when no LiPo is connected (the chip is powered by VBAT, invisible on I2C without it).
 
-- `examples/adafruit-esp32-s2-feather/device-no-resident/` — pure hardware bring-up, no Resident at all. Confirms the board is fine.
-- `examples/adafruit-esp32-s2-feather/device-minimal-resident/` — Resident connects to the relay, but no hardware Lua modules. Confirms the Resident stack is fine; useful for isolating driver bugs.
+### Decisions to make
 
-Keeping these as separate projects (not just stashed `main.cpp` files) means the full set of decisions, `platformio.ini` deps, and partition layouts stay intact and re-flashable.
+- **One driver per hardware unit.** Don't merge `screen` and `led` just because they share `main.cpp`. Lua module names should reflect the device surface, not the C++ class hierarchy.
+- **Where to allocate framebuffers.** Large back-buffers (e.g. a 135×240 16-bit canvas is ~64 KB) can live in SRAM if it fits, or be pushed to PSRAM if the chip has it. The Feather's 320 KB SRAM accommodates the canvas alongside Wi-Fi + Lua state.
+- **Lifecycle of driver state across apps.** On `onAppReset()`, restore a safe baseline: clear the canvas, turn the NeoPixel off, stop any audio. The next app should see fresh hardware. The example: `LEDDriver::onAppReset()` does `setPixelColor(0, 0); show();`.
+- **Order of hardware init vs `device.setup()`.** Build and `init()` the underlying Adafruit / vendor objects in `main.cpp` *before* calling `device.setup()`. The driver's own `begin()` runs inside Resident's lifecycle and assumes the hardware is already up.
+- **Event-emitting drivers.** Drivers can call `sendEvent(name, fields, count)` to surface hardware events to Lua's `on_event`. The m5stick-demo's `PushButtonsDriver` is the canonical example (button presses → `event.name == "button"`, `event.index == 0|1`).
+
+### What the agent should be able to demonstrate
+
+`/resident:push-app --device-id <id> some-app.lua` with an app that calls `screen.text(...)`, `led.set(...)`, `battery.voltage()`. The TFT updates, the NeoPixel changes colour, battery reads come back. The previous error (`attempt to index a nil value (global 'screen')`) is gone.
+
+---
+
+## Step 4 — Create and push apps
+
+**Goal:** stop hand-writing Lua. Document the device's Lua surface in a `DEVICE-SKILL.md`, then use the Resident agent skills to generate apps against that surface, validate them locally, and push to the device.
+
+### Author a `DEVICE-SKILL.md`
+
+Place at the device's project root (e.g. [`examples/adafruit-esp32-s2-feather/device/DEVICE-SKILL.md`](../examples/adafruit-esp32-s2-feather/device/DEVICE-SKILL.md)). It documents:
+
+- **Hardware** — what's on the board, in app-author terms (screen dimensions, NeoPixel count, sensor ranges). Not C++ internals.
+- **Lua Modules** — one section per driver. Show the exact Lua calls with realistic argument shapes (`screen.text(x, y, str, size, r, g, b)`, defaults noted). Code-fenced ```lua blocks so the create-app skill can grep them.
+- **Examples** — three to six short apps that exercise the modules. Hello-world, an animation, a sensor-driven demo, a button-handler if applicable.
+- **Constraints** — screen resolution, colour ranges, memory considerations.
+- **Practical Tips** — board-specific gotchas an app author needs to remember (e.g. "always call `screen.flip()` after a draw sequence", "clamp NeoPixel brightness in `init()`").
+- **Validation stubs** — an optional ```lua block under `## Validation stubs` providing concrete return values for getter-style functions so the local validator doesn't return `nil` and crash apps that do arithmetic on getter results.
+- **App mode / Shader mode** — note whether shader expressions are supported on the device.
+
+The `/resident:write-device-skill` skill walks an agent through producing this file interactively if you haven't written it yet.
+
+### Use the agent skills
+
+Three skills work together, all installed by `tools/agent-plugin/`:
+
+- **`/resident:create-app "description"`** — reads the device's `DEVICE-SKILL.md` and the embedded sandbox docs, generates Lua source against the device's actual surface, validates it locally, writes to `device-apps/<slug>.lua`. Supports `--device-skill <path>` if `DEVICE-SKILL.md` isn't in cwd.
+- **`/resident:validate-app <path>`** — runs the Lua app through a local `lua` interpreter under a permissive stub harness derived from `DEVICE-SKILL.md`. Catches syntax errors, missing lifecycle (`init` / `on_tick` / `on_event`), and obvious runtime bugs (nil dereferences) before pushing.
+- **`/resident:push-app`** — accepts either a Lua file or a natural-language description. With a file, sends it to the relay. With a description, chains through `create-app` + `validate-app` first.
+
+### The default backend
+
+`resident.inanimate.tech` is the public relay. Read the device ID off the device's display, then:
+
+```bash
+/resident:push-app --device-id <id> path/to/app.lua
+
+# or just describe the app:
+/resident:push-app "make the screen flash red on shake"
+```
+
+The relay forwards the message to the device's WebSocket. No authentication beyond the device ID (treat it like an API key for development; switch to a longer random ID for anything you actually deploy — see the m5stick-demo's `## Device IDs as auth` note).
+
+To self-host instead, deploy the Cloudflare Worker under `examples/m5stick-demo/server/` and pass `--base-url https://your-worker.example.workers.dev`.
+
+### What the agent should be able to demonstrate
+
+End-to-end: a one-line natural-language request produces validated Lua, pushes it to the device, and the device runs it. The full Resident loop — author, push, run — works on hardware the agent set up themselves four steps ago.
+
+---
+
+## Falling back
+
+If a later step regresses earlier work, the preserved sub-projects in `examples/adafruit-esp32-s2-feather/` show the pattern: keep each phase as its own buildable PlatformIO project (not just stashed source files), so the full set of decisions, `platformio.ini` deps, and partition layouts stay intact and re-flashable. Drop back to the last-known-good project, confirm the hardware or Resident layer itself is fine, and isolate the regression to the new layer.
