@@ -6,6 +6,8 @@
 #include <ezTime.h>
 #include <map>
 #include <functional>
+#include <optional>
+#include <Courier.h>
 #include "ResidentDriver.h"
 #include "ResidentLuaModule.h"
 #include "ResidentSandboxConfig.h"
@@ -50,6 +52,13 @@ public:
     void setTimezone(const char* ianaZone);
     bool hasTimezone() const { return _hasTimezone; }
 
+    // Network accessors. Both assert if cfg.network was not set.
+    Courier::Client& courier();
+    Courier::WebSocketTransport& ws();
+
+    // True iff cfg.network was set at construction time.
+    bool hasNetwork() const { return _courier.has_value(); }
+
     // Test hooks — only used by native tests. Exposed here because the mock
     // Timezone carries its configuration per-instance.
     Timezone& timezoneForTest() { return _tz; }
@@ -69,6 +78,12 @@ private:
 
     // Configuration
     SandboxConfig _config;
+
+    // Optional Courier client — constructed iff cfg.network was set at
+    // construction time. WS transport reference is cached for ws() accessor.
+    std::optional<Courier::Client> _courier;
+    Courier::WebSocketTransport* _ws = nullptr;
+    String _deviceId;
 
     // Telemetry
     TelemetryCallback _telemetryCb;

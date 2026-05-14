@@ -2,6 +2,8 @@
 #include <Arduino.h>
 #include <ezTime.h>
 #include <math.h>
+#include <cassert>
+#include "chipstring.h"
 
 extern "C" {
   #include "lua/lua.h"
@@ -38,6 +40,24 @@ Sandbox::Sandbox() {
 
 Sandbox::Sandbox(const SandboxConfig& config) : Sandbox() {
   configure(config);
+  _deviceId = ::getDeviceId();
+
+  if (_config.network.has_value()) {
+    _courier.emplace(*_config.network);
+    _ws = &_courier->transport<Courier::WebSocketTransport>("ws");
+  }
+}
+
+Courier::Client& Sandbox::courier() {
+  // hasNetwork() == false would mean cfg.network was unset — programming
+  // error; assert rather than return a dangling reference.
+  assert(_courier.has_value());
+  return *_courier;
+}
+
+Courier::WebSocketTransport& Sandbox::ws() {
+  assert(_ws != nullptr);
+  return *_ws;
 }
 
 void Sandbox::configure(const SandboxConfig& config) {
