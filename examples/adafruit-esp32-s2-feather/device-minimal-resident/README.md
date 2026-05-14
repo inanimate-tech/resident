@@ -5,7 +5,7 @@ Step 2 of the two-step walkthrough in [`docs/start-building.md`](../../../docs/s
 ## What it does
 
 - Initialises the same hardware as the bring-up project (TFT, NeoPixel, LC709203, I2C bus).
-- Hands off to `Resident::Device`, which owns:
+- Hands off to `Resident::Sandbox`, which owns:
   - Wi-Fi (WiFiManager captive portal on first boot, persisted to NVS).
   - Time sync (ezTime).
   - WebSocket transport to `resident.inanimate.tech` via Courier.

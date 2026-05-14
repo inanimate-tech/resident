@@ -24,7 +24,7 @@ shader expression and pushing it to a running device — they do not have
 the firmware source open and cannot change it. Frame everything from
 that perspective: the runtime contract (what modules and variables
 exist, what they do, what ranges are valid). Do NOT describe the C++
-firmware layer — no `DeviceConfig` fields, no driver registration, no
+firmware layer — no `SandboxConfig` fields, no driver registration, no
 "to enable X the firmware would need to..." asides. If a capability
 isn't exposed to Lua, just say so plainly and move on.
 
