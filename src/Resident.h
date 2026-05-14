@@ -3,10 +3,15 @@
 #define RESIDENT_H
 
 #include "ResidentSandbox.h"
+#include "ResidentSandboxConfig.h"
 #include "ResidentDriver.h"
-#include "ResidentDeviceConfig.h"
+#include "ResidentExtension.h"
+#include "ResidentExtensions.h"
+#include "ResidentLuaModule.h"
 #include "ResidentStatusLED.h"
 #include "ResidentStatusDisplay.h"
-// ResidentDevice.h included separately — pulls in Courier dependency
+// ResidentDevice.h intentionally NOT in the umbrella — it's deprecated and
+// gets deleted once the examples migrate to Resident::Sandbox. Until then,
+// examples that still use it include it directly.
 
 #endif // RESIDENT_H
