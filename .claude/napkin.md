@@ -11,7 +11,8 @@
 - When user cites a doc URL, fetch it before pushing back.
 
 ## Patterns That Work
-- (accumulate)
+- For native unit tests that need to include a header which transitively pulls a hardware-only library (Courier, WiFiManager, etc.): drop a minimal stub of just the type-shape needed at `test/unit/include/<LibName>.h`. The existing `-Iinclude` in build_flags makes it shadow the real header, while production code (under `examples/*/`) keeps resolving the real lib via PIO `lib_deps`. Don't add the hardware lib as a `lib_deps` to the native env — it tries to compile all its `.cpp` files and brings in Arduino.h mocks that collide with Esp32Lua's stubs.
+- For `using String = std::string;` in `test/unit/include/Arduino.h`: this is the right fix when a Resident header uses Arduino's `String` type (e.g. `std::map<String, String>` aliases) and you need it parsed under native. It's purely additive; Esp32Lua's Lua.cpp wrapper doesn't reference String.
 
 ## Patterns That Don't Work
 - (accumulate)
