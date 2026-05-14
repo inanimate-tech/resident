@@ -3,6 +3,7 @@
 #define RESIDENT_SANDBOX_H
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <ezTime.h>
 #include <map>
 #include <functional>
@@ -59,6 +60,41 @@ public:
     // True iff cfg.network was set at construction time.
     bool hasNetwork() const { return _courier.has_value(); }
 
+    // ── Setup-phase callback (register before setup()) ──
+    using ConfigureNetworkCallback = std::function<void(Courier::Client&)>;
+    void onConfigureNetwork(ConfigureNetworkCallback cb) {
+      _onConfigureNetwork = std::move(cb);
+    }
+
+    // ── Reactive callbacks (single-slot, last registration wins) ──
+    using TransportsWillConnectCallback = std::function<void()>;
+    using MessageCallback = std::function<void(const char* transportName,
+                                                const char* type,
+                                                JsonDocument& doc)>;
+    using ConnectionChangeCallback = std::function<void(Courier::State)>;
+    using ConnectedCallback = std::function<void()>;
+
+    void onTransportsWillConnect(TransportsWillConnectCallback cb) {
+      _onTransportsWillConnect = std::move(cb);
+    }
+    void onMessage(MessageCallback cb) {
+      _onMessage = std::move(cb);
+    }
+    void onConnectionChange(ConnectionChangeCallback cb) {
+      _onConnectionChange = std::move(cb);
+    }
+    void onConnected(ConnectedCallback cb) {
+      _onConnected = std::move(cb);
+    }
+
+    // ── Identity / status accessors ──
+    const String& getDeviceId() const { return _deviceId; }
+    const char* getDeviceType() const {
+      return _config.deviceType ? _config.deviceType : "device";
+    }
+    bool isConnected() const;
+    bool isTimeSynced() const;
+
     // Test hooks — only used by native tests. Exposed here because the mock
     // Timezone carries its configuration per-instance.
     Timezone& timezoneForTest() { return _tz; }
@@ -84,6 +120,13 @@ private:
     std::optional<Courier::Client> _courier;
     Courier::WebSocketTransport* _ws = nullptr;
     String _deviceId;
+
+    // User-registered callbacks (single-slot, last registration wins).
+    ConfigureNetworkCallback      _onConfigureNetwork;
+    TransportsWillConnectCallback _onTransportsWillConnect;
+    MessageCallback               _onMessage;
+    ConnectionChangeCallback      _onConnectionChange;
+    ConnectedCallback             _onConnected;
 
     // Telemetry
     TelemetryCallback _telemetryCb;

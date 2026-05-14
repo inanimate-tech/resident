@@ -60,6 +60,15 @@ Courier::WebSocketTransport& Sandbox::ws() {
   return *_ws;
 }
 
+bool Sandbox::isConnected() const {
+  return _courier.has_value() &&
+         _courier->getState() == Courier::State::Connected;
+}
+
+bool Sandbox::isTimeSynced() const {
+  return _courier.has_value() && _courier->isTimeSynced();
+}
+
 void Sandbox::configure(const SandboxConfig& config) {
   _config = config;
   if (_config.telemetry) _telemetryCb = _config.telemetry;
