@@ -84,7 +84,7 @@ struct SandboxConfig {
 Six fields plus an optional `network`. The presence of `cfg.network` is the
 *only* signal that this Sandbox is connected. New Courier knobs (cert, dns,
 custom transports) do not require a Resident change — they live inside
-`Courier::Config` or are configured via the `onConfigureCourier` callback.
+`Courier::Config` or are configured via the `onConfigureNetwork` callback.
 
 ### `Resident::Sandbox`
 
@@ -100,8 +100,8 @@ class Sandbox {
   void loop();
 
   // ── Setup-phase callback (register before setup()) ──
-  using ConfigureCourierCallback = std::function<void(Courier::Client&)>;
-  void onConfigureCourier(ConfigureCourierCallback cb);
+  using ConfigureNetworkCallback = std::function<void(Courier::Client&)>;
+  void onConfigureNetwork(ConfigureNetworkCallback cb);
 
   // ── Reactive callbacks (single-slot, last registration wins) ──
   using TransportsWillConnectCallback = std::function<void()>;
@@ -155,8 +155,9 @@ Sandbox::Sandbox(cfg)
   event; status-indicator handlers wire to onConnectionChange)
 
 Sandbox::setup()
-  fire onConfigureCourier(courier)              ← register transports, certs,
+  fire onConfigureNetwork(courier)              ← register transports, certs,
                                                   custom WiFi callback, etc.
+                                                  (only fires if cfg.network)
   apply AP name, status display begin(), etc.
   sandbox.initialize()                          ← Lua state up, extensions registered
   if (cfg.network) courier.setup()              ← WiFi + transports begin
@@ -170,9 +171,10 @@ Sandbox::loop()
   if (isConnected() || standalone) sandbox tick (10 FPS on_tick)
 ```
 
-`onConfigureCourier` is the *only* place that fires before transports begin;
+`onConfigureNetwork` is the *only* place that fires before transports begin;
 all other reactive callbacks fire later, driven by Courier's own state
-machine.
+machine. The callback name describes the role; the argument it receives
+(`Courier::Client&`) names the implementation honestly.
 
 ## Golden path (after)
 
@@ -252,10 +254,10 @@ void setup() {
 void loop() { sandbox.loop(); }
 ```
 
-### Diving into Courier (TLS cert, custom headers, additional transports)
+### Diving into the network layer (TLS cert, custom headers, additional transports)
 
 ```cpp
-sandbox.onConfigureCourier([](Courier::Client& c) {
+sandbox.onConfigureNetwork([](Courier::Client& c) {
   c.transport<Courier::WebSocketTransport>("ws").onConfigure(
     [](esp_websocket_client_config_t& ws) { ws.cert_pem = MY_CERT; }
   );
@@ -264,26 +266,117 @@ sandbox.onConfigureCourier([](Courier::Client& c) {
 });
 ```
 
-Resident never has to grow a passthrough field for any of this.
+The callback receives `Courier::Client&` directly — no Resident wrapper, no
+abstraction layer. Resident never has to grow a passthrough field for any
+new Courier feature.
 
 ## Migration
 
-### Internal (this repo)
+### Internal: library code
 
-- Delete `ResidentDevice.h`, `ResidentDevice.cpp`, `ResidentDeviceConfig.h`.
+- Delete `src/ResidentDevice.h`, `src/ResidentDevice.cpp`, `src/ResidentDeviceConfig.h`.
 - Move the *behavior* of `Device::setup()` / `Device::loop()` / connection-
   state handling into `Sandbox`, gated on `cfg.network.has_value()`.
 - Convert each former virtual hook into a `std::function` member with a
   setter (`onMessage(cb)`, etc.).
 - Carve out Resident's internal routing of `app`/`shader`/`app_event` so it's
   *not* user-overridable; user `onMessage(cb)` only fires for unknown types.
-- Add `Resident.h` umbrella header that just re-exports the relevant pieces.
-- Update both example projects (`m5stick-demo`, `adafruit-esp32-s2-feather`)
-  to use the new API. Each should *shrink*: the `class FeatherDevice` /
-  `class DemoDevice` blocks disappear; their tiny override bodies become
-  callback registrations in `setup()`.
-- Update `README.md`, `docs/start-building.md`, `docs/api.md`, the
-  `tools/agent-plugin/` `DEVICE-SKILL.md` (if it references the C++ surface).
+- Update `src/Resident.h` umbrella header to re-export the relevant pieces
+  (no longer includes `ResidentDevice.h`).
+- Update `src/ResidentSandbox.h` / `.cpp` for the expanded surface.
+- Update `CMakeLists.txt` `idf_component_register` SRCS list (drop
+  `src/ResidentDevice.cpp`).
+- Bump `library.json` version to `0.5.0-dev` during the change; release as
+  `0.5.0`.
+
+### Internal: examples
+
+Every example that uses Resident must be updated. The `class FooDevice :
+public Resident::Device` boilerplate disappears in each; tiny override
+bodies become callback registrations in `setup()`.
+
+| Example | File(s) | Notes |
+|---|---|---|
+| m5stick-demo | `examples/m5stick-demo/device/src/main.cpp` | Currently in CI. |
+| Feather (full) | `examples/adafruit-esp32-s2-feather/device/src/main.cpp` | **Add to CI** (see below). |
+| Feather (minimal Resident) | `examples/adafruit-esp32-s2-feather/device-minimal-resident/src/main.cpp` | **Add to CI**. |
+| Feather (no Resident) | `examples/adafruit-esp32-s2-feather/device-no-resident/` | No Resident usage; not affected. |
+| ESP-IDF basic | `examples/espidf-basic/main/main.cpp` | Currently in CI (espidf job). |
+
+### Internal: tests
+
+- `test/unit/test/test_extensions/test_extensions.cpp` — references the old
+  surface; update to the new one. Verify all unit tests pass on native after
+  the rename.
+
+### Internal: documentation
+
+Every doc that references the C++ surface must be updated:
+
+| File | Update |
+|---|---|
+| `README.md` | Collapse the two-example structure into one, with a sidebar for the standalone case. Use `Resident::Sandbox` throughout. |
+| `docs/start-building.md` | Step 2 ("Add Resident") rewritten around `Resident::Sandbox`. Drop subclass boilerplate in code samples. |
+| `docs/api.md` | Full API reference rewrite for the new surface. |
+| `docs/changelog.md` | Add 0.5.0 entry summarising the breaking changes and migration. |
+| `examples/adafruit-esp32-s2-feather/device-minimal-resident/README.md` | Update code examples and prose. |
+| `examples/adafruit-esp32-s2-feather/device/README.md` | Update code examples and prose. |
+| `tools/agent-plugin/skills/write-device-skill/SKILL.md` | If it references the C++ surface (likely does in walkthrough sections), update. |
+
+Additionally, **grep for residual references** across the whole repo before
+declaring the rename done:
+
+```sh
+git grep -nE 'Resident::Device\b|ResidentDevice\.h|DeviceConfig\b' \
+  -- ':!docs/changelog.md' \
+     ':!docs/superpowers/specs/' \
+     ':!examples/*/docs/'
+```
+
+Excluded paths are historical records (changelog, prior specs) and per-
+example archived docs whose accuracy reflects the API at the time they were
+written.
+
+### Internal: landing page / website
+
+`https://resident.inanimate.tech/` is in a separate repo (not this one), but
+the rename touches its hero example. Coordinate a follow-up PR there to land
+alongside the 0.5.0 release.
+
+### CI
+
+The build matrix today:
+
+- `m5stick-demo/device/` (PlatformIO) ✓
+- `espidf-basic/` (ESP-IDF) ✓
+
+Missing: both Feather PlatformIO projects. **Expand `tools/run-tests.py
+build` to iterate over all Resident-using PlatformIO projects** rather than
+hard-coding the m5stick path. Then the workflow's `build-platformio` job
+exercises the rename across every example. Concretely:
+
+```python
+# tools/run-tests.py — current
+project = ROOT / "examples" / "m5stick-demo" / "device"
+if not run_cmd(["pio", "run"], cwd=project, ...): ...
+
+# after
+PROJECTS = [
+    ROOT / "examples" / "m5stick-demo" / "device",
+    ROOT / "examples" / "adafruit-esp32-s2-feather" / "device",
+    ROOT / "examples" / "adafruit-esp32-s2-feather" / "device-minimal-resident",
+]
+for project in PROJECTS:
+    if not run_cmd(["pio", "run"], cwd=project, ...): ...
+```
+
+The Feather projects depend on Adafruit libraries (LC709203F, ST7789,
+NeoPixel, GFX) — all on the PlatformIO registry, so they should resolve
+without additional CI setup. Confirm during implementation.
+
+The `device-no-resident/` Feather project doesn't use Resident; either skip
+it from the Resident-CI matrix, or include it as a smoke test that the
+hardware-bringup baseline still builds. Include it for completeness.
 
 ### External (downstream firmware projects, e.g. hawthorn-firmware)
 
