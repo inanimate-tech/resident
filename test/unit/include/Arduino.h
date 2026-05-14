@@ -10,6 +10,13 @@
 #include <cassert>
 #include <string>
 
+// Arduino's String — aliased to std::string for native test builds. Headers
+// like ResidentSandboxConfig.h declare `std::map<String, String>` aliases
+// that need a String type at parse time (even if unused at runtime). This is
+// purely additive: Esp32Lua's Lua.cpp wrapper doesn't reference String, so
+// the alias can't regress existing Lua tests.
+using String = std::string;
+
 // GPIO constants
 static constexpr int OUTPUT      = 0x03;
 static constexpr int INPUT       = 0x01;
