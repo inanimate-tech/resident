@@ -64,7 +64,7 @@ Omit `cfg.network` entirely to run standalone. `sandbox.hasNetwork()` reflects t
 
 ## Resident::Sandbox
 
-The Lua sandbox composed with optional [Courier](https://github.com/inanimate-tech/courier) connectivity. The single public class — there is no `Resident::Device` wrapper.
+The single public Resident class. The Lua sandbox composed with optional [Courier](https://github.com/inanimate-tech/courier) connectivity.
 
 Include with:
 

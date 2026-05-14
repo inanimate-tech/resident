@@ -39,7 +39,7 @@ For the Feather: chip banner, I2C bus scan, LC709203 fuel gauge init, TFT init d
 - **Upload reset method.** Boards with a CP210x-style bridge auto-reset on DTR/RTS. Native-USB boards need esptool to issue a 1200-baud touch to the running firmware. Add `board_upload.use_1200bps_touch = true` and `board_upload.wait_for_upload_port = true` if the variant supports it. (The very first flash after a non-Arduino firmware still needs the manual BOOT + RESET button dance.)
 - **Library Dependency Finder mode.** Some Adafruit sensor libs `#include` `SPI.h` from headers that PlatformIO's default `chain` LDF can't resolve. If you see fatal-error: `Adafruit_BusIO_*` not found, set `lib_ldf_mode = deep`.
 - **A "ready" signal.** Decide how the board says "everything booted" without serial. If there's a display, draw chip info on it. If not, end `setup()` with a 1–2 s solid status colour on a NeoPixel (green for full pass, yellow for soft warning, red reserved for hard failures), then resume the running pattern.
-- **Quirks worth documenting.** Note in the README anything that looks like a firmware bug but isn't — the Feather's amber CHG LED flashes fast when no battery is connected (charger IC, not your code). Future readers shouldn't go hunting.
+- **Quirks worth documenting.** Note in the example's README anything that looks like a firmware bug but isn't (an LED that flashes from hardware not your code, a sensor that returns garbage until warmed up, a power-gate pin that has to settle for ms before peripherals respond). Future readers shouldn't go hunting.
 
 ### Why this matters before Resident
 
@@ -70,7 +70,7 @@ See [`device-minimal-resident/src/main.cpp`](../examples/adafruit-esp32-s2-feath
 - **Relay endpoint.** The default public relay (`resident.inanimate.tech`) is the simplest path; `push-app` defaults to it. To self-host, deploy the Cloudflare Worker under `examples/m5stick-demo/server/` and replace the host constant. The protocol is identical.
 - **`deviceType` string.** Logged on the relay side and used to seed the captive-portal AP name (`Resident <DeviceType> <ID-short>`). Keep it short and meaningful.
 - **Wi-Fi UX.** Courier defaults to a WiFiManager captive portal: first boot exposes an open AP, credentials persist in NVS thereafter. For headless deployments, hardcode `WiFi.begin(ssid, pass)` instead — but the captive portal is friendlier for examples.
-- **Pre-connection display.** What the board shows during `"WiFi"` / `"Connecting"` states is up to you. The Feather renders status text in yellow at size 2 and switches to green at size 2 once a real device ID arrives.
+- **Pre-connection display.** What the board shows during `"WiFi"` / `"Connecting"` states is up to you. Whatever you pick, leave room for the 8-character device ID — that's the string the user needs to read off the board to push apps.
 - **Bootstrap "I'm connected" app.** Once a WS connects, you can either draw the device ID directly from C++ or have the firmware auto-load a tiny built-in Lua app that does the drawing. The Lua-app pattern means the user's first impression of a Resident device is *a Lua app running*, which is the right mental model — and a real app pushed via `push-app` replaces it cleanly.
 
 ### What the agent should be able to demonstrate at this point
@@ -113,7 +113,7 @@ The Feather exposes three drivers — see [`device/lib/drivers/src/`](../example
 ### Decisions to make
 
 - **One driver per hardware unit.** Don't merge `screen` and `led` just because they share `main.cpp`. Lua module names should reflect the device surface, not the C++ class hierarchy.
-- **Where to allocate framebuffers.** Large back-buffers (e.g. a 135×240 16-bit canvas is ~64 KB) can live in SRAM if it fits, or be pushed to PSRAM if the chip has it. The Feather's 320 KB SRAM accommodates the canvas alongside Wi-Fi + Lua state.
+- **Where to allocate framebuffers.** Large back-buffers (a 16-bit canvas at typical small-display resolutions is tens of KB) can live in SRAM if it fits alongside Wi-Fi + Lua state, or be pushed to PSRAM if the chip has it. Measure before deciding; the Lua state alone is a few tens of KB once an app is loaded.
 - **Lifecycle of driver state across apps.** On `onAppReset()`, restore a safe baseline: clear the canvas, turn the NeoPixel off, stop any audio. The next app should see fresh hardware. The example: `LEDDriver::onAppReset()` does `setPixelColor(0, 0); show();`.
 - **Order of hardware init vs `sandbox.setup()`.** Build and `init()` the underlying Adafruit / vendor objects in `main.cpp` *before* calling `sandbox.setup()`. The driver's own `begin()` runs inside Resident's lifecycle and assumes the hardware is already up.
 - **Event-emitting drivers.** Drivers can call `sendEvent(name, fields, count)` to surface hardware events to Lua's `on_event`. The m5stick-demo's `PushButtonsDriver` is the canonical example (button presses → `event.name == "button"`, `event.index == 0|1`).
