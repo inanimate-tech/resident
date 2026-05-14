@@ -35,6 +35,12 @@ public:
     void initialize();
     void loop();  // runs on_tick
 
+    // Public lifecycle — replaces the old Device::setup()/loop().
+    // Standalone mode (no cfg.network): just initialises the Lua state.
+    // Networked mode: also fires onConfigureNetwork, kicks off Courier.
+    void setup();
+    // loop() already exists for the standalone tick — extended to drive Courier.
+
     // Load an app from Lua source code
     void loadApp(const char* luaCode);
 
@@ -127,6 +133,22 @@ private:
     MessageCallback               _onMessage;
     ConnectionChangeCallback      _onConnectionChange;
     ConnectedCallback             _onConnected;
+
+    // Internal Courier hook handlers (drive status indicators + reserved-type
+    // routing, then delegate to user callbacks).
+    void wireInternalCourierHooks();
+    void onCourierMessage(const char* transportName, const char* type,
+                          JsonDocument& doc);
+    void onCourierConnectionChange(Courier::State state);
+    void onCourierConnected();
+    void onCourierTransportsWillConnect();
+
+    // Status display helper.
+    void showStatusText(const char* text);
+    String _lastStatusText;
+
+    // Track whether the Lua state has been initialised, so setup() is idempotent.
+    bool _initialized = false;
 
     // Telemetry
     TelemetryCallback _telemetryCb;

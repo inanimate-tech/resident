@@ -228,8 +228,170 @@ void Sandbox::setupLuaEnvironment()
   lua_setglobal(_lua, "time");
 }
 
+void Sandbox::setup()
+{
+  if (_initialized) return;
+  _initialized = true;
+
+  if (_courier.has_value()) {
+    // Re-derive deviceId in case it wasn't ready at construction.
+    _deviceId = ::getDeviceId();
+
+    // 1. User's onConfigureNetwork — first; lets them register transports,
+    //    set certs, etc., before any Courier setup runs.
+    if (_onConfigureNetwork) {
+      _onConfigureNetwork(*_courier);
+    }
+
+    // 2. Wire Resident's internal handlers onto Courier. These run before
+    //    user callbacks (status indicators, reserved-type routing) and then
+    //    delegate.
+    wireInternalCourierHooks();
+
+    // 3. AP name for WiFi config portal.
+    String apName = String(getDeviceType());
+    if (apName.length() > 0) apName[0] = toupper(apName[0]);
+    String idSuffix = _deviceId.substring(0, 4);
+    _courier->setAPName(
+      (String("Resident ") + apName + " " + idSuffix).c_str());
+
+    Serial.printf("[resident] Device: %s (%s)\n",
+                  getDeviceType(), _deviceId.c_str());
+  }
+
+  // 4. Status display starts up regardless of network.
+  if (_config.statusDisplay) _config.statusDisplay->begin();
+
+  // 5. Sandbox internals (Lua state, extensions). Always.
+  initialize();
+
+  // 6. Kick off Courier (WiFi + transports).
+  if (_courier.has_value()) {
+    _courier->setup();
+  }
+}
+
+void Sandbox::wireInternalCourierHooks()
+{
+  _courier->onMessage([this](const char* tn, const char* type, JsonDocument& d) {
+    onCourierMessage(tn, type, d);
+  });
+  _courier->onConnectionChange([this](Courier::State s) {
+    onCourierConnectionChange(s);
+  });
+  _courier->onTransportsWillConnect([this]() {
+    onCourierTransportsWillConnect();
+  });
+  _courier->onConnected([this]() {
+    onCourierConnected();
+  });
+}
+
+void Sandbox::onCourierMessage(const char* transportName,
+                                const char* type, JsonDocument& doc)
+{
+  // Reserved types — Resident handles internally; user callback never sees these.
+  if (strcmp(type, "app") == 0) {
+    const char* code = doc["code"];
+    if (code) loadApp(code);
+    return;
+  }
+  if (strcmp(type, "shader") == 0) {
+    ShaderFields fields;
+    for (JsonPair kv : doc.as<JsonObject>()) {
+      if (strcmp(kv.key().c_str(), "type") == 0) continue;
+      if (kv.value().is<const char*>()) {
+        fields[String(kv.key().c_str())] = String(kv.value().as<const char*>());
+      }
+    }
+    loadShader(fields);
+    return;
+  }
+  if (strcmp(type, "app_event") == 0) {
+    const char* name = doc["name"];
+    char dataJson[256];
+    if (doc["data"].is<JsonObject>()) {
+      serializeJson(doc["data"], dataJson, sizeof(dataJson));
+    } else {
+      strcpy(dataJson, "{}");
+    }
+    if (name) sendAppEvent(name, dataJson);
+    return;
+  }
+
+  // Anything else → user callback if registered.
+  if (_onMessage) _onMessage(transportName, type, doc);
+}
+
+void Sandbox::onCourierConnectionChange(Courier::State state)
+{
+  using S = Courier::State;
+
+  // Resident's internal status-text handling. Runs unconditionally if a
+  // statusDisplay is configured. User's onConnectionChange callback runs
+  // after, in addition (does not replace).
+  switch (state) {
+    case S::WifiConnecting:        showStatusText("WiFi..."); break;
+    case S::WifiConfiguring:       showStatusText("Configure WiFi"); break;
+    case S::WifiConnected:         showStatusText("WiFi connected"); break;
+    case S::TransportsConnecting:  showStatusText("Connecting..."); break;
+    case S::Connected:             showStatusText("Connected"); break;
+    case S::Reconnecting:          showStatusText("Reconnecting..."); break;
+    case S::ConnectionFailed:      showStatusText("Connection failed"); break;
+    default: break;
+  }
+
+  if (_config.statusLED) {
+    switch (state) {
+      case S::WifiConnecting:
+      case S::WifiConfiguring:       _config.statusLED->solidColor(0xFFFF00); break;
+      case S::WifiConnected:
+      case S::TransportsConnecting:  _config.statusLED->solidColor(0x00FFFF); break;
+      case S::Connected:             _config.statusLED->solidColor(0x00FF00); break;
+      case S::Reconnecting:          _config.statusLED->solidColor(0xFF8800); break;
+      case S::ConnectionFailed:      _config.statusLED->solidColor(0xFF0000); break;
+      default: break;
+    }
+  }
+
+  if (_onConnectionChange) _onConnectionChange(state);
+}
+
+void Sandbox::onCourierConnected() {
+  if (_onConnected) _onConnected();
+}
+
+void Sandbox::onCourierTransportsWillConnect() {
+  // Resident's default: built-in WS gets /agents/<deviceType>-agent/<deviceId>.
+  // User callback runs after and can override (e.g. set /devices/<id>).
+  String wsPath = String("/agents/") + getDeviceType() + "-agent/" + _deviceId;
+  ws().setEndpoint(_config.network->host ? _config.network->host : "localhost",
+                   443, wsPath.c_str());
+  Serial.printf("[resident] WS path: %s\n", wsPath.c_str());
+
+  if (_onTransportsWillConnect) _onTransportsWillConnect();
+}
+
+void Sandbox::showStatusText(const char* text)
+{
+  if (!_config.statusDisplay) return;
+  if (_lastStatusText == text) return;
+  _lastStatusText = text;
+  _config.statusDisplay->displayText(text);
+}
+
 void Sandbox::loop() {
+  if (_courier.has_value()) {
+    _courier->loop();
+  }
+  if (_config.statusDisplay) _config.statusDisplay->update();
+
   if (!_lua) return;
+
+  // Standalone path always ticks; networked path gates on isConnected
+  // (matches today's Device::loop behavior).
+  bool shouldTick = !_courier.has_value() || isConnected();
+  if (!shouldTick) return;
 
   // Drive every registered extension's update() at full main-loop rate
   // — independent of whether an app is loaded. Drivers like button
