@@ -1,5 +1,92 @@
 # Changelog
 
+## v0.5.0
+
+Theme: collapse `Resident::Device` into `Resident::Sandbox`; replace virtual
+subclass hooks with callback registration to align with Courier's idiom.
+
+### Breaking changes
+
+**`Resident::Device` is gone.** The C++ surface is now a single
+`Resident::Sandbox` class. Examples that previously subclassed Device need
+to migrate to callback registration:
+
+```cpp
+// Before
+class FeatherDevice : public Resident::Device {
+  void onConnected() override { ... }
+};
+FeatherDevice device;
+device.setup(); device.loop();
+
+// After
+Resident::Sandbox sandbox{cfg};
+sandbox.onConnected([]() { ... });
+sandbox.setup(); sandbox.loop();
+```
+
+**`Resident::DeviceConfig` is gone.** Its fields (`deviceType`,
+`statusDisplay`, `statusLED`, `host`/`port`/`dns1`/`dns2`) are now on
+`Resident::SandboxConfig`. Network-related fields move into
+`cfg.network`, which is a `std::optional<Courier::Config>` — set it to
+enable WiFi/transports; omit for standalone-runtime mode:
+
+```cpp
+Resident::SandboxConfig cfg;
+cfg.deviceType    = "feather-tft";
+cfg.extensions    = {&display, &led, &battery};
+cfg.statusDisplay = &display;
+cfg.statusLED     = &led;
+
+// Use direct field assignment on Courier::Config, not designated
+// initializers — Courier::Config has a constructor with default args
+// (so it's not an aggregate), and ESP-IDF's strict gnu++2b + -Werror
+// rejects designated initializers on non-aggregate types.
+Courier::Config courier;
+courier.host = "resident.inanimate.tech";
+cfg.network  = courier;
+```
+
+**Header changes:**
+- `<ResidentDevice.h>` → `<Resident.h>` (umbrella) or `<ResidentSandbox.h>`.
+- `<ResidentDeviceConfig.h>` removed; use `<ResidentSandboxConfig.h>`
+  (or `<Resident.h>`).
+
+**`onMessage` semantics changed.** Resident now routes the reserved types
+(`app`, `shader`, `app_event`) internally. Your `sandbox.onMessage(cb)`
+callback only fires for unknown message types — the previous super-call
+pattern (`Device::onMessage(...)` to keep sandbox routing) is no longer
+needed and will not compile.
+
+**Network customisation** (TLS cert, custom headers, additional transports,
+custom WiFi configuration) is now done via `sandbox.onConfigureNetwork(cb)`,
+which receives `Courier::Client&` directly. The previous pass-through
+fields on `DeviceConfig` (`dns1`/`dns2`) move into `cfg.network` since
+that field IS a `Courier::Config`. New Courier features become available
+without a Resident change.
+
+### Why
+
+The old surface had three problems:
+1. Story/code mismatch — landing page said "Sandbox", main.cpp said "Device".
+2. `Resident::Device` overclaimed scope — it's a component on the board, not the board.
+3. Different extension idiom from Courier (virtuals vs. callbacks) forced
+   developers to switch mental models when crossing the boundary.
+
+The single-class + callback model fixes all three.
+
+### Migration
+
+**See [`docs/migration-0.4-to-0.5.md`](migration-0.4-to-0.5.md) for the full
+translation reference** — sectioned by topic, with old-vs-new tables and
+before/after code blocks for every pattern. Mechanical in most cases.
+
+The four example-project commits in this release are also worked references:
+- `examples/m5stick-demo/device/src/main.cpp`
+- `examples/adafruit-esp32-s2-feather/device/src/main.cpp`
+- `examples/adafruit-esp32-s2-feather/device-minimal-resident/src/main.cpp`
+- `examples/espidf-basic/main/main.cpp`
+
 ## v0.4.1-dev (dddec28)
 
 Theme: tracking the courier 0.4 surface — namespaced types, JSON-first send,
