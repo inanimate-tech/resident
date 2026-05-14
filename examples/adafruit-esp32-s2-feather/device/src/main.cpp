@@ -9,6 +9,7 @@
 #include "DisplayDriver.h"
 #include "LEDDriver.h"
 #include "BatteryDriver.h"
+#include "ButtonDriver.h"
 
 static constexpr const char* RESIDENT_HOST = "resident.inanimate.tech";
 static constexpr uint16_t RESIDENT_PORT = 443;
@@ -21,6 +22,7 @@ static bool batteryReady = false;
 static DisplayDriver displayDriver{&tft, TFT_BACKLITE};
 static LEDDriver ledDriver{&pixel};
 static BatteryDriver batteryDriver{&battery, &batteryReady};
+static ButtonDriver buttonDriver{0};  // BOOT button on GPIO0
 
 static Resident::DeviceConfig makeConfig() {
   Resident::DeviceConfig cfg;
@@ -32,7 +34,7 @@ static Resident::DeviceConfig makeConfig() {
   // state (yellow→cyan→green) until an app takes over.
   cfg.statusDisplay = &displayDriver;
   cfg.statusLED     = &ledDriver;
-  cfg.extensions    = {&displayDriver, &ledDriver, &batteryDriver};
+  cfg.extensions    = {&displayDriver, &ledDriver, &batteryDriver, &buttonDriver};
   return cfg;
 }
 

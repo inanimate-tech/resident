@@ -1,9 +1,9 @@
 # Adafruit ESP32-S2 TFT Feather
 
 The Adafruit ESP32-S2 TFT Feather is a single-core ESP32-S2 board with a 1.14"
-240×135 ST7789 TFT, an onboard NeoPixel, and an LC709203F LiPo fuel gauge.
-Apps drive the screen as their primary output, can light the NeoPixel, and
-read battery state.
+240×135 ST7789 TFT, an onboard NeoPixel, an LC709203F LiPo fuel gauge, and a
+single BOOT button on GPIO0. Apps drive the screen as their primary output,
+can light the NeoPixel, read battery state, and respond to button presses.
 
 ## Hardware
 
@@ -17,6 +17,11 @@ off-screen canvas, then `screen.flip()` to push the frame.
 **Battery monitor:** LC709203F fuel gauge over I2C at address `0x0B`. Only
 responds when a LiPo is connected to the JST connector (the chip is powered
 by VBAT, so without a battery it's invisible).
+
+**Button:** Single onboard BOOT button on GPIO0 (active-low, internal
+pull-up). Surfaces as `button` driver events with `index = 0`. Holding it
+during reset still enters the ROM bootloader; only runtime presses are
+delivered to apps.
 
 ## Lua Modules
 
@@ -78,6 +83,27 @@ local connected = battery.present()  -- true if a battery is plugged in
 
 The percentage takes ~30 seconds to converge after boot — the first few
 readings can be misleading.
+
+### button.*
+**Hardware:** Single BOOT button on GPIO0 (active-low, debounced 50 ms).
+
+```lua
+local n = button.press_count()   -- total presses since the app loaded
+```
+
+Best practice: handle presses in `on_event(ctx, event)` rather than
+polling. The event has `event.name == "button"`, `event.index == 0`, and
+`event.count` (the running press count).
+
+```lua
+function on_event(ctx, event)
+  if event.name == "button" then
+    -- restart, change mode, etc.
+  end
+end
+```
+
+The press count resets when a new app is loaded.
 
 ## Examples
 
@@ -142,7 +168,8 @@ end
 - Screen: 135×240 portrait, 0-based coords, 0–255 colour channels.
 - Single NeoPixel — `led.set(r, g, b)` takes one RGB triple.
 - Battery: needs a LiPo on the JST connector or `battery.*` returns zeros.
-- No buttons. No IMU. No buzzer. No audio.
+- One button (BOOT, GPIO0) — events carry `index = 0`.
+- No IMU. No buzzer. No audio.
 
 ## Practical Tips
 
@@ -167,6 +194,10 @@ battery = setmetatable({
 }, { __index = function() return function() end end })
 
 led = setmetatable({}, { __index = function() return function() end end })
+
+button = setmetatable({
+  press_count = function() return 0 end,
+}, { __index = function() return function() end end })
 ```
 
 ## App mode / Shader mode
