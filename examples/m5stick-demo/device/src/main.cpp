@@ -1,5 +1,5 @@
 #include <M5Unified.h>
-#include <ResidentDevice.h>
+#include <Resident.h>
 #include "DisplayDriver.h"
 #include "IMUDriver.h"
 #include "BuzzerDriver.h"
@@ -29,51 +29,24 @@ IMUDriver imuDriver;
 BuzzerDriver buzzerDriver{255};
 PushButtonsDriver buttonDriver{buttonConfig};
 
-Resident::DeviceConfig makeConfig() {
-    Resident::DeviceConfig cfg;
-    cfg.deviceType     = "stick";
-    cfg.host           = RESIDENT_HOST;
-    cfg.statusDisplay  = &displayDriver;
-    cfg.extensions     = {&displayDriver, &imuDriver, &buzzerDriver, &buttonDriver};
+Resident::SandboxConfig makeConfig() {
+    Resident::SandboxConfig cfg;
+    cfg.deviceType    = "stick";
+    cfg.extensions    = {&displayDriver, &imuDriver, &buzzerDriver, &buttonDriver};
+    cfg.statusDisplay = &displayDriver;
+
+    // Courier::Config has a constructor with default args, so designated
+    // initializers (.host = ...) don't compile under strict ESP-IDF builds.
+    // Use direct field assignment.
+    Courier::Config courier;
+    courier.host = RESIDENT_HOST;
+    courier.port = RESIDENT_PORT;
+    cfg.network  = courier;
+
     return cfg;
 }
 
-class DemoDevice : public Resident::Device {
-public:
-    DemoDevice() : Resident::Device(makeConfig()) {}
-
-    // Override the default /agents/<type>-agent/<deviceId> path with the
-    // canonical /devices/<deviceId> path used by resident.inanimate.tech.
-    void onTransportsWillConnect() override {
-        String wsPath = String("/devices/") + getDeviceId();
-        _ws.setEndpoint(RESIDENT_HOST, RESIDENT_PORT, wsPath.c_str());
-    }
-
-    void deviceLoop() override {
-        M5.update();
-
-        // On first successful connection, replace the StatusDisplay's
-        // "Connected" text with a sandbox app that shows the device ID
-        // prominently (so the user knows what to push to). A real app sent
-        // via push-app or send-app.sh will replace this.
-        static bool loaded = false;
-        if (!loaded && isConnected()) {
-            loaded = true;
-            String app = "function init(ctx)\n"
-                         "  screen.clear()\n"
-                         "  screen.text(10, 15, 'Resident', 3)\n"
-                         "  screen.text(10, 60, 'Device ID:', 2)\n"
-                         "  screen.text(10, 90, '";
-            app += getDeviceId();
-            app += "', 3, 0, 255, 0)\n"
-                   "  screen.flip()\n"
-                   "end\n";
-            sandbox().loadApp(app.c_str());
-        }
-    }
-};
-
-DemoDevice device;
+Resident::Sandbox sandbox{makeConfig()};
 
 void setup() {
     Serial.begin(115200);
@@ -81,9 +54,40 @@ void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
     M5.Display.setRotation(1);
-    device.setup();
+
+    // Override the default /agents/<type>-agent/<deviceId> path with the
+    // canonical /devices/<deviceId> path used by resident.inanimate.tech.
+    sandbox.onTransportsWillConnect([]() {
+        String wsPath = String("/devices/") + sandbox.getDeviceId();
+        sandbox.ws().setEndpoint(RESIDENT_HOST, RESIDENT_PORT, wsPath.c_str());
+    });
+
+    // On first successful connection, replace the StatusDisplay's "Connected"
+    // text with a sandbox app that shows the device ID prominently (so the
+    // user knows what to push to). A real app sent via push-app or
+    // send-app.sh will replace this.
+    //
+    // Function-local static guards against re-firing on reconnect.
+    sandbox.onConnected([]() {
+        static bool loaded = false;
+        if (loaded) return;
+        loaded = true;
+        String app = "function init(ctx)\n"
+                     "  screen.clear()\n"
+                     "  screen.text(10, 15, 'Resident', 3)\n"
+                     "  screen.text(10, 60, 'Device ID:', 2)\n"
+                     "  screen.text(10, 90, '";
+        app += sandbox.getDeviceId();
+        app += "', 3, 0, 255, 0)\n"
+               "  screen.flip()\n"
+               "end\n";
+        sandbox.loadApp(app.c_str());
+    });
+
+    sandbox.setup();
 }
 
 void loop() {
-    device.loop();
+    M5.update();
+    sandbox.loop();
 }
