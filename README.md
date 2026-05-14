@@ -16,73 +16,65 @@ Point your agent at [docs/start-building.md](docs/start-building.md) to add the 
 
 Working PlatformIO projects for specific boards live under [examples/](examples/) — currently the M5StickC Plus2 and the Adafruit ESP32-S2 TFT Feather. Each is buildable as-is; use them as templates for bringing up your own hardware.
 
-### With `Resident::Device` (network-connected)
+### Quick start
 
-`Resident::Device` composes [Courier](https://github.com/inanimate-tech/courier) for connectivity with the sandbox runtime. It handles WiFi, WebSocket transport, and message routing automatically.
+`Resident::Sandbox` composes [Courier](https://github.com/inanimate-tech/courier) for connectivity with the Lua runtime. It handles WiFi, WebSocket transport, and message routing automatically — populate `cfg.network` and the sandbox connects on `setup()`.
 
 ```cpp
-#include <ResidentDevice.h>
+#include <Resident.h>
 #include "MyDisplayDriver.h"
 #include "MyButtonDriver.h"
 
 MyDisplayDriver display;
 MyButtonDriver button{...};   // however your driver takes config
 
-Resident::DeviceConfig makeConfig() {
-    Resident::DeviceConfig cfg;
-    cfg.deviceType    = "demo";
-    cfg.host          = "your-server.example.com";
-    cfg.statusDisplay = &display;
-    cfg.extensions    = {&display, &button};
-    return cfg;
-}
-
-class MyDevice : public Resident::Device {
-public:
-    MyDevice() : Resident::Device(makeConfig()) {}
-};
-
-MyDevice device;
-
-void setup() { device.setup(); }
-void loop()  { device.loop(); }
-```
-
-The device connects to WiFi (with a captive portal for configuration), opens a WebSocket to your server, and accepts Lua apps and shader expressions as JSON messages.
-
-For telemetry callback or timezone, call `sandbox().setTelemetryCallback(...)` / `sandbox().setTimezone(...)` from your `deviceSetup()` override.
-
-### Standalone `Resident::Sandbox` (no network)
-
-Use the sandbox directly without any network stack:
-
-```cpp
-#include <ResidentSandbox.h>
-#include "MyLEDDriver.h"
-
-MyLEDDriver led;
-
 Resident::SandboxConfig makeConfig() {
     Resident::SandboxConfig cfg;
-    cfg.extensions = {&led};
+    cfg.deviceType    = "demo";
+    cfg.statusDisplay = &display;
+    cfg.extensions    = {&display, &button};
+
+    // Courier::Config has a constructor with default args, so designated
+    // initializers (`Courier::Config{ .host = ... }`) don't compile under
+    // strict ESP-IDF builds. Use direct field assignment.
+    Courier::Config courier;
+    courier.host = "resident.inanimate.tech";
+    cfg.network  = courier;
+
     return cfg;
 }
 
 Resident::Sandbox sandbox{makeConfig()};
 
 void setup() {
-    sandbox.initialize();
-    sandbox.loadApp(
-        "function on_tick(ctx, dt_ms)\n"
-        "  local t = ctx.time_ms / 1000\n"
-        "  led.set_rgb(math.sin(t)*127+128, 0, 0)\n"
-        "end\n"
-    );
+    // Optional: override the default WS path on the canonical relay.
+    sandbox.onTransportsWillConnect([]() {
+        String path = String("/devices/") + sandbox.getDeviceId();
+        sandbox.ws().setEndpoint("resident.inanimate.tech", 443, path.c_str());
+    });
+
+    sandbox.setup();
 }
 
 void loop() {
     sandbox.loop();
 }
+```
+
+The device connects to WiFi (via a WiFiManager captive portal), opens a WebSocket to your server, and accepts Lua apps and shader expressions as JSON messages.
+
+> Omit `cfg.network` and the sandbox runs standalone with no WiFi pulled in — `sandbox.loop()` ticks Lua at 10 FPS unconditionally, and `isConnected()` returns `false`.
+
+Register reactive callbacks before `setup()` to react to lifecycle events:
+
+```cpp
+sandbox.onConnected([]() {
+    // load a bootstrap Lua app once the WS is up
+});
+
+sandbox.onMessage([](const char* transport, const char* type, JsonDocument& doc) {
+    // fires only for non-reserved types — Resident handles app/shader/app_event
+});
 ```
 
 ## Writing a Driver
@@ -130,13 +122,13 @@ For Lua-only extensions that don't expose hardware or emit events, extend `Resid
 
 ### Driver lifecycle
 
-- `begin()` — called once by `Sandbox::initialize()` in registration order.
+- `begin()` — called once by `Sandbox::setup()` in registration order.
   Hardware init goes here. Idempotent: a manual early call is safe (the
   Sandbox's call becomes a no-op).
 - `update()` — called every iteration of `Sandbox::loop()`. Use for
   per-tick driver work like polling and debouncing. Runs at full main-loop
   rate, distinct from Lua's 10 FPS `on_tick`.
-- `registerModule(LuaModule& m)` — called once by `Sandbox::initialize()`
+- `registerModule(LuaModule& m)` — called once by `Sandbox::setup()`
   to register the driver's Lua-visible global. Use the builder's
   `method<>`, `staticMethod`, and `constant` overloads.
 - `onAppReset()` — called when a new app is loaded (before compilation).
@@ -144,17 +136,15 @@ For Lua-only extensions that don't expose hardware or emit events, extend `Resid
 
 ## Message Protocol
 
-When using `Resident::Device`, the base `onMessage()` routes these types to the sandbox:
-
-Subclasses can override `onMessage()` to handle custom types, then call `Device::onMessage()` for sandbox routing. The same pattern applies to `onConnected()`, `onConnectionChange()`, and `onTransportsWillConnect()` — override and call super.
-
-Incoming JSON messages with these types are handled by the sandbox:
+Resident routes three JSON message types internally — your `sandbox.onMessage(cb)` callback only fires for *other* types:
 
 ```json
 { "type": "app", "code": "function on_tick(ctx, dt_ms) ... end" }
 { "type": "shader", "expr": "rgb(sin(time_ms/1000)*0.5+0.5, 0, 0)" }
 { "type": "app_event", "name": "button_press", "data": { "id": 1 } }
 ```
+
+Register `sandbox.onMessage(cb)` to handle custom types. No super-call is needed — the reserved types never reach your callback.
 
 ### Sandbox lifecycle
 

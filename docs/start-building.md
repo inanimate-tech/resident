@@ -57,12 +57,13 @@ The bring-up `setup()` code stays — peripheral init still happens before Resid
 
 - Add the in-tree Resident library to `lib_deps` (`symlink://<path-to-resident-root>`) along with its runtime deps: Courier (git URL), `tzapu/WiFiManager`, `bblanchon/ArduinoJson`, `ropg/ezTime`, `fischer-simon/Esp32Lua`.
 - Add a custom `partitions.csv` — Resident's stack pushes the binary toward 1.2 MB; the default 4 MB layout's `app0` slice (~1.4 MB) leaves no head-room. The Feather example uses 2.5 MB app + 1.4 MB SPIFFS.
-- Implement a `Resident::StatusDisplay` subclass that paints connection-state text (`"WiFi"`, `"Connecting"`, `"Connected"`, then the device ID) on whatever output the board has — a TFT, an OLED, a NeoPixel, or just plain serial.
-- Build a `Resident::DeviceConfig`: set `deviceType`, `host = "resident.inanimate.tech"`, point `statusDisplay` at the subclass, leave `extensions` empty for this step.
-- Subclass `Resident::Device`, override `onTransportsWillConnect()` to set the canonical relay path `/devices/<id>` (the relay's URL convention; the default `/agents/<type>-agent/<id>` is for self-hosted deployments).
-- `setup()` calls `device.setup()` after the hardware init block; `loop()` calls `device.loop()`.
+- Implement a `Resident::StatusDisplay` subclass that paints connection-state text (`"WiFi"`, `"Connecting"`, `"Connected"`, then the device ID) on whatever output the board has — a TFT, an OLED, a NeoPixel, or just plain serial. Resident's internal handler calls `displayText()` on every connection state transition automatically, no wiring required.
+- Build a `Resident::SandboxConfig`: set `deviceType`, point `statusDisplay` at the subclass, leave `extensions` empty for this step. Assign `cfg.network` from a `Courier::Config` populated via direct field assignment (`courier.host = "resident.inanimate.tech"; cfg.network = courier;` — designated initializers don't compile under strict ESP-IDF builds).
+- Construct a global `Resident::Sandbox sandbox{makeConfig()}`.
+- Register `sandbox.onTransportsWillConnect([]() { sandbox.ws().setEndpoint(host, 443, "/devices/" + sandbox.getDeviceId()); })` to override the default `/agents/<type>-agent/<id>` path with the canonical `/devices/<id>` path used by `resident.inanimate.tech`.
+- `setup()` calls `sandbox.setup()` after the hardware init block; `loop()` calls `sandbox.loop()`.
 
-See [`device-minimal-resident/`](../examples/adafruit-esp32-s2-feather/device-minimal-resident/) for the Feather's version (~100 lines of `main.cpp`).
+See [`device-minimal-resident/src/main.cpp`](../examples/adafruit-esp32-s2-feather/device-minimal-resident/src/main.cpp) for the Feather's version (~150 lines).
 
 ### Decisions to make
 
@@ -83,7 +84,7 @@ See [`device-minimal-resident/`](../examples/adafruit-esp32-s2-feather/device-mi
 
 ## Step 3 — Add Resident drivers
 
-**Goal:** expose each hardware peripheral as a Lua module so apps can drive it. Each peripheral becomes its own `Resident::Driver` subclass; drivers live in a project-local `lib/drivers/` directory and are registered as extensions in the `DeviceConfig`.
+**Goal:** expose each hardware peripheral as a Lua module so apps can drive it. Each peripheral becomes its own `Resident::Driver` subclass; drivers live in a project-local `lib/drivers/` directory and are registered as extensions on the `SandboxConfig`.
 
 ### Pattern
 
@@ -91,7 +92,7 @@ A driver is a class that inherits `Resident::Driver` and implements:
 
 - `name()` returning the Lua module name (e.g. `"screen"`, `"led"`, `"imu"`).
 - `registerModule(LuaModule&)` chaining `.method<Class, &Class::cMethod>("lua_name")` calls. Each C++ method takes `lua_State*` and returns the number of Lua return values, pushing them with `lua_pushnumber` / `lua_pushinteger` / `lua_pushboolean`.
-- Optionally: `begin()` for one-shot hardware init that happens inside `device.setup()`; `onAppReset()` to clear per-app state (canvas, LED off) when a new app loads; `onAppRunning(bool)` to track sandbox state.
+- Optionally: `begin()` for one-shot hardware init that happens inside `sandbox.setup()`; `onAppReset()` to clear per-app state (canvas, LED off) when a new app loads; `onAppRunning(bool)` to track sandbox state.
 
 A driver can dual-inherit `Resident::StatusDisplay` or `Resident::StatusLED` — that's how the Feather's `DisplayDriver` and `LEDDriver` both serve as boot-time status indicators *and* as Lua-accessible modules. The handoff is automatic: once a Lua app loads, the driver gates its `displayText` / `solidColor` calls on `_appRunning` so Lua owns the hardware.
 
@@ -114,7 +115,7 @@ The Feather exposes three drivers — see [`device/lib/drivers/src/`](../example
 - **One driver per hardware unit.** Don't merge `screen` and `led` just because they share `main.cpp`. Lua module names should reflect the device surface, not the C++ class hierarchy.
 - **Where to allocate framebuffers.** Large back-buffers (e.g. a 135×240 16-bit canvas is ~64 KB) can live in SRAM if it fits, or be pushed to PSRAM if the chip has it. The Feather's 320 KB SRAM accommodates the canvas alongside Wi-Fi + Lua state.
 - **Lifecycle of driver state across apps.** On `onAppReset()`, restore a safe baseline: clear the canvas, turn the NeoPixel off, stop any audio. The next app should see fresh hardware. The example: `LEDDriver::onAppReset()` does `setPixelColor(0, 0); show();`.
-- **Order of hardware init vs `device.setup()`.** Build and `init()` the underlying Adafruit / vendor objects in `main.cpp` *before* calling `device.setup()`. The driver's own `begin()` runs inside Resident's lifecycle and assumes the hardware is already up.
+- **Order of hardware init vs `sandbox.setup()`.** Build and `init()` the underlying Adafruit / vendor objects in `main.cpp` *before* calling `sandbox.setup()`. The driver's own `begin()` runs inside Resident's lifecycle and assumes the hardware is already up.
 - **Event-emitting drivers.** Drivers can call `sendEvent(name, fields, count)` to surface hardware events to Lua's `on_event`. The m5stick-demo's `PushButtonsDriver` is the canonical example (button presses → `event.name == "button"`, `event.index == 0|1`).
 
 ### What the agent should be able to demonstrate
