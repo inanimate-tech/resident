@@ -3,10 +3,12 @@
 #define RESIDENT_H
 
 #include "ResidentSandbox.h"
+#include "ResidentSandboxConfig.h"
 #include "ResidentDriver.h"
-#include "ResidentDeviceConfig.h"
+#include "ResidentExtension.h"
+#include "ResidentExtensions.h"
+#include "ResidentLuaModule.h"
 #include "ResidentStatusLED.h"
 #include "ResidentStatusDisplay.h"
-// ResidentDevice.h included separately — pulls in Courier dependency
 
 #endif // RESIDENT_H

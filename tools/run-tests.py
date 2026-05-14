@@ -66,15 +66,30 @@ def unit_tests() -> None:
     click.echo(click.style("✓ Unit tests passed", fg="green"))
 
 
+PLATFORMIO_EXAMPLES = [
+    ROOT / "examples" / "m5stick-demo" / "device",
+    ROOT / "examples" / "adafruit-esp32-s2-feather" / "device",
+    ROOT / "examples" / "adafruit-esp32-s2-feather" / "device-minimal-resident",
+    # device-no-resident doesn't use Resident; included as a smoke test that
+    # the hardware bring-up baseline still builds.
+    ROOT / "examples" / "adafruit-esp32-s2-feather" / "device-no-resident",
+]
+
+
 @cli.command("build")
 def build_verification() -> None:
-    """Build-verify the m5stick-demo PlatformIO example."""
+    """Build-verify every PlatformIO example."""
     click.echo(click.style("Build Verification", fg="white", bold=True))
-    project = ROOT / "examples" / "m5stick-demo" / "device"
-    if not run_cmd(["pio", "run"], cwd=project, label=f"pio run ({project.name})"):
-        click.echo(click.style("✗ Build failed", fg="red"))
+    failed: list[Path] = []
+    for project in PLATFORMIO_EXAMPLES:
+        label = f"pio run ({project.parent.name}/{project.name})"
+        if not run_cmd(["pio", "run"], cwd=project, label=label):
+            failed.append(project)
+    if failed:
+        rels = ", ".join(str(p.relative_to(ROOT)) for p in failed)
+        click.echo(click.style(f"✗ Build failed for: {rels}", fg="red"))
         sys.exit(1)
-    click.echo(click.style("✓ Build passed", fg="green"))
+    click.echo(click.style("✓ All builds passed", fg="green"))
 
 
 @cli.command("all")

@@ -2,44 +2,46 @@
 
 ## Configuration
 
-All configuration uses a struct-and-assign pattern compatible with C++11. `DeviceConfig` is in `ResidentDeviceConfig.h` (pulled in by `ResidentDevice.h`); `SandboxConfig` is in `ResidentSandboxConfig.h` (pulled in by `ResidentSandbox.h`).
+All configuration uses a struct-and-assign pattern compatible with C++11. `SandboxConfig` is in `ResidentSandboxConfig.h`, pulled in by the `Resident.h` umbrella.
 
 For global instances, use a factory function so construction happens after static init:
 
 ```cpp
-#include <ResidentDevice.h>
+#include <Resident.h>
 
-Resident::DeviceConfig makeConfig() {
-    Resident::DeviceConfig cfg;
+Resident::SandboxConfig makeConfig() {
+    Resident::SandboxConfig cfg;
     cfg.deviceType = "my-device";
-    cfg.host       = "api.example.com";
     cfg.extensions = {&myDisplay, &myButton};
+
+    // Courier::Config has a constructor with default args, so designated
+    // initializers don't compile under strict ESP-IDF builds. Use direct
+    // field assignment.
+    Courier::Config courier;
+    courier.host = "api.example.com";
+    cfg.network  = courier;
+
     return cfg;
 }
 
-class MyDevice : public Resident::Device {
-public:
-    MyDevice() : Resident::Device(makeConfig()) {}
-};
+Resident::Sandbox sandbox{makeConfig()};
 
-MyDevice device;
-
-void setup() { device.setup(); }
-void loop()  { device.loop(); }
+void setup() { sandbox.setup(); }
+void loop()  { sandbox.loop(); }
 ```
 
-### DeviceConfig
+### SandboxConfig
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `deviceType` | `const char*` | `nullptr` | Device type string — sent to the server during WebSocket handshake |
-| `host` | `const char*` | `nullptr` | Server hostname |
-| `dns1` | `uint32_t` | `0` | Optional primary DNS server, as a packed IPv4 address (e.g. `IPAddress(1,1,1,1)`). `0` leaves the DHCP-supplied DNS in place. |
-| `dns2` | `uint32_t` | `0` | Optional secondary DNS server, packed IPv4. Ignored unless `dns1` is also set. |
-| `statusLED` | `StatusLED*` | `nullptr` | Optional LED indicator; `Device` drives it on connection state changes |
-| `statusDisplay` | `StatusDisplay*` | `nullptr` | Optional text display; `Device` drives it with status messages |
+| `deviceType` | `const char*` | `nullptr` | Device type string — used for the WiFiManager AP name and the default `/agents/<type>-agent/<deviceId>` WS path |
+| `extensions` | `Extensions` | `{}` | Drivers and extensions registered with the sandbox (registration order is preserved across `begin()` / `registerModule()` / `update()` / `onAppReset()`) |
 | `shaderTemplate` | `ShaderTemplateFn` | `nullptr` | Function that converts shader fields into Lua source (see [Message Protocol](#message-protocol)) |
-| `extensions` | `Extensions` | `{}` | Drivers and extensions registered with the sandbox |
+| `telemetry` | `TelemetryCallback` | `nullptr` | Called with outgoing telemetry JSON strings (also settable later via `sandbox.setTelemetryCallback`) |
+| `timezone` | `const char*` | `nullptr` | IANA timezone string applied at construction (e.g. `"Europe/London"`); also settable later via `sandbox.setTimezone` |
+| `statusDisplay` | `StatusDisplay*` | `nullptr` | Optional text display; Resident's internal handler calls `displayText()` automatically on connection state changes |
+| `statusLED` | `StatusLED*` | `nullptr` | Optional LED indicator; Resident's internal handler calls `solidColor()` automatically on connection state changes |
+| `network` | `std::optional<Courier::Config>` | unset | Networking opt-in. Set ⇒ Sandbox constructs an internal `Courier::Client`, drives WiFi / transports, fires connection callbacks. Unset ⇒ standalone runtime, no WiFi pulled in. |
 
 The `extensions` field is filled with a brace-list of `Extension*` pointers in registration order:
 
@@ -47,202 +49,183 @@ The `extensions` field is filled with a brace-list of `Extension*` pointers in r
 cfg.extensions = {&displayDriver, &buttonDriver, &imuDriver};
 ```
 
-### SandboxConfig
-
-Use `SandboxConfig` when running the sandbox standalone (without `Device`).
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `extensions` | `Extensions` | `{}` | Drivers and extensions registered with the sandbox |
-| `shaderTemplate` | `ShaderTemplateFn` | `nullptr` | Shader-to-Lua template function |
-| `telemetry` | `TelemetryCallback` | `nullptr` | Called with outgoing telemetry JSON strings |
-| `timezone` | `const char*` | `nullptr` | IANA timezone string applied at construction (e.g. `"Europe/London"`) |
+The `network` field uses field assignment to avoid designated-initializer pitfalls:
 
 ```cpp
-#include <ResidentSandbox.h>
-
-Resident::SandboxConfig makeConfig() {
-    Resident::SandboxConfig cfg;
-    cfg.extensions = {&myLED};
-    cfg.timezone   = "America/New_York";
-    return cfg;
-}
-
-Resident::Sandbox sandbox{makeConfig()};
+Courier::Config courier;
+courier.host = "resident.inanimate.tech";
+courier.port = 443;
+cfg.network  = courier;
 ```
 
----
-
-## Resident::Device
-
-`Resident::Device` composes Courier for connectivity with the Lua sandbox. Subclass it to add project-specific hardware and message handling.
-
-Include with:
-
-```cpp
-#include <ResidentDevice.h>
-```
-
-### Lifecycle
-
-```cpp
-device.setup();   // initialize WiFi, Courier, and sandbox — call from Arduino setup()
-device.loop();    // drive networking and sandbox — call from Arduino loop()
-```
-
-### Construction and subclassing
-
-```cpp
-class MyDevice : public Resident::Device {
-public:
-    MyDevice() : Resident::Device(makeConfig()) {}
-
-protected:
-    void deviceSetup() override {
-        // called at end of setup() — hardware init, telemetry wiring
-        sandbox().setTelemetryCallback([](const char* json) {
-            courier().send(json);
-        });
-    }
-
-    void deviceLoop() override {
-        // called every loop() — after Courier and sandbox have ticked
-    }
-};
-```
-
-### Accessors
-
-```cpp
-device.courier();          // Courier& — the underlying Courier instance
-device.sandbox();          // Sandbox& — the Lua sandbox
-device.isConnected();      // true when Courier is fully connected
-device.getDeviceId();      // String — device ID assigned by the server
-device.isTimeSynced();     // true after NTP/HTTP time sync
-device.getDeviceType();    // const char* — from DeviceConfig::deviceType
-```
-
-### Sending
-
-```cpp
-device.send(payload);                           // default transport
-device.sendTo("ws", payload);                   // named transport
-device.sendBinaryTo("ws", data, len);           // binary, named transport
-```
-
-### Message handling
-
-Override `onMessage` to handle custom message types. Call the super implementation to keep sandbox routing for `app`, `shader`, and `app_event` messages:
-
-```cpp
-void onMessage(const char* type, JsonDocument& doc) override {
-    if (strcmp(type, "config") == 0) {
-        // handle custom type
-        return;
-    }
-    Resident::Device::onMessage(type, doc);  // route app/shader/app_event to sandbox
-}
-```
-
-### Connection lifecycle hooks
-
-All three hooks call up the chain by default. Override and call super to extend:
-
-```cpp
-void onConnectionChange(CourierState state) override {
-    // fires on every state transition
-    Resident::Device::onConnectionChange(state);
-}
-
-void onTransportsWillConnect() override {
-    // fires before transports start — good place for registration/token exchange
-    Resident::Device::onTransportsWillConnect();
-}
-
-void onConnected() override {
-    // fires when fully connected
-    Resident::Device::onConnected();
-}
-```
-
-### Subclass hooks
-
-| Method | Description |
-|--------|-------------|
-| `deviceSetup()` | Called at the end of `setup()`. Hardware init, telemetry wiring. |
-| `deviceLoop()` | Called every `loop()` after Courier and sandbox have ticked. |
-| `buildWebSocketPath()` | Returns `String` — override to customize the WebSocket path. Default is `/agents/<deviceType>-agent/<deviceId>`. |
-
-### Status accessors (protected)
-
-```cpp
-statusLED();       // StatusLED* from config — nullptr if not set
-statusDisplay();   // StatusDisplay* from config — nullptr if not set
-```
+Omit `cfg.network` entirely to run standalone. `sandbox.hasNetwork()` reflects this choice; `sandbox.courier()` and `sandbox.ws()` assert if called on a no-network sandbox (programming error, not a recoverable runtime state).
 
 ---
 
 ## Resident::Sandbox
 
-The Lua sandbox. Used standalone (no network) or accessed via `Device::sandbox()`.
+The single public Resident class. The Lua sandbox composed with optional [Courier](https://github.com/inanimate-tech/courier) connectivity.
 
 Include with:
 
 ```cpp
-#include <ResidentSandbox.h>
+#include <Resident.h>
 ```
 
-### Construction and configuration
+### Construction
 
 ```cpp
-Resident::Sandbox sandbox;                      // default-constructed, configure later
-Resident::Sandbox sandbox{makeConfig()};        // constructed with config
-sandbox.configure(cfg);                         // replace config (not additive)
+Resident::SandboxConfig cfg;
+// ... populate fields ...
+Resident::Sandbox sandbox{cfg};
 ```
 
-`Device::setup()` calls `configure()` automatically — downstream Device subclasses normally do not call it directly.
+`Sandbox` is move-non-trivial (it holds Lua state, optional Courier, callback closures) — declare it as a global / static, not a stack local in `setup()`.
+
+If `cfg.network` is set, the internal `Courier::Client` is constructed inside the `Sandbox` constructor and is available via `sandbox.courier()` immediately. Transports are not yet wired up — that happens in `setup()`.
 
 ### Lifecycle
 
 ```cpp
-sandbox.initialize();   // create Lua state, register extensions, set up globals
-sandbox.loop();         // drive extension update() and Lua on_tick at 10 FPS
+sandbox.setup();   // call from Arduino setup() (after peripheral init)
+sandbox.loop();    // call from Arduino loop()
 ```
 
-Call `initialize()` once before `loop()`. On ESP32, the Lua allocator routes all allocations to PSRAM.
+`setup()` is idempotent: a second call is a no-op.
 
-### App loading
+### Lifecycle ordering
+
+1. **Constructor** — applies the config. If `cfg.network` is set, the internal `Courier::Client` is constructed (but not started). If `cfg.timezone` is set, it is applied. If `cfg.telemetry` is set, it is stored.
+2. **`setup()`** — in order:
+   1. The user-registered `onConfigureNetwork(cb)` fires (if any), receiving the `Courier::Client&`. Use this to configure transports, register additional transports, or set TLS certificates.
+   2. Resident's internal Courier hooks are wired (status-display / status-LED updates, reserved-type message routing).
+   3. WiFiManager AP name is set to `"Resident <DeviceType> <id-suffix>"`.
+   4. The `StatusDisplay::begin()` lifecycle runs (if a `statusDisplay` is configured).
+   5. The sandbox itself initialises: Lua state is created, extensions get `begin()` and `registerModule()` calls in registration order, globals are registered.
+   6. `Courier::Client::setup()` runs, which kicks WiFi and transports. During this:
+      - `onCourierConnectionChange` fires for each state transition (`WifiConnecting` → `WifiConnected` → `TransportsConnecting` → `Connected`, etc.). Internal handler updates `statusDisplay`/`statusLED`, then the user's `onConnectionChange(cb)` callback fires.
+      - `onCourierTransportsWillConnect` fires once before transports begin. Internal handler sets the default `/agents/<type>-agent/<id>` WS path, then the user's `onTransportsWillConnect(cb)` callback fires (override the path here).
+      - `onCourierConnected` fires when fully connected. The user's `onConnected(cb)` callback runs.
+3. **`loop()`** — in order:
+   1. `Courier::Client::loop()` drives the network state machine and reads transports.
+   2. `StatusDisplay::update()` (if configured).
+   3. If networked, gates the Lua tick on `isConnected()`. Standalone always ticks.
+   4. Every extension's `update()` runs at full main-loop rate.
+   5. The Lua `on_tick(ctx, dt_ms)` callback fires at 10 FPS (100 ms interval).
+   6. Up to one pending event is delivered to `on_event(ctx, event)`.
+
+### Setup-phase callbacks (register before `setup()`)
 
 ```cpp
-sandbox.loadApp(luaCode);            // compile and run a Lua source string
-sandbox.loadShader(fields);          // generate Lua via ShaderTemplateFn, then loadApp
-sandbox.sendAppEvent(name, dataJson); // queue an app_event to the running app
-sandbox.isAppRunning();              // true when an app is compiled and active
-sandbox.generationId();              // const String& — ID of the last loaded app/shader
+sandbox.onConfigureNetwork([](Courier::Client& c) {
+    c.transport<Courier::WebSocketTransport>("ws").onConfigure([](auto& t) {
+        t.setRootCA(rootCertPem);
+    });
+});
+```
+
+| Callback | Signature | Fires |
+|----------|-----------|-------|
+| `onConfigureNetwork` | `void(Courier::Client&)` | Once at the top of `setup()`, before any Courier wiring. Use to configure existing transports (TLS certs, custom WiFi callbacks via `c.onConfigureWiFi(...)`) or to register additional transports (`c.addTransport<MqttTransport>(...)`). |
+
+### Reactive callbacks (single-slot — last registration wins)
+
+Register before or after `setup()`. Each call replaces the previous handler for that slot.
+
+```cpp
+sandbox.onTransportsWillConnect([]() {
+    // Override the default WS endpoint:
+    String path = String("/devices/") + sandbox.getDeviceId();
+    sandbox.ws().setEndpoint("resident.inanimate.tech", 443, path.c_str());
+});
+
+sandbox.onMessage([](const char* transport, const char* type, JsonDocument& doc) {
+    if (strcmp(type, "config") == 0) {
+        // handle a custom message type
+    }
+});
+
+sandbox.onConnectionChange([](Courier::State state) {
+    // fires on every state transition; statusDisplay/statusLED are already updated
+});
+
+sandbox.onConnected([]() {
+    // fires when fully connected — good place to load a bootstrap app
+    static bool loaded = false;
+    if (loaded) return;
+    loaded = true;
+    sandbox.loadApp(bootstrapLua);
+});
+```
+
+| Callback | Signature | Fires |
+|----------|-----------|-------|
+| `onTransportsWillConnect` | `void()` | Once, after Resident sets the default WS path and before transports start. Override the path here. |
+| `onMessage` | `void(const char* transport, const char* type, JsonDocument&)` | For **non-reserved** message types only. Reserved types (`app`, `shader`, `app_event`) are routed internally — no super-call is needed. |
+| `onConnectionChange` | `void(Courier::State)` | On every state transition. Resident's internal handler updates `statusDisplay`/`statusLED` first; your callback runs alongside (does not replace). |
+| `onConnected` | `void()` | When fully connected. Often used to load a bootstrap app — guard with a function-local `static bool loaded` to avoid re-firing on reconnect. |
+
+### Sandbox controls
+
+```cpp
+sandbox.loadApp(luaCode);              // compile and run a Lua source string
+sandbox.loadShader(fields);            // generate Lua via ShaderTemplateFn, then loadApp
+sandbox.sendAppEvent(name, dataJson);  // queue an app_event to the running app
+sandbox.setTimezone("Europe/London");  // IANA zone — performs UDP lookup on first use
+sandbox.hasTimezone();                 // true after a successful setTimezone call
+sandbox.isAppRunning();                // true when an app is compiled and active
+sandbox.generationId();                // const String& — ID of the last loaded app/shader
+sandbox.setTelemetryCallback(cb);      // wire telemetry JSON to your transport
 ```
 
 `loadApp` stops any running app, calls `onAppReset()` on all extensions, generates a new `generationId`, and compiles the new app. An app must define at least one of `init`, `on_tick`, or `on_event` — compilation is rejected otherwise.
 
 `loadShader` requires `SandboxConfig::shaderTemplate` to be set; it converts the `ShaderFields` map to Lua source, then calls `loadApp`.
 
-### Timezone
+`setTimezone` is a no-op on `nullptr` or empty input. Success means ezTime resolved the zone (either from its own cache or via one UDP lookup to `timezoned.rop.nl`); failure logs and leaves `hasTimezone() == false`. Affects `ctx.localtime_h`, `ctx.localtime_m`, `time.hour()`, `time.minute()`, and `time.second()` in Lua.
+
+### Identity and state accessors
 
 ```cpp
-sandbox.setTimezone("Europe/London");   // set IANA timezone; performs UDP lookup on first use
-sandbox.hasTimezone();                  // true after a successful setTimezone call
+sandbox.getDeviceId();    // const String& — device ID derived from chip MAC
+sandbox.getDeviceType();  // const char* — from SandboxConfig::deviceType
+sandbox.isConnected();    // true when Courier reports State::Connected
+sandbox.isTimeSynced();   // true after NTP/HTTP time sync
+sandbox.hasNetwork();     // true iff cfg.network was set at construction
+sandbox.courier();        // Courier::Client& — asserts if !hasNetwork()
+sandbox.ws();             // Courier::WebSocketTransport& — asserts if !hasNetwork()
 ```
 
-ezTime looks up the POSIX rule via `timezoned.rop.nl` on first sight of a zone and caches in EEPROM. On failure (null, empty, or unrecognised zone) the sandbox falls back to UTC and `hasTimezone()` returns `false`. Timezone affects `ctx.localtime_h`, `ctx.localtime_m`, `time.hour()`, `time.minute()`, and `time.second()` in Lua.
+`courier()` and `ws()` are not nullable accessors — they assert. The pattern is *"if you wrote code that calls these, you also chose to set `cfg.network`"* — the static configuration choice should be obvious from the call site. Guard with `hasNetwork()` only in library code that intends to support both modes.
 
-### Telemetry
+### Standalone mode
+
+Omit `cfg.network` to run with no networking pulled in:
 
 ```cpp
-sandbox.setTelemetryCallback([](const char* json) {
-    courier.send(json);
-});
+Resident::SandboxConfig cfg;
+cfg.extensions = {&myLED};
+Resident::Sandbox sandbox{cfg};
+
+void setup() {
+    sandbox.setup();
+    sandbox.loadApp(
+        "function on_tick(ctx, dt_ms)\n"
+        "  local t = ctx.time_ms / 1000\n"
+        "  led.set_rgb(math.sin(t)*127+128, 0, 0)\n"
+        "end\n"
+    );
+}
+
+void loop() { sandbox.loop(); }
 ```
 
-The callback receives a complete JSON string for each telemetry event. Format: `{ "type": "telemetry", "generationId": "...", "name": "...", "data": {...} }`. See [Message Protocol](#message-protocol).
+In standalone mode:
+
+- `hasNetwork()` returns `false`; `courier()` and `ws()` assert.
+- `isConnected()` always returns `false`.
+- `loop()` ticks Lua at 10 FPS unconditionally (no gating on connection state).
+- `onConfigureNetwork` / `onTransportsWillConnect` / `onMessage` / `onConnectionChange` / `onConnected` never fire — but registering them is harmless.
 
 ---
 
@@ -262,7 +245,7 @@ Include with:
 |--------|---------|-------------|
 | `name() const` | *(pure virtual)* | Module name as registered in Lua (e.g. `"imu"`) |
 | `registerModule(LuaModule& m)` | no-op | Populate the Lua module table using the builder |
-| `begin()` | no-op | Hardware / module init — called once by `Sandbox::initialize()` |
+| `begin()` | no-op | Hardware / module init — called once by `Sandbox::setup()` |
 | `update()` | no-op | Per-loop tick at full main-loop rate (not Lua's 10 FPS) |
 | `onAppReset()` | no-op | Called before each new app is compiled |
 
@@ -272,7 +255,7 @@ Include with:
 Resident::Extension::beginExtension(myExtension);
 ```
 
-Call this before `sandbox.initialize()` to run `begin()` early (e.g. a status display that must be ready before the sandbox). `Sandbox::initialize()` calls `beginExtension` on every extension; the second call is a no-op.
+Call this before `sandbox.setup()` to run `begin()` early (e.g. a status display that must be ready before the sandbox). `Sandbox::setup()` calls `beginExtension` on every extension; the second call is a no-op.
 
 ---
 
@@ -411,7 +394,7 @@ Overloads accept `int`, `double`, `const char*`, and `bool`.
 
 ## Resident::Extensions
 
-A fixed-capacity list of `Extension*` pointers passed to `DeviceConfig` or `SandboxConfig`.
+A fixed-capacity list of `Extension*` pointers passed to `SandboxConfig`.
 
 ```cpp
 cfg.extensions = {&display, &button, &imu};
@@ -429,7 +412,7 @@ The user owns the extension instances (typically global or static variables). Th
 
 ## Resident::StatusDisplay
 
-Interface for connection-state text output. Implement it in a display driver and pass a pointer via `DeviceConfig::statusDisplay`.
+Interface for connection-state text output. Implement it in a display driver and pass a pointer via `SandboxConfig::statusDisplay`.
 
 ```cpp
 class MyDisplay : public Resident::StatusDisplay {
@@ -444,9 +427,9 @@ public:
 
 | Method | Default | Description |
 |--------|---------|-------------|
-| `displayText(const char* text)` | *(pure virtual)* | Show a status string — called by `Device` on connection state changes |
-| `begin()` | no-op | `Device` calls once at `setup()` |
-| `update()` | no-op | `Device` calls every `loop()` |
+| `displayText(const char* text)` | *(pure virtual)* | Show a status string — called by Resident's internal handler on connection state changes |
+| `begin()` | no-op | Called once during `Sandbox::setup()` |
+| `update()` | no-op | Called every `Sandbox::loop()` |
 
 A Driver can implement `StatusDisplay` as a second interface for dual-use hardware (display + driver). Follow the [inheritance ordering rule](#inheritance-ordering-rule) — `Driver` must come first.
 
@@ -468,9 +451,9 @@ public:
 
 | Method | Default | Description |
 |--------|---------|-------------|
-| `solidColor(uint32_t color)` | *(pure virtual)* | Set the LED to a packed `0xRRGGBB` color — called by `Device` on connection state changes |
+| `solidColor(uint32_t color)` | *(pure virtual)* | Set the LED to a packed `0xRRGGBB` color — called by Resident's internal handler on connection state changes |
 
-`Device` calls `solidColor` automatically as the connection state changes (e.g. red while connecting, green when connected). There are no `begin()` or `update()` lifecycle hooks — initialize LED hardware in your subclass constructor or in `deviceSetup()`.
+Resident's internal handler calls `solidColor` automatically as the connection state changes (yellow during WiFi setup, cyan while transports connect, green when connected, orange while reconnecting, red on failure). There are no `begin()` or `update()` lifecycle hooks — initialize LED hardware in your subclass constructor or before `sandbox.setup()`.
 
 ---
 
@@ -614,7 +597,7 @@ See [Writing a Driver](#writing-a-driver) for the C++ side of this.
 
 ## Message Protocol
 
-When using `Resident::Device`, the base `onMessage()` routes these JSON message types to the sandbox. Call `Device::onMessage(type, doc)` from your override to keep this routing.
+Resident routes three JSON message types internally — they never reach the user's `onMessage(cb)` callback. Any other type is forwarded to `onMessage` if registered.
 
 ### `app` — load a Lua app
 
@@ -630,7 +613,7 @@ Calls `Sandbox::loadApp(doc["code"])`. Any previously running app is stopped fir
 { "type": "shader", "expr": "rgb(fract(ctx.time_ms / 2000.0), 0, 0)" }
 ```
 
-The entire JSON document (as a `ShaderFields` map of string key/value pairs) is passed to `DeviceConfig::shaderTemplate`, which must return valid Lua source. The result is passed to `loadApp`. Requires `shaderTemplate` to be set.
+The entire JSON document (as a `ShaderFields` map of string key/value pairs) is passed to `SandboxConfig::shaderTemplate`, which must return valid Lua source. The result is passed to `loadApp`. Requires `shaderTemplate` to be set.
 
 ### `app_event` — send an event to the running app
 
@@ -657,14 +640,12 @@ The sandbox emits telemetry events via `TelemetryCallback`. Format:
 | `runtime_error` | A Lua callback threw an error. `on_tick` errors are rate-limited (see [Limits](#limits)); `init` and `on_event` errors are emitted immediately. |
 | `log_error` | App called `log.error(msg)` |
 
-Wire the callback in `deviceSetup()`:
+Wire the callback up before `setup()` to forward telemetry over the connected WebSocket transport:
 
 ```cpp
-void deviceSetup() override {
-    sandbox().setTelemetryCallback([this](const char* json) {
-        send(json);
-    });
-}
+sandbox.setTelemetryCallback([](const char* json) {
+    sandbox.ws().sendText(json);
+});
 ```
 
 ---
@@ -723,8 +704,8 @@ Register the driver with the sandbox:
 ```cpp
 ButtonDriver btn{9};
 
-Resident::DeviceConfig makeConfig() {
-    Resident::DeviceConfig cfg;
+Resident::SandboxConfig makeConfig() {
+    Resident::SandboxConfig cfg;
     cfg.extensions = {&btn};
     return cfg;
 }

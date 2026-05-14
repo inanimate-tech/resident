@@ -3,9 +3,12 @@
 #define RESIDENT_SANDBOX_H
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <ezTime.h>
 #include <map>
 #include <functional>
+#include <optional>
+#include <Courier.h>
 #include "ResidentDriver.h"
 #include "ResidentLuaModule.h"
 #include "ResidentSandboxConfig.h"
@@ -32,6 +35,12 @@ public:
     void initialize();
     void loop();  // runs on_tick
 
+    // Public lifecycle — replaces the old Device::setup()/loop().
+    // Standalone mode (no cfg.network): just initialises the Lua state.
+    // Networked mode: also fires onConfigureNetwork, kicks off Courier.
+    void setup();
+    // loop() already exists for the standalone tick — extended to drive Courier.
+
     // Load an app from Lua source code
     void loadApp(const char* luaCode);
 
@@ -49,6 +58,48 @@ public:
     // timezoned.rop.nl). Failure logs and leaves hasTimezone() == false.
     void setTimezone(const char* ianaZone);
     bool hasTimezone() const { return _hasTimezone; }
+
+    // Network accessors. Both assert if cfg.network was not set.
+    Courier::Client& courier();
+    Courier::WebSocketTransport& ws();
+
+    // True iff cfg.network was set at construction time.
+    bool hasNetwork() const { return _courier.has_value(); }
+
+    // ── Setup-phase callback (register before setup()) ──
+    using ConfigureNetworkCallback = std::function<void(Courier::Client&)>;
+    void onConfigureNetwork(ConfigureNetworkCallback cb) {
+      _onConfigureNetwork = std::move(cb);
+    }
+
+    // ── Reactive callbacks (single-slot, last registration wins) ──
+    using TransportsWillConnectCallback = std::function<void()>;
+    using MessageCallback = std::function<void(const char* transportName,
+                                                const char* type,
+                                                JsonDocument& doc)>;
+    using ConnectionChangeCallback = std::function<void(Courier::State)>;
+    using ConnectedCallback = std::function<void()>;
+
+    void onTransportsWillConnect(TransportsWillConnectCallback cb) {
+      _onTransportsWillConnect = std::move(cb);
+    }
+    void onMessage(MessageCallback cb) {
+      _onMessage = std::move(cb);
+    }
+    void onConnectionChange(ConnectionChangeCallback cb) {
+      _onConnectionChange = std::move(cb);
+    }
+    void onConnected(ConnectedCallback cb) {
+      _onConnected = std::move(cb);
+    }
+
+    // ── Identity / status accessors ──
+    const String& getDeviceId() const { return _deviceId; }
+    const char* getDeviceType() const {
+      return _config.deviceType ? _config.deviceType : "device";
+    }
+    bool isConnected() const;
+    bool isTimeSynced() const;
 
     // Test hooks — only used by native tests. Exposed here because the mock
     // Timezone carries its configuration per-instance.
@@ -69,6 +120,35 @@ private:
 
     // Configuration
     SandboxConfig _config;
+
+    // Optional Courier client — constructed iff cfg.network was set at
+    // construction time. WS transport reference is cached for ws() accessor.
+    std::optional<Courier::Client> _courier;
+    Courier::WebSocketTransport* _ws = nullptr;
+    String _deviceId;
+
+    // User-registered callbacks (single-slot, last registration wins).
+    ConfigureNetworkCallback      _onConfigureNetwork;
+    TransportsWillConnectCallback _onTransportsWillConnect;
+    MessageCallback               _onMessage;
+    ConnectionChangeCallback      _onConnectionChange;
+    ConnectedCallback             _onConnected;
+
+    // Internal Courier hook handlers (drive status indicators + reserved-type
+    // routing, then delegate to user callbacks).
+    void wireInternalCourierHooks();
+    void onCourierMessage(const char* transportName, const char* type,
+                          JsonDocument& doc);
+    void onCourierConnectionChange(Courier::State state);
+    void onCourierConnected();
+    void onCourierTransportsWillConnect();
+
+    // Status display helper.
+    void showStatusText(const char* text);
+    String _lastStatusText;
+
+    // Track whether the Lua state has been initialised, so setup() is idempotent.
+    bool _initialized = false;
 
     // Telemetry
     TelemetryCallback _telemetryCb;

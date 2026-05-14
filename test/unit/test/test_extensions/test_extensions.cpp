@@ -43,7 +43,7 @@ void test_oversize_list_clamps_to_max(void) {
 }
 
 void test_reassignment_resets_all_slots(void) {
-    // Production pattern: makeConfig() builds DeviceConfig fresh each call,
+    // Production pattern: makeConfig() builds SandboxConfig fresh each call,
     // but tests/setup may reassign Extensions on an existing struct. Verify
     // that assigning a shorter list nulls out the previously-set tail slots
     // — this depends on `items[MAX] = {}` in the struct definition keeping

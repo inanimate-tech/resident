@@ -4,7 +4,7 @@
 #include <Adafruit_LC709203F.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
-#include <ResidentDevice.h>
+#include <Resident.h>
 
 #include "DisplayDriver.h"
 #include "LEDDriver.h"
@@ -24,57 +24,29 @@ static LEDDriver ledDriver{&pixel};
 static BatteryDriver batteryDriver{&battery, &batteryReady};
 static ButtonDriver buttonDriver{0};  // BOOT button on GPIO0
 
-static Resident::DeviceConfig makeConfig() {
-  Resident::DeviceConfig cfg;
+static Resident::SandboxConfig makeConfig() {
+  Resident::SandboxConfig cfg;
   cfg.deviceType    = "feather-tft";
-  cfg.host          = RESIDENT_HOST;
   // DisplayDriver dual-inherits as the StatusDisplay so connection-state
   // text gets drawn straight to the TFT before any app loads. LEDDriver
   // dual-inherits as the StatusLED so the NeoPixel reflects connection
   // state (yellow→cyan→green) until an app takes over.
+  cfg.extensions    = {&displayDriver, &ledDriver, &batteryDriver, &buttonDriver};
   cfg.statusDisplay = &displayDriver;
   cfg.statusLED     = &ledDriver;
-  cfg.extensions    = {&displayDriver, &ledDriver, &batteryDriver, &buttonDriver};
+
+  // Courier::Config has a constructor with default args, so designated
+  // initializers (.host = ...) don't compile under strict ESP-IDF builds.
+  // Use direct field assignment.
+  Courier::Config courier;
+  courier.host = RESIDENT_HOST;
+  courier.port = RESIDENT_PORT;
+  cfg.network  = courier;
+
   return cfg;
 }
 
-class FeatherDevice : public Resident::Device {
- public:
-  FeatherDevice() : Resident::Device(makeConfig()) {}
-
-  // Override the default /agents/<type>-agent/<id> path with the canonical
-  // /devices/<id> path used by resident.inanimate.tech.
-  void onTransportsWillConnect() override {
-    String wsPath = String("/devices/") + getDeviceId();
-    _ws.setEndpoint(RESIDENT_HOST, RESIDENT_PORT, wsPath.c_str());
-  }
-
-  void deviceLoop() override {
-    // On first successful connection, replace the StatusDisplay's text
-    // with a tiny Lua app that paints the device ID on the TFT in big
-    // green text and sets the NeoPixel green. The user knows what to
-    // push to; a real app sent via push-app replaces this.
-    static bool loaded = false;
-    if (!loaded && isConnected()) {
-      loaded = true;
-      String app = "function init(ctx)\n"
-                   "  screen.clear()\n"
-                   "  screen.text(5, 5, 'Resident', 2, 0, 255, 255)\n"
-                   "  screen.text(5, 30, 'feather-tft', 1)\n"
-                   "  screen.text(5, 55, 'Device ID:', 1, 200, 200, 200)\n"
-                   "  screen.text(5, 75, '";
-      app += getDeviceId();
-      app += "', 2, 0, 255, 0)\n"
-             "  screen.flip()\n"
-             "  led.set_brightness(20)\n"
-             "  led.set(0, 255, 0)\n"
-             "end\n";
-      sandbox().loadApp(app.c_str());
-    }
-  }
-};
-
-static FeatherDevice device;
+Resident::Sandbox sandbox{makeConfig()};
 
 void setup() {
   Serial.begin(115200);
@@ -118,15 +90,46 @@ void setup() {
     Serial.println("LC709203 not found — likely no battery plugged in");
   }
 
+  // Override the default /agents/<type>-agent/<id> path with the canonical
+  // /devices/<id> path used by resident.inanimate.tech.
+  sandbox.onTransportsWillConnect([]() {
+    String wsPath = String("/devices/") + sandbox.getDeviceId();
+    sandbox.ws().setEndpoint(RESIDENT_HOST, RESIDENT_PORT, wsPath.c_str());
+  });
+
+  // On first successful connection, replace the StatusDisplay's text with
+  // a tiny Lua app that paints the device ID on the TFT and sets the
+  // NeoPixel green. A real app sent via push-app replaces this. Function-
+  // local static guards against re-firing on reconnect (would otherwise
+  // clobber a user-pushed app).
+  sandbox.onConnected([]() {
+    static bool loaded = false;
+    if (loaded) return;
+    loaded = true;
+    String app = "function init(ctx)\n"
+                 "  screen.clear()\n"
+                 "  screen.text(5, 5, 'Resident', 2, 0, 255, 255)\n"
+                 "  screen.text(5, 30, 'feather-tft', 1)\n"
+                 "  screen.text(5, 55, 'Device ID:', 1, 200, 200, 200)\n"
+                 "  screen.text(5, 75, '";
+    app += sandbox.getDeviceId();
+    app += "', 2, 0, 255, 0)\n"
+           "  screen.flip()\n"
+           "  led.set_brightness(20)\n"
+           "  led.set(0, 255, 0)\n"
+           "end\n";
+    sandbox.loadApp(app.c_str());
+  });
+
   // Hand off to Resident. It owns: WiFi (via WiFiManager captive portal
   // on first boot, persisted to NVS thereafter), time sync (via ezTime),
   // WebSocket connection (via Courier), Lua sandbox lifecycle, and
   // routing inbound `app`/`shader`/`app_event` messages to the sandbox.
   // Drivers' begin() (canvas alloc, backlight PWM) is called inside
-  // device.setup(), so the TFT must already be init()'d above.
-  device.setup();
+  // sandbox.setup(), so the TFT must already be init()'d above.
+  sandbox.setup();
 }
 
 void loop() {
-  device.loop();
+  sandbox.loop();
 }

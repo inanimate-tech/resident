@@ -5,7 +5,11 @@
 #include <Arduino.h>
 #include <map>
 #include <functional>
+#include <optional>
+#include <Courier.h>
 #include "ResidentExtensions.h"
+#include "ResidentStatusLED.h"
+#include "ResidentStatusDisplay.h"
 
 namespace Resident {
 
@@ -14,10 +18,29 @@ using ShaderTemplateFn = String (*)(const ShaderFields& fields);
 using TelemetryCallback = std::function<void(const char* json)>;
 
 struct SandboxConfig {
+  // Identifies the physical board (used for AP name and protocol path
+  // defaults). Stays at top-level — it labels the device, not the network.
+  const char* deviceType = nullptr;
+
+  // Hardware bindings exposed to Lua, plus shader-expression template.
   Extensions extensions;
   ShaderTemplateFn shaderTemplate = nullptr;
+
+  // Lua-side telemetry sink + per-board IANA timezone.
   TelemetryCallback telemetry = nullptr;
   const char* timezone = nullptr;
+
+  // Status indicators are properties of the *device*, not the network —
+  // top-level so a future standalone use case can drive them too. Resident's
+  // internal handlers update them on connection state changes when network
+  // is configured.
+  StatusDisplay* statusDisplay = nullptr;
+  StatusLED* statusLED = nullptr;
+
+  // Networking opt-in. Presence ⇒ Sandbox constructs a Courier::Client with
+  // this config, drives WiFi/transports, fires onConnected/onMessage/etc.
+  // Absence ⇒ standalone runtime, no WiFi pulled in.
+  std::optional<Courier::Config> network;
 };
 
 } // namespace Resident
