@@ -38,7 +38,7 @@ if(RESIDENT_EZTIME_DEP)
 endif()
 
 idf_component_register(
-    SRCS "src/ResidentSandbox.cpp" "src/ResidentDevice.cpp"
+    SRCS "src/ResidentSandbox.cpp"
     INCLUDE_DIRS "src"
     REQUIRES ${RESIDENT_REQUIRES}
 )
