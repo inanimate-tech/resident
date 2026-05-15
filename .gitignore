@@ -33,3 +33,6 @@ __pycache__/
 # personal context, in-progress thinking, and absolute paths.
 docs/superpowers/
 examples/*/docs/superpowers/
+
+# Local pack output (pio pkg pack / compote component pack)
+dist/

@@ -18,3 +18,31 @@ dependencies:
   # as a local component named `Esp32Lua` (e.g. via a fetch script that clones
   # https://github.com/Fischer-Simon/Esp32Lua and writes a CMakeLists.txt).
   # See examples/espidf-basic/tools/fetch-deps.sh for the canonical pattern.
+files:
+  # compote does not read .gitignore — we must explicitly exclude build
+  # artifacts and dev-only files, or they end up in the published tarball.
+  exclude:
+    - "**/.pio/**/*"
+    - "**/node_modules/**/*"
+    - "**/managed_components/**/*"
+    - "**/build/**/*"
+    - "dist/**/*"
+    - "examples/**/*"
+    - "device-apps/**/*"
+    - ".claude/**/*"
+    - ".github/**/*"
+    - ".vscode/**/*"
+    - "docs/superpowers/**/*"
+    - "tools/**/*"
+    - "test/**/*"
+    - "**/.DS_Store"
+    - "**/package-lock.json"
+    - "**/sdkconfig"
+    - "**/sdkconfig.*"
+    - "**/dependencies.lock"
+    - "CLAUDE.md"
+    - "docs/publishing.md"
+    - "docs/changelog.md"
+    - "docs/start-building.md"
+    - "docs/migration-0.4-to-0.5.md"
+    - ".gitignore"
