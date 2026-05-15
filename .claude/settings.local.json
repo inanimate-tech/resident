@@ -77,7 +77,12 @@
       "Skill(superpowers:writing-plans)",
       "Skill(superpowers:writing-plans:*)",
       "Skill(superpowers:subagent-driven-development)",
-      "Skill(superpowers:using-git-worktrees)"
+      "Skill(superpowers:using-git-worktrees)",
+      "Bash(/Users/matt/.claude/plugins/cache/inanimate/resident/0.6.3/skills/create-app/tools/write-out.sh *)",
+      "Skill(resident:validate-app)",
+      "Bash(/Users/matt/.claude/plugins/cache/inanimate/resident/0.6.3/skills/validate-app/tools/validate.sh *)",
+      "Skill(resident:push-app)",
+      "Bash(/Users/matt/.claude/plugins/cache/inanimate/resident/0.6.3/skills/push-app/tools/push.sh *)"
     ]
   }
 }
