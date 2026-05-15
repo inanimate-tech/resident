@@ -116,7 +116,7 @@ or guess a path.
 ## Self-hosted vs hosted
 
 - Hosted relay: `https://resident.inanimate.tech/devices/<id>/send`
-  (deployed by `resident-web`).
+  (provided as a default for developers).
 - Self-hosted: any worker that exposes the same protocol —
   `POST /devices/<id>/send` with `Content-Type: application/json` and
   body `{ "type": "app", "code": "<lua source>" }`.

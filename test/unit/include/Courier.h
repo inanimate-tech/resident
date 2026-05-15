@@ -11,7 +11,7 @@
 // Only Courier::Config is needed at test-compile time: it's a POD passed by
 // value through Resident's SandboxConfig::network. Mirror new Courier::Config
 // fields here when they're added upstream. Last sync: courier 0.4.x — see
-// /Users/matt/code/courier/src/Courier.h struct Config.
+// the upstream Courier.h struct Config (github.com/inanimate-tech/courier).
 #pragma once
 #include <cstdint>
 

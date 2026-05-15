@@ -42,7 +42,7 @@ Add to your project's `.claude/settings.json` (or `~/.claude/settings.json` for 
         "hooks": [
           {
             "type": "http",
-            "url": "https://resident-m5stick-demo.genmon.workers.dev/agents/device-agent/m5stick-demo/hook/permission-request"
+            "url": "https://resident-m5stick-demo.YOUR-CF-ACCOUNT.workers.dev/agents/device-agent/m5stick-demo/hook/permission-request"
           }
         ]
       }
@@ -76,7 +76,7 @@ With the device connected, send a synthetic payload:
 curl -X POST \
   -H "Content-Type: application/json" \
   -d '{"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules"}}' \
-  https://resident-m5stick-demo.genmon.workers.dev/agents/device-agent/m5stick-demo/hook/permission-request
+  https://resident-m5stick-demo.YOUR-CF-ACCOUNT.workers.dev/agents/device-agent/m5stick-demo/hook/permission-request
 ```
 
 The device's currently-loaded Lua app will receive an event with `e.name == "permission"` and `e.data == { tool = "Bash", summary = "rm -rf node_modules" }`.

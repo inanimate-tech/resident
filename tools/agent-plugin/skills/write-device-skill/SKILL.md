@@ -31,7 +31,7 @@ isn't exposed to Lua, just say so plainly and move on.
 ## What you need
 
 1. **Firmware project root** — defaults to `cwd`. Ask if not in one.
-2. **Device identity** — short name (e.g. "M5StickC Plus2", "Hawthorn lamp").
+2. **Device identity** — short name (e.g. "M5StickC Plus2", "<My Hardware Startup> lamp").
 3. **Driver surface** — which `Resident::Driver` / `Resident::Extension`
    subclasses the firmware registers, and what each one's `name()` and
    Lua module functions are.
