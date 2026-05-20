@@ -1,6 +1,6 @@
 local t = 0
 local scroll_x = 135
-local scroller = "*** RESIDENT *** GREETINGS TO ALL DEMOSCENERS *** AMIGA 4 LIFE *** PUSHED FROM CLAUDE CODE *** "
+local scroller = "*** RESIDENT 4 LIFE *** GREETINGS TO ALL DEMOSCENERS *** MADE IN LONDON *** PUSHED FROM CLAUDE CODE *** "
 
 function init(ctx)
   led.set_brightness(30)
