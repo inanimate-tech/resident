@@ -15,17 +15,26 @@ extern "C" {
 // Gyro uses the right-hand rule: thumb along the +axis, positive rotation is
 // CCW when looking toward the tip of the thumb.
 //
-// M5Unified reports values in the chip's own frame. On the M5StickC Plus2 the
-// MPU6886 is physically mounted rotated so its X and Y axes are swapped relative
-// to the body frame described above; we un-swap here so Lua apps get consistent
-// body-frame readings. Other boards (M5StickS3 etc.) pass through unchanged;
-// verify and extend this remap when adding a new board.
+// M5Unified reports values in the chip's own frame, which differs per board:
+//   M5StickC Plus2 — MPU6886 mounted rotated; X and Y are swapped.
+//   M5StickS3      — IMU X axis is inverted; Y and Z match the body frame
+//                    (verified on hardware: flat and landscape read correct,
+//                    portrait was inverted before this remap).
+// remapToBodyFrame() corrects this so Lua apps get consistent body-frame
+// readings. Selection is compile-time via the per-env board macros (see
+// platformio.ini / main.cpp); the S3 env's PlatformIO board is a generic
+// esp32-s3-devkitc-1, so a runtime M5.getBoard() check can't identify it.
+// Verify and extend this remap when adding a new board.
 static inline void remapToBodyFrame(float& x, float& y) {
+#if defined(BOARD_M5STICKS3)
+  x = -x;
+#else  // BOARD_M5STICK_C_PLUS2
   if (M5.getBoard() == m5::board_t::board_M5StickCPlus2) {
     float tmp = x;
     x = y;
     y = tmp;
   }
+#endif
 }
 
 // imu.accel() -> ax, ay, az (g-force, body frame)
