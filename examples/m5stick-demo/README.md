@@ -1,17 +1,16 @@
 # M5Stick Demo
 
-A working example of an M5StickC Plus2 running the [Resident](https://github.com/inanimate-tech/resident) Lua sandbox, receiving apps over WebSocket from the canonical Resident relay at [resident.inanimate.tech](https://resident.inanimate.tech) — or from a self-hosted Cloudflare Worker bundled in `server/`.
+A working example of an M5StickC Plus2 (or M5StickS3) running the [Resident](https://github.com/inanimate-tech/resident) Lua sandbox. The device opens a WebSocket to the canonical Resident relay at [resident.inanimate.tech](https://resident.inanimate.tech) and waits for apps and events to be pushed to it.
 
-The example is the on-ramp: **flash the device, try it against the public relay, then optionally deploy the bundled server as the starting point for your own back-end.**
+The example is the on-ramp: **flash the device, try it against the public relay, push some Lua at it.** If you want to build your own back-end server, start from [`examples/server-template/`](../server-template/) — that's the minimum Cloudflare Worker running the same relay.
 
 ## Structure
 
 ```
 m5stick-demo/
-├── device/          # PlatformIO firmware for M5StickC Plus2
+├── device/          # PlatformIO firmware for M5StickC Plus2 / M5StickS3
 ├── device-apps/     # Example Lua apps for the sandbox
 ├── send-app.sh      # CLI tool to push apps without installing the agent plugin
-├── server/          # Optional self-hosted Cloudflare Worker (Durable Object + UI)
 └── DEVICE-SKILL.md  # Lua-side device surface (used by /resident:create-app etc.)
 ```
 
@@ -19,7 +18,7 @@ m5stick-demo/
 
 ## 1. Flash the device
 
-First [install the PlatformIO CLI](https://docs.platformio.org/en/stable/core/installation/index.html). Then connect your M5StickC Plus2 over USB:
+[Install the PlatformIO CLI](https://docs.platformio.org/en/stable/core/installation/index.html). Then connect your M5StickC Plus2 over USB:
 
 ```bash
 cd device
@@ -39,7 +38,7 @@ Once connected to Wi-Fi, the device opens a WebSocket to `wss://resident.inanima
 
 The deviceId is derived from the chip's MAC address. It's stable across reboots.
 
-> **Heads up.** `resident.inanimate.tech` is a public relay with no authentication beyond the deviceId itself. Anyone who knows your deviceId can push apps to your device. That's fine for hacking, but for anything more permanent, deploy your own server (see step 3).
+> **Heads up.** `resident.inanimate.tech` is a public relay with no authentication beyond the deviceId itself. Anyone who knows your deviceId can push apps to your device. Fine for hacking; for anything more permanent, run your own server.
 
 ---
 
@@ -60,11 +59,11 @@ echo 'abc12345' > .resident-device-id
 ./send-app.sh device-apps/bounce.lua
 ```
 
-The `device-apps/` directory has a few sample apps to try: `hello.lua`, `bounce.lua`, `accel.lua`, `rainbow.lua`.
+The `device-apps/` directory has sample apps: `hello.lua`, `bounce.lua`, `accel.lua`, `rainbow.lua`, and more.
 
 If you've installed the [resident agent plugin](https://github.com/inanimate-tech/agent-plugins), the `/resident:push-app` skill does the same thing from inside Claude Code.
 
-### What's actually happening
+### What's happening under the hood
 
 `send-app.sh` does this:
 
@@ -80,56 +79,11 @@ The relay validates the JSON shape, then forwards it verbatim to the device's We
 
 ---
 
-## 3. Run your own server (optional)
+## 3. Run your own server
 
-The bundled `server/` is a Cloudflare Worker that mirrors the canonical relay protocol. Use it as a starting point for your own back-end — for example, to add authentication, persistence, or a richer admin UI than the basic React monitor included here.
+The relay is a Cloudflare Worker built on top of [`@inanimate/resident`](https://www.npmjs.com/package/@inanimate/resident). To self-host or customise, fork [`examples/server-template/`](../server-template/) — that's the bare reference. After you've deployed it, change `RESIDENT_HOST` in `device/src/main.cpp` to your worker URL and `pio run -t upload` again.
 
-### Setup
-
-```bash
-cd server
-npm install
-npm run dev
-```
-
-Open http://localhost:5173 in a browser. Enter the device ID and you can push apps from a textarea, with live status of whether the device is connected.
-
-### Deploy
-
-```bash
-cd server
-npm run deploy
-```
-
-Wrangler will deploy to your own Cloudflare account. Once deployed, point the device at it: edit `device/src/main.cpp`, change `RESIDENT_HOST` to your worker's URL, and `pio run -t upload` again.
-
-```cpp
-static constexpr const char* RESIDENT_HOST = "your-worker.example.workers.dev";
-```
-
-Then push from the CLI with the same `send-app.sh`, just with `--base-url`:
-
-```bash
-./send-app.sh \
-  --base-url https://your-worker.example.workers.dev \
-  --device-id abc12345 \
-  device-apps/hello.lua
-```
-
-### How the server is built
-
-`server/src/server.ts` is a single Durable Object — `DeviceAgent` — extending `Agent` from the Cloudflare Agents SDK. The Worker routes `/devices/<id>/*` directly into the DO via `getAgentByName`. The DO:
-
-- Accepts a device WebSocket on `/devices/<id>` (untagged → `device` tag).
-- Accepts a monitor WebSocket on `/devices/<id>?monitor=1` (used by the bundled UI; an extension on top of the canonical protocol).
-- Handles `POST /devices/<id>/send`: validates JSON shape, forwards verbatim to the device WS, echoes to monitors.
-- Handles `GET /devices/<id>`: returns the deviceId and current connection count as plain text.
-
-The relay never reads `code`, `expr`, or `name` fields — the protocol is defined by the firmware library and the skill, not the relay.
-
-### Why the relay is dumb
-
-This is the **end-to-end principle**: the relay forwards bytes; the firmware library and the skill agree on the JSON shape. New protocol message types (e.g. `app_event` for two-way coordination) work without redeploying the worker. See the [resident sandbox tooling spec](../../docs/superpowers/specs/2026-05-07-resident-sandbox-tooling-design.md) for the full design.
+For an example that customises the server (a `/register` endpoint that pushes per-device config to the firmware on boot), see [`examples/m5stick-clock/`](../m5stick-clock/).
 
 ---
 
@@ -141,6 +95,6 @@ See [`DEVICE-SKILL.md`](./DEVICE-SKILL.md) for the complete Lua-side surface (sc
 
 ## Device IDs as auth
 
-The deviceId is the *only* secret. Anyone who knows it can push apps to or read your device. The example uses an 8-character hex string derived from the chip's MAC address — fine for development and for the public demo, but **for anything you actually deploy, switch to a longer random ID** (≥ 128 bits of entropy, e.g. UUIDv4 or 32 hex chars) and treat it like an API key.
+The deviceId is the *only* secret. Anyone who knows it can push apps to or read your device. The example uses an 8-character hex string derived from the chip's MAC address — fine for development and the public demo, but **for anything you actually deploy, switch to a longer random ID** (≥ 128 bits of entropy, e.g. UUIDv4 or 32 hex chars) and treat it like an API key.
 
 To do that today, replace the call to `getDeviceId()` in `device/src/main.cpp` (`onTransportsWillConnect`) with a constant or NVS-backed value, and use the same value in `send-app.sh`.
