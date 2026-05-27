@@ -1,14 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "resident-m5stick-demo",
-  "main": "src/server.ts",
+  "name": "resident-server-template",
+  "main": "src/worker.ts",
   "compatibility_date": "2026-03-02",
   "compatibility_flags": ["nodejs_compat"],
-  "assets": {
-    "directory": "./public",
-    "not_found_handling": "single-page-application",
-    "run_worker_first": ["/devices/*"]
-  },
   "durable_objects": {
     "bindings": [
       {
