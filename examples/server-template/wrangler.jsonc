@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "resident-server-template",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-03-02",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "DeviceAgent",
+        "name": "DeviceAgent"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "new_sqlite_classes": ["DeviceAgent"],
+      "tag": "v1"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}
