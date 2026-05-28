@@ -26,8 +26,10 @@ void DisplayDriver::displayText(const char* text) {
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextColor(TFT_WHITE);
   M5.Display.setTextSize(2);
+  M5.Display.setScrollRect(10, 60, M5.Display.width() - 10, M5.Display.height() - 60);
+  M5.Display.setTextScroll(true);
   M5.Display.setCursor(10, 60);
-  M5.Display.println(text);
+  M5.Display.print(text);
 }
 
 void DisplayDriver::onAppReset() {
