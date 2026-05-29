@@ -334,7 +334,7 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
     case S::WifiConnecting:        showStatusText("WiFi..."); break;
     case S::WifiConfiguring: {
       // Build status text, appending AP name when available
-      String s = _apName.isEmpty() ? "Configure WiFi" : (String("Configure WiFi\n") + _apName);
+      String s = _apName.isEmpty() ? "Configure WiFi" : (String("Configure WiFi\n\n") + _apName);
       showStatusText(s.c_str());
       break;
     }
