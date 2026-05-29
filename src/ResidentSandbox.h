@@ -95,6 +95,7 @@ public:
 
     // ── Identity / status accessors ──
     const String& getDeviceId() const { return _deviceId; }
+    const String& getAPName() const { return _apName; }
     const char* getDeviceType() const {
       return _config.deviceType ? _config.deviceType : "device";
     }
@@ -126,6 +127,7 @@ private:
     std::optional<Courier::Client> _courier;
     Courier::WebSocketTransport* _ws = nullptr;
     String _deviceId;
+    String _apName;
 
     // User-registered callbacks (single-slot, last registration wins).
     ConfigureNetworkCallback      _onConfigureNetwork;

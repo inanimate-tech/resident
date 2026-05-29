@@ -252,8 +252,8 @@ void Sandbox::setup()
     String apName = String(getDeviceType());
     if (apName.length() > 0) apName[0] = toupper(apName[0]);
     String idSuffix = _deviceId.substring(0, 4);
-    _courier->setAPName(
-      (String("Resident ") + apName + " " + idSuffix).c_str());
+    _apName = String("Resident ") + apName + " " + idSuffix;
+    _courier->setAPName(_apName.c_str());
 
     Serial.printf("[resident] Device: %s (%s)\n",
                   getDeviceType(), _deviceId.c_str());
@@ -332,7 +332,12 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
   // after, in addition (does not replace).
   switch (state) {
     case S::WifiConnecting:        showStatusText("WiFi..."); break;
-    case S::WifiConfiguring:       showStatusText("Configure WiFi"); break;
+    case S::WifiConfiguring: {
+      // Build status text, appending AP name when available
+      String s = _apName.isEmpty() ? "Configure WiFi" : (String("Configure WiFi\n\n") + _apName);
+      showStatusText(s.c_str());
+      break;
+    }
     case S::WifiConnected:         showStatusText("WiFi connected"); break;
     case S::TransportsConnecting:  showStatusText("Connecting..."); break;
     case S::Connected:             showStatusText("Connected"); break;
