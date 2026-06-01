@@ -1,0 +1,22 @@
+# Local dev secrets for `wrangler dev`. Copy this file to `.dev.vars` (which is
+# git-ignored) and fill in real values. For a DEPLOYED worker, set each of these
+# with `npx wrangler secret put <NAME>` instead — never commit real secrets.
+
+# Required. Your OpenAI API key. The account MUST have billing / credit enabled,
+# or the realtime session returns `insufficient_quota` and no transcript appears.
+OPENAI_API_KEY=sk-REPLACE_ME
+
+# Optional. Route the OpenAI realtime connection through Cloudflare AI Gateway
+# (for analytics, caching, rate-limiting). Set BOTH to enable; leave unset to
+# connect to OpenAI directly. Create the gateway first in the Cloudflare
+# dashboard under AI > AI Gateway.
+# CF_ACCOUNT_ID=your-cloudflare-account-id
+# AI_GATEWAY_ID=your-gateway-name
+
+# Optional. Only needed if the AI Gateway above is set to "Authenticated".
+# A Cloudflare API token with the "AI Gateway Run" permission.
+# CF_AIG_TOKEN=your-ai-gateway-token
+
+# Optional. Set to 1 to force a direct OpenAI connection even when the gateway
+# vars above are set — handy for isolating gateway-side issues.
+# OPENAI_DIRECT=1

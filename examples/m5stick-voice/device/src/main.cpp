@@ -9,14 +9,17 @@
 // m5stick-voice — Milestone 1: push-to-talk audio streaming.
 //
 // Hold the front button to stream the mic as 16 kHz int16 PCM over a binary
-// WebSocket. For this milestone we point at the Courier binary-websocket
-// example's backend so we can watch a live FFT in the browser and confirm the
-// streaming path works. A resident-native audio backend comes next.
+// WebSocket. Audio rides the device's normal Resident relay connection
+// (/devices/<id>); the m5stick-voice server transcribes it via the OpenAI
+// Realtime API and serves a live transcript + FFT viewer.
 // ---------------------------------------------------------------------------
 
-static constexpr const char* AUDIO_HOST = "binary-websocket.genmon.workers.dev";
-static constexpr uint16_t AUDIO_PORT = 443;
-static constexpr const char* AUDIO_PATH = "/ws";
+// Your deployed m5stick-voice worker. Replace YOUR-CF-ACCOUNT with your
+// Cloudflare workers.dev subdomain (or a custom domain). The device connects
+// to the Resident relay path /devices/<deviceId> and streams audio as binary
+// frames on that same socket.
+static constexpr const char* SERVER_HOST = "m5stick-voice.genmon.workers.dev";
+static constexpr uint16_t SERVER_PORT = 443;
 
 // Board-specific button pins. M5StickC Plus2 (ESP32 classic): GPIO 37 + 39.
 // M5StickS3 (ESP32-S3 with OPI PSRAM): GPIO 11 + 12. On the S3, GPIO 37 is
@@ -84,8 +87,8 @@ Resident::SandboxConfig makeConfig() {
     // Use direct field assignment. The endpoint is repointed in
     // onTransportsWillConnect, but seed host/port here too.
     Courier::Config courier;
-    courier.host = AUDIO_HOST;
-    courier.port = AUDIO_PORT;
+    courier.host = SERVER_HOST;
+    courier.port = SERVER_PORT;
     cfg.network  = courier;
 
     return cfg;
@@ -129,9 +132,10 @@ void setup() {
     // every press logged repeated "I2S port 0 has not installed" errors.)
     M5.Mic.begin();
 
-    // Point the single WS transport at the Courier audio backend.
+    // Connect on the Resident relay path; audio rides this same socket.
     sandbox.onTransportsWillConnect([]() {
-        sandbox.ws().setEndpoint(AUDIO_HOST, AUDIO_PORT, AUDIO_PATH);
+        String wsPath = String("/devices/") + sandbox.getDeviceId();
+        sandbox.ws().setEndpoint(SERVER_HOST, SERVER_PORT, wsPath.c_str());
     });
 
     // Log every connection-state transition with a timestamp. A socket drop
@@ -147,6 +151,9 @@ void setup() {
         static bool shown = false;
         if (shown) return;
         shown = true;
+        Serial.printf("[voice] device id %s — viewer: https://%s/devices/%s/\n",
+                      sandbox.getDeviceId().c_str(), SERVER_HOST,
+                      sandbox.getDeviceId().c_str());
         if (!streaming) displayDriver.displayText("Hold button\nto talk");
     });
 
