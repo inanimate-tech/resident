@@ -7,20 +7,27 @@ export function viewerHtml(deviceId: string): string {
 <title>m5stick-voice — ${deviceId}</title>
 <style>
   :root { color-scheme: dark; }
-  body { margin:0; background:#0b0b10; color:#e6e6f0;
-         font:16px/1.5 system-ui, sans-serif; display:flex;
-         flex-direction:column; height:100vh; }
-  header { padding:10px 16px; border-bottom:1px solid #23232c; }
+  html, body { margin:0; height:100%; }
+  body { color:#e6e6f0; font:16px/1.5 system-ui, sans-serif;
+         display:flex; flex-direction:column; height:100vh; background:transparent; }
+  /* Full-viewport layer the voice agent paints via apply_css. */
+  #bg { position:fixed; inset:0; z-index:-1; background:#0b0b10; }
+  header { padding:10px 16px; background:rgba(11,11,16,.55);
+           border-bottom:1px solid rgba(255,255,255,.08); }
   h1 { font-size:14px; margin:0; opacity:.7; font-weight:600; }
-  #status { font-size:12px; opacity:.5; margin-top:2px; }
-  #transcript { flex:1; overflow-y:auto; padding:16px; }
-  .line { margin:0 0 10px; white-space:pre-wrap; }
+  #status { font-size:12px; opacity:.55; margin-top:2px; }
+  #transcript { flex:1; overflow-y:auto; padding:16px; background:rgba(11,11,16,.4); }
+  .line { margin:0 0 10px; white-space:pre-wrap; text-shadow:0 1px 3px rgba(0,0,0,.6); }
   .interim { opacity:.5; }
-  #fft-wrap { height:120px; border-top:1px solid #23232c; }
+  .note { opacity:.4; font-style:italic; }
+  #fft-wrap { height:120px; background:rgba(11,11,16,.45);
+              border-top:1px solid rgba(255,255,255,.08); }
   canvas { width:100%; height:100%; display:block; }
 </style>
+<style id="agent-css"></style>
 </head>
 <body>
+<div id="bg"></div>
 <header>
   <h1>m5stick-voice · ${deviceId}</h1>
   <div id="status">connecting…</div>
@@ -32,6 +39,7 @@ export function viewerHtml(deviceId: string): string {
   var N = 512, NUM_BARS = 48;
   var statusEl = document.getElementById("status");
   var transcriptEl = document.getElementById("transcript");
+  var agentCssEl = document.getElementById("agent-css");
   var canvas = document.getElementById("c");
   var ctx = canvas.getContext("2d");
 
@@ -65,6 +73,15 @@ export function viewerHtml(deviceId: string): string {
     if (m.itemId) { /* keep keyed */ } else { delete items["_cur"]; }
     scroll(was);
   }
+  function applyCss(css) {
+    agentCssEl.textContent = css || "";
+    var was = atBottom();
+    var el = document.createElement("div");
+    el.className = "line note";
+    el.textContent = "🎨 background updated";
+    transcriptEl.appendChild(el);
+    scroll(was);
+  }
   function onJson(s) {
     var m; try { m = JSON.parse(s); } catch (e) { return; }
     if (m.type === "status") {
@@ -73,6 +90,8 @@ export function viewerHtml(deviceId: string): string {
       onDelta(m);
     } else if (m.type === "transcript.completed") {
       onCompleted(m);
+    } else if (m.type === "css") {
+      applyCss(m.css);
     }
   }
 
