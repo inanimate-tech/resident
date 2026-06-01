@@ -149,6 +149,7 @@ export class VoiceAgent extends DeviceAgent<Env> {
       ws.send(JSON.stringify({
         type: "session.update",
         session: {
+          type: "realtime",
           instructions: CSS_INSTRUCTIONS,
           output_modalities: ["text"], // silent — we don't forward response audio
           tools: [
