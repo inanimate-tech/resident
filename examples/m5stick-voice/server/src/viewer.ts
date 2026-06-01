@@ -17,9 +17,10 @@ export function viewerHtml(deviceId: string): string {
   h1 { font-size:14px; margin:0; opacity:.7; font-weight:600; }
   #status { font-size:12px; opacity:.55; margin-top:2px; }
   #transcript { flex:1; overflow-y:auto; padding:16px; background:rgba(11,11,16,.4); }
-  .line { margin:0 0 10px; white-space:pre-wrap; text-shadow:0 1px 3px rgba(0,0,0,.6); }
+  .line { margin:0 0 14px; white-space:pre-wrap; text-shadow:0 1px 3px rgba(0,0,0,.6);
+          font-size:32px; line-height:1.25; }
   .interim { opacity:.5; }
-  .note { opacity:.4; font-style:italic; }
+  .note { opacity:.4; font-style:italic; font-size:14px; }
   #fft-wrap { height:120px; background:rgba(11,11,16,.45);
               border-top:1px solid rgba(255,255,255,.08); }
   canvas { width:100%; height:100%; display:block; }
