@@ -1,9 +1,10 @@
 # m5stick-voice server
 
 A Cloudflare Worker that turns the [m5stick-voice](../) device's push-to-talk
-audio into a **live transcript in the browser**. Hold the device's button and
-speak; your words appear on a web page, with a colourful audio visualiser along
-the bottom.
+audio into a **live transcript** *and* a **voice-controlled background**. Hold
+the device's button and speak; your words appear on a web page, and the model
+can repaint the page background by calling a CSS tool ("make it blue with
+diagonal stripes, then animate them faster").
 
 It's built by subclassing the Resident relay — `DeviceAgent` from
 [`@inanimate/resident`](https://www.npmjs.com/package/@inanimate/resident) — so
@@ -101,19 +102,22 @@ transcript fills in above. (You can drop the trailing slash —
 - **One socket.** `VoiceAgent` overrides `onMessage`: binary frames (audio) are
   fanned to monitor connections (for the FFT) and pushed into the OpenAI bridge;
   everything else falls through to the canonical Resident relay.
-- **OpenAI Realtime (GA API).** The bridge opens a WebSocket to
-  `…/v1/realtime?intent=transcription` (no `OpenAI-Beta` header — that selects
-  the retired Beta shape) and configures a transcription session with the
-  `gpt-realtime-whisper` model.
-- **16 kHz → 24 kHz.** The device captures 16 kHz PCM16, but the realtime
-  transcription input requires ≥ 24 kHz, so the worker linearly upsamples each
-  frame (3:2) before sending.
-- **Commit on silence.** `gpt-realtime-whisper` has no server-side VAD, so the
-  worker commits the audio buffer after ~0.7 s of no frames (≈ the button
-  release), which transcribes the turn. Transcripts therefore appear
-  **per utterance** (speak → release → text), not streaming word-by-word. For
-  live word-by-word deltas instead, switch the model to `gpt-4o-transcribe` and
-  add a `turn_detection: { type: "server_vad" }` block to the session config.
+- **OpenAI Realtime (GA API), conversational.** The bridge opens a WebSocket to
+  `…/v1/realtime?model=gpt-realtime-2` (no `OpenAI-Beta` header — that selects
+  the retired Beta shape). The session enables input transcription
+  (`gpt-realtime-whisper`) **and** declares an `apply_css` function tool.
+- **16 kHz → 24 kHz.** The device captures 16 kHz PCM16, but the realtime input
+  requires ≥ 24 kHz, so the worker linearly upsamples each frame (3:2) before
+  sending.
+- **Push-to-talk turns.** `turn_detection` is `null`; ~0.7 s after the audio
+  stops (button release) the worker commits the buffer and sends
+  `response.create`. The commit drives the transcript; the response lets the
+  model decide whether to call `apply_css`.
+- **The CSS tool.** When the model calls `apply_css({css})`, the worker
+  broadcasts a `{type:"css"}` frame to the browser, which replaces the page's
+  `#agent-css` stylesheet (the model paints a full-viewport `#bg` layer). Then
+  the worker returns the tool result and another `response.create` so a single
+  spoken sentence can chain several changes.
 - **To the browser.** Transcript `delta`/`completed` events become JSON frames
   (`{type:"transcript.delta"|"transcript.completed", text, itemId}`) sent to the
   monitor connections; the viewer renders them above the FFT.
@@ -125,3 +129,9 @@ transcript fills in above. (You can drop the trailing slash —
   production.
 - No `OPENAI_API_KEY` set? Audio still reaches the browser so the FFT animates;
   the transcript stays empty and the worker logs the missing key.
+- The session model is `gpt-realtime-2` (a constant `REALTIME_MODEL` in
+  `worker.ts`) — swap it in one line. A conversational session with input
+  transcription costs more than transcription-only.
+- The injected background CSS is model-authored. CSS can't run JS, but can load
+  external URLs and cover the page — fine for a local demo, not for exposing to
+  untrusted speakers.
