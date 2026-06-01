@@ -13,12 +13,4 @@ declare namespace Cloudflare {
 }
 interface Env extends Cloudflare.Env {
   OPENAI_API_KEY: string;
-  // Optional: route OpenAI realtime through Cloudflare AI Gateway. If both are
-  // set, the worker uses the gateway; otherwise it connects to OpenAI directly.
-  CF_ACCOUNT_ID?: string;
-  AI_GATEWAY_ID?: string;
-  // Optional: only needed if the AI Gateway is set to "authenticated".
-  CF_AIG_TOKEN?: string;
-  // Optional: set to "1" to force a direct OpenAI connection (bypass gateway).
-  OPENAI_DIRECT?: string;
 }

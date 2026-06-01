@@ -76,32 +76,6 @@ export class VoiceAgent extends DeviceAgent<Env> {
 
   // ---- OpenAI Realtime transcription bridge ----
 
-  // Build the realtime connection target. If CF_ACCOUNT_ID + AI_GATEWAY_ID are
-  // set, route through Cloudflare AI Gateway's realtime WebSocket; otherwise
-  // connect to OpenAI directly. GA API → no `OpenAI-Beta` header.
-  private buildOpenAIRequest(key: string): { url: string; headers: Record<string, string>; via: string } {
-    // Conversational session (gpt-realtime-2). The transcription sub-model is
-    // set in session.audio.input.transcription.model below.
-    const query = "?model=" + REALTIME_MODEL
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${key}`,
-      Upgrade: "websocket",
-    }
-    const acct = this.env.CF_ACCOUNT_ID
-    const gw = this.env.AI_GATEWAY_ID
-    // Set OPENAI_DIRECT=1 to force a direct OpenAI connection even when the
-    // gateway secrets are set — useful for isolating gateway-side issues.
-    if (acct && gw && this.env.OPENAI_DIRECT !== "1") {
-      if (this.env.CF_AIG_TOKEN) headers["cf-aig-authorization"] = `Bearer ${this.env.CF_AIG_TOKEN}`
-      return {
-        url: `https://gateway.ai.cloudflare.com/v1/${acct}/${gw}/openai${query}`,
-        headers,
-        via: "ai-gateway",
-      }
-    }
-    return { url: `https://api.openai.com/v1/realtime${query}`, headers, via: "direct" }
-  }
-
   private async ensureOpenAI(): Promise<void> {
     if (this.openai && this.openaiReady) return
     if (this.openaiConnecting) return this.openaiConnecting
@@ -122,9 +96,17 @@ export class VoiceAgent extends DeviceAgent<Env> {
         throw new Error("missing OPENAI_API_KEY")
       }
 
-      const req = this.buildOpenAIRequest(key)
-      console.log("[voice] opening OpenAI session via", req.via + ":", req.url)
-      const resp = await fetch(req.url, { headers: req.headers })
+      // Conversational session (gpt-realtime-2). The transcription sub-model is
+      // set in session.audio.input.transcription.model below. GA API → no
+      // `OpenAI-Beta` header.
+      const url = "https://api.openai.com/v1/realtime?model=" + REALTIME_MODEL
+      console.log("[voice] opening OpenAI session:", url)
+      const resp = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${key}`,
+          Upgrade: "websocket",
+        },
+      })
       const ws = resp.webSocket
       if (!ws) {
         let body = ""

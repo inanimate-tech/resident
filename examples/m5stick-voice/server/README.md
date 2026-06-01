@@ -61,25 +61,14 @@ npm run dev
 
 `.dev.vars.example` lists every variable this worker reads.
 
-### 3. (Optional) Route through Cloudflare AI Gateway
+> **Why not Cloudflare AI Gateway?** As of mid-2026 the AI Gateway realtime
+> WebSocket proxy is built around `gpt-4o-realtime-preview` + the retired
+> `OpenAI-Beta` header and drops connections that use the GA models this example
+> needs (`gpt-realtime-2` / `gpt-realtime-whisper`). So the worker connects to
+> OpenAI directly. (Normal HTTP requests through the gateway work fine — it's
+> specific to the realtime WS proxy.)
 
-For analytics / caching / rate-limiting, send the OpenAI traffic through
-[AI Gateway](https://developers.cloudflare.com/ai-gateway/). Create a gateway in
-the dashboard (**AI → AI Gateway**), then set:
-
-```bash
-npx wrangler secret put CF_ACCOUNT_ID    # your Cloudflare account id
-npx wrangler secret put AI_GATEWAY_ID    # the gateway name
-```
-
-When both are set the worker connects via the gateway; otherwise it goes direct.
-If you set the gateway to **Authenticated**, also
-`npx wrangler secret put CF_AIG_TOKEN` (a token with the *AI Gateway Run*
-permission) — otherwise the gateway accepts the WebSocket handshake and then
-drops it. To temporarily bypass the gateway without deleting the secrets, set
-`OPENAI_DIRECT=1`.
-
-### 4. Point the device at your worker
+### 3. Point the device at your worker
 
 In [`../device/src/main.cpp`](../device/src/main.cpp), set `SERVER_HOST` to your
 worker's host (replace the `YOUR-CF-ACCOUNT` placeholder), then flash:
@@ -90,7 +79,7 @@ cd ../device && pio run -t upload -t monitor
 
 The device prints its id and the full viewer URL to serial on connect.
 
-### 5. Watch
+### 4. Watch
 
 Open `https://<your-worker-host>/devices/<deviceId>/` in a browser, hold the
 device's front button, and speak. The FFT strip moves along the bottom and the
