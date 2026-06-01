@@ -29,6 +29,14 @@ function upsample16to24(pcm: Int16Array): Int16Array {
   return out
 }
 
+// The realtime SESSION model (conversational). A constant so swapping
+// gpt-realtime-2 / gpt-realtime is one line. The transcription sub-model is set
+// separately in session.audio.input.transcription.model.
+const REALTIME_MODEL = "gpt-realtime-2"
+
+// System prompt: the model controls the viewer's background via apply_css.
+const CSS_INSTRUCTIONS = `You control the background of a web page by calling the apply_css function. The page has a full-viewport element with id "bg" behind the content. When the user asks for a visual change, call apply_css with a COMPLETE CSS stylesheet — it replaces the previous one entirely, so always include everything needed for the current look. You may style #bg and body, define @keyframes for animation, use gradients, and embed repeating patterns via SVG data URIs (background-image: url("data:image/svg+xml,...")). For incremental requests ("faster", "different colour", "invert them"), re-emit the full CSS with that change applied. Prefer acting through the tool over talking; keep any text brief.`
+
 export class VoiceAgent extends DeviceAgent<Env> {
   private openai?: WebSocket
   private openaiReady = false
@@ -72,9 +80,9 @@ export class VoiceAgent extends DeviceAgent<Env> {
   // set, route through Cloudflare AI Gateway's realtime WebSocket; otherwise
   // connect to OpenAI directly. GA API → no `OpenAI-Beta` header.
   private buildOpenAIRequest(key: string): { url: string; headers: Record<string, string>; via: string } {
-    // Transcription-only session: ?intent=transcription (no session model). The
-    // transcription model goes in session.audio.input.transcription.model below.
-    const query = "?intent=transcription"
+    // Conversational session (gpt-realtime-2). The transcription sub-model is
+    // set in session.audio.input.transcription.model below.
+    const query = "?model=" + REALTIME_MODEL
     const headers: Record<string, string> = {
       Authorization: `Bearer ${key}`,
       Upgrade: "websocket",
@@ -141,11 +149,31 @@ export class VoiceAgent extends DeviceAgent<Env> {
       ws.send(JSON.stringify({
         type: "session.update",
         session: {
-          type: "transcription",
+          instructions: CSS_INSTRUCTIONS,
+          output_modalities: ["text"], // silent — we don't forward response audio
+          tools: [
+            {
+              type: "function",
+              name: "apply_css",
+              description: "Replace the web page's background stylesheet with the given CSS.",
+              parameters: {
+                type: "object",
+                properties: {
+                  css: {
+                    type: "string",
+                    description: "A complete CSS stylesheet. Replaces the previous one entirely.",
+                  },
+                },
+                required: ["css"],
+              },
+            },
+          ],
+          tool_choice: "auto",
           audio: {
             input: {
               format: { type: "audio/pcm", rate: 24000 },
-              transcription: { model: "gpt-realtime-whisper", language: "en" },
+              transcription: { model: "gpt-realtime-whisper" },
+              turn_detection: null,
             },
           },
         },
@@ -175,14 +203,16 @@ export class VoiceAgent extends DeviceAgent<Env> {
       audio: b64,
     }))
 
-    // gpt-realtime-whisper has no server VAD, so commit the buffer after a
-    // short silence (≈ the button release) to transcribe the turn.
+    // No server VAD (turn_detection: null), so on ~0.7s of silence (the button
+    // release) commit the turn and ask the model to respond. The commit drives
+    // input transcription; the response lets the model call apply_css.
     if (this.commitTimer) clearTimeout(this.commitTimer)
     this.commitTimer = setTimeout(() => {
       this.commitTimer = undefined
       if (this.openai && this.openaiReady) {
         this.openai.send(JSON.stringify({ type: "input_audio_buffer.commit" }))
-        console.log("[voice] committed audio buffer after silence")
+        this.openai.send(JSON.stringify({ type: "response.create" }))
+        console.log("[voice] committed turn + requested response")
       }
     }, 700)
   }
@@ -197,8 +227,32 @@ export class VoiceAgent extends DeviceAgent<Env> {
       this.toMonitors({ type: "transcript.delta", text: msg.delta ?? "", itemId: msg.item_id })
     } else if (msg.type === "conversation.item.input_audio_transcription.completed") {
       this.toMonitors({ type: "transcript.completed", text: msg.transcript ?? "", itemId: msg.item_id })
+    } else if (msg.type === "response.function_call_arguments.done") {
+      this.handleFunctionCall(msg.name, msg.call_id, msg.arguments)
     } else if (msg.type === "error") {
       console.error("[voice] OpenAI error:", JSON.stringify(msg.error ?? msg))
+    }
+  }
+
+  private handleFunctionCall(name: string, callId: string, argsJson: string): void {
+    if (name === "apply_css") {
+      let css = ""
+      try {
+        css = JSON.parse(argsJson).css ?? ""
+      } catch {
+        console.error("[voice] apply_css: bad arguments JSON")
+        return
+      }
+      console.log("[voice] apply_css:", css.length, "chars")
+      this.toMonitors({ type: "css", css })
+    }
+    // Return the tool result so the model can continue / chain another call.
+    if (this.openai && this.openaiReady) {
+      this.openai.send(JSON.stringify({
+        type: "conversation.item.create",
+        item: { type: "function_call_output", call_id: callId, output: '{"ok":true}' },
+      }))
+      this.openai.send(JSON.stringify({ type: "response.create" }))
     }
   }
 
