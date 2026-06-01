@@ -4,17 +4,18 @@ A push-to-talk audio example for the M5StickC Plus2 / M5StickS3, built on the
 [Resident](https://github.com/inanimate-tech/resident) sandbox and its drivers.
 **Hold the front button to stream the microphone over a WebSocket.**
 
-> **Milestone 1.** This proves the audio-streaming path only. The device streams
-> 16 kHz PCM to the Courier `binary-websocket` example's backend so you can
-> watch a live FFT in the browser. A resident-native audio backend is the next
-> step. There is no Lua-app surface yet, so this example ships no
+> **Milestone 1.** This proves the audio-streaming path with live transcription.
+> The device streams 16 kHz PCM to the m5stick-voice server (a Cloudflare Worker)
+> which forwards audio to OpenAI Realtime and streams the transcript back to a
+> browser viewer. There is no Lua-app surface yet, so this example ships no
 > `DEVICE-SKILL.md`.
 
 ## Structure
 
 ```
 m5stick-voice/
-└── device/          # PlatformIO firmware for M5StickC Plus2 / M5StickS3
+├── device/          # PlatformIO firmware for M5StickC Plus2 / M5StickS3
+└── server/          # Cloudflare Worker: OpenAI transcription + live viewer
 ```
 
 The drivers (display, IMU, buzzer, buttons) are shared with
@@ -37,12 +38,14 @@ it your 2.4 GHz Wi-Fi credentials via the captive portal.
 
 ## Try it
 
-1. Open the backend viewer in a browser:
-   <https://binary-websocket.genmon.workers.dev/>
-2. On the device, **hold the front button**. The screen shows `Listening`.
-3. Speak. The FFT bars in the browser respond to your voice.
-4. Release the button. The screen returns to `Hold button to talk` and streaming
-   stops.
+1. Deploy the [`server/`](./server/) worker and set your `OPENAI_API_KEY`
+   (see its README), then set `SERVER_HOST` in `device/src/main.cpp` to your
+   worker host and flash.
+2. The device prints its id and viewer URL to serial on connect.
+3. Open `https://<your-worker-host>/devices/<deviceId>/`, **hold the front
+   button**, and speak.
+4. The FFT strip moves along the bottom and your words appear as a live
+   transcript above. Release to stop.
 
 A quick tap (under ~200ms) is ignored — only a deliberate hold starts streaming.
 
@@ -67,9 +70,8 @@ handy for confirming a clean stream on new hardware or a new backend:
 ## How it works
 
 The firmware uses `Resident::Sandbox` for driver wiring and the WebSocket
-transport, but for this milestone the single `ws()` is repointed at the Courier
-backend (`binary-websocket.genmon.workers.dev/ws`) instead of the Resident relay,
-so there is no hot-reload here. The button driver's `setLongPress` callback
-provides push-to-talk: it fires once the hold passes a 200ms threshold and again
-on release. While held, `loop()` records 512-sample frames and sends each as a
-binary WS frame.
+transport. The device connects to the Resident relay at `/devices/<id>` and
+streams audio as binary frames on that same socket. The button driver's
+`setLongPress` callback provides push-to-talk: it fires once the hold passes a
+200ms threshold and again on release. While held, `loop()` records 512-sample
+frames and sends each as a binary WS frame.
