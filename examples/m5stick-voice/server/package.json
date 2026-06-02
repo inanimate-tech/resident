@@ -18,7 +18,7 @@
     "@tanstack/react-router": "^1.140.0",
     "@tanstack/react-start": "^1.140.0",
     "agents": "^0.10.1",
-    "fengari": "^0.1.5",
+    "fengari-web": "^0.1.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "zod": "^4.3.6"
@@ -26,6 +26,7 @@
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.30.0",
     "@cloudflare/workers-types": "^4.20260411.1",
+    "@types/node": "^25.9.1",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.0",

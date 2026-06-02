@@ -40,7 +40,7 @@ export async function ensureFengari(): Promise<FengariBindings> {
   if (_fengari) return _fengari
   if (_loading) return _loading
   _loading = (async () => {
-    const mod = await import("fengari")
+    const mod = await import("fengari-web")
     // CJS-via-ESM: bindings may live on the namespace or under `.default`.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const src: any = (mod as any).default ?? mod
