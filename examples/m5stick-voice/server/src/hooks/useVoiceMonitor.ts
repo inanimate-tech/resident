@@ -19,6 +19,7 @@ export interface VoiceMonitor {
   agentStatus: AgentStatus
   agentMessage?: string
   currentApp?: CurrentApp
+  css: string
   setFrameHandler: (cb: ((buf: ArrayBuffer) => void) | null) => void
 }
 
@@ -34,6 +35,7 @@ export function useVoiceMonitor(deviceId: string): VoiceMonitor {
   const [agentStatus, setAgentStatus] = useState<AgentStatus>("idle")
   const [agentMessage, setAgentMessage] = useState<string | undefined>(undefined)
   const [currentApp, setCurrentApp] = useState<CurrentApp | undefined>(undefined)
+  const [css, setCss] = useState("")
   const frameHandlerRef = useRef<((buf: ArrayBuffer) => void) | null>(null)
 
   const setFrameHandler: VoiceMonitor["setFrameHandler"] = (cb) => {
@@ -81,6 +83,9 @@ export function useVoiceMonitor(deviceId: string): VoiceMonitor {
             setCurrentApp({ code: m.code, version: m.version })
           }
           break
+        case "css":
+          if (typeof m.css === "string") setCss(m.css)
+          break
         case "snapshot":
           if (isAgentStatus(m.agent_status)) setAgentStatus(m.agent_status)
           if (typeof m.message === "string") setAgentMessage(m.message)
@@ -90,6 +95,7 @@ export function useVoiceMonitor(deviceId: string): VoiceMonitor {
               setCurrentApp({ code: a.code, version: a.version })
             }
           }
+          if (typeof m.css === "string") setCss(m.css)
           break
       }
     },
@@ -97,7 +103,7 @@ export function useVoiceMonitor(deviceId: string): VoiceMonitor {
 
   useEffect(() => { void agent }, [agent])
 
-  return { status, transcript, agentStatus, agentMessage, currentApp, setFrameHandler }
+  return { status, transcript, agentStatus, agentMessage, currentApp, css, setFrameHandler }
 }
 
 function isAgentStatus(s: unknown): s is AgentStatus {

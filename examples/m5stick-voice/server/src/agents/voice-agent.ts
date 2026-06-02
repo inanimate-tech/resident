@@ -35,7 +35,13 @@ function upsample16to24(pcm: Int16Array): Int16Array {
 const REALTIME_MODEL = "gpt-realtime-2"
 const CODEGEN_MODEL = "gpt-5"
 
-const SYSTEM_PROMPT = `You control a simulated M5StickC Plus2 device. When the user describes an app or visual ("show", "draw", "make a clock"), call create_app with a short concrete description. The coding agent will write Lua and push it to the device asynchronously — keep any spoken reply brief; the user can see status in the web UI.`
+const SYSTEM_PROMPT = `You can do two things via tool calls. Pick the right one based on the user's request:
+
+1. **apply_css** — repaint the WEB PAGE BACKGROUND. Use when the user asks about the page, the website, "the background", or asks for a colour/pattern/animation that fills the screen behind the content. The page has a full-viewport #bg element. Provide a COMPLETE stylesheet; it replaces the previous one. Style #bg and body, define @keyframes, use gradients, embed SVG data URIs.
+
+2. **create_app** — generate and run a Lua app on the SIMULATED M5StickC DEVICE shown on the page (a small 240×135 screen with two buttons). Use when the user asks for something to happen "on the device", "on the m5stick", "on the screen", asks for a clock, a counter, a game, a bouncing ball, anything interactive. Returns asynchronously — the coding agent writes Lua and pushes it; the user sees status in the UI.
+
+For ambiguous requests like "show stripes", default to apply_css (the page) unless the user mentioned the device. Prefer acting through a tool over talking; keep spoken replies brief.`
 
 const CODEGEN_SYSTEM = `${SANDBOX_MD}\n\n---\n\n${DEVICE_SKILL_MD}\n\n---\n\nWrite a complete Lua app for the M5StickC Plus2 matching the user's description. Use only the documented APIs. Return ONLY Lua source — no commentary, no markdown fences.`
 
@@ -62,11 +68,13 @@ export class VoiceAgent extends DeviceAgent<Env> {
   private currentApp?: CurrentApp
   private appVersion = 0
   private codingAbort?: AbortController
+  // M1 background state (apply_css).
+  private currentCss = ""
 
   onConnect(connection: Connection, ctx: ConnectionContext): void {
     super.onConnect(connection, ctx)
     // Send a snapshot to monitor connections so a refreshed tab restores
-    // the current status + running app.
+    // the current status, running app, and painted background.
     const url = new URL(ctx.request.url)
     if (url.searchParams.get("monitor") === "1") {
       connection.send(JSON.stringify({
@@ -74,6 +82,7 @@ export class VoiceAgent extends DeviceAgent<Env> {
         agent_status: this.agentStatus,
         message: this.agentMessage,
         app: this.currentApp,
+        css: this.currentCss,
       }))
     }
   }
@@ -157,9 +166,25 @@ export class VoiceAgent extends DeviceAgent<Env> {
           tools: [
             {
               type: "function",
+              name: "apply_css",
+              description:
+                "Repaint the WEB PAGE BACKGROUND. Pass a complete CSS stylesheet that replaces the previous one (style #bg and body, define @keyframes, gradients, SVG data URIs).",
+              parameters: {
+                type: "object",
+                properties: {
+                  css: {
+                    type: "string",
+                    description: "A complete CSS stylesheet. Replaces the previous one entirely.",
+                  },
+                },
+                required: ["css"],
+              },
+            },
+            {
+              type: "function",
               name: "create_app",
               description:
-                "Generate and run a new Lua app on the simulated M5StickC. Returns immediately with a job_id; the coding agent reports completion asynchronously.",
+                "Generate and run a Lua app on the SIMULATED M5StickC DEVICE (240×135, two buttons). Returns immediately with a job_id; the coding agent reports completion asynchronously.",
               parameters: {
                 type: "object",
                 properties: {
@@ -240,9 +265,13 @@ export class VoiceAgent extends DeviceAgent<Env> {
     }
   }
 
-  // ---- create_app: async tool handler ----
+  // ---- Tool dispatch ----
 
   private handleFunctionCall(name: string, callId: string, argsJson: string): void {
+    if (name === "apply_css") {
+      this.handleApplyCss(callId, argsJson)
+      return
+    }
     if (name !== "create_app") {
       console.warn("[voice] unknown tool call:", name)
       this.sendToolResult(callId, { ok: false, error: `unknown tool: ${name}` })
@@ -275,6 +304,24 @@ export class VoiceAgent extends DeviceAgent<Env> {
 
     // Fire-and-forget.
     this.ctx.waitUntil(this.runCodingJob(jobId, parsed.description, this.codingAbort.signal))
+  }
+
+  private handleApplyCss(callId: string, argsJson: string): void {
+    let css = ""
+    try {
+      const parsed = JSON.parse(argsJson) as { css?: unknown }
+      css = typeof parsed.css === "string" ? parsed.css : ""
+    } catch {
+      this.sendToolResult(callId, { ok: false, error: "bad arguments JSON" })
+      return
+    }
+    console.log("[voice] apply_css:", css.length, "chars")
+    this.currentCss = css
+    this.toMonitors({ type: "css", css })
+    this.sendToolResult(callId, { ok: true })
+    if (this.openai && this.openaiReady) {
+      this.openai.send(JSON.stringify({ type: "response.create" }))
+    }
   }
 
   private sendToolResult(callId: string, payload: unknown): void {
