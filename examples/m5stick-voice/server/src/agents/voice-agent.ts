@@ -1,5 +1,9 @@
 import { DeviceAgent } from "@inanimate/resident/cloudflare"
-import type { Connection, WSMessage } from "agents"
+import type { Connection, ConnectionContext, WSMessage } from "agents"
+import { z } from "zod"
+import { validateLuaCode } from "../lib/lua-validator"
+import SANDBOX_MD from "../prompts/sandbox.md?raw"
+import DEVICE_SKILL_MD from "../prompts/m5stick-device-skill.md?raw"
 
 /** base64 without Buffer/node types — frames are ~1KB so one pass is fine. */
 function bytesToBase64(bytes: Uint8Array): string {
@@ -28,13 +32,21 @@ function upsample16to24(pcm: Int16Array): Int16Array {
   return out
 }
 
-// The realtime SESSION model (conversational). A constant so swapping
-// gpt-realtime-2 / gpt-realtime is one line. The transcription sub-model is set
-// separately in session.audio.input.transcription.model.
 const REALTIME_MODEL = "gpt-realtime-2"
+const CODEGEN_MODEL = "gpt-5"
 
-// System prompt: the model controls the viewer's background via apply_css.
-const CSS_INSTRUCTIONS = `You control the background of a web page by calling the apply_css function. The page has a full-viewport element with id "bg" behind the content. When the user asks for a visual change, call apply_css with a COMPLETE CSS stylesheet — it replaces the previous one entirely, so always include everything needed for the current look. You may style #bg and body, define @keyframes for animation, use gradients, and embed repeating patterns via SVG data URIs (background-image: url("data:image/svg+xml,...")). For incremental requests ("faster", "different colour", "invert them"), re-emit the full CSS with that change applied. Prefer acting through the tool over talking; keep any text brief.`
+const SYSTEM_PROMPT = `You control a simulated M5StickC Plus2 device. When the user describes an app or visual ("show", "draw", "make a clock"), call create_app with a short concrete description. The coding agent will write Lua and push it to the device asynchronously — keep any spoken reply brief; the user can see status in the web UI.`
+
+const CODEGEN_SYSTEM = `${SANDBOX_MD}\n\n---\n\n${DEVICE_SKILL_MD}\n\n---\n\nWrite a complete Lua app for the M5StickC Plus2 matching the user's description. Use only the documented APIs. Return ONLY Lua source — no commentary, no markdown fences.`
+
+type AgentStatus = "idle" | "working" | "done" | "error"
+
+interface CurrentApp {
+  code: string
+  version: number
+}
+
+const CreateAppArgs = z.object({ description: z.string().min(1).max(500) })
 
 export class VoiceAgent extends DeviceAgent<Env> {
   private openai?: WebSocket
@@ -43,6 +55,28 @@ export class VoiceAgent extends DeviceAgent<Env> {
   private warnedNoKey = false
   private openaiNextAttempt = 0 // backoff so repeated connect failures don't flood logs
   private commitTimer?: ReturnType<typeof setTimeout>
+
+  // M2 codegen state.
+  private agentStatus: AgentStatus = "idle"
+  private agentMessage?: string
+  private currentApp?: CurrentApp
+  private appVersion = 0
+  private codingAbort?: AbortController
+
+  onConnect(connection: Connection, ctx: ConnectionContext): void {
+    super.onConnect(connection, ctx)
+    // Send a snapshot to monitor connections so a refreshed tab restores
+    // the current status + running app.
+    const url = new URL(ctx.request.url)
+    if (url.searchParams.get("monitor") === "1") {
+      connection.send(JSON.stringify({
+        type: "snapshot",
+        agent_status: this.agentStatus,
+        message: this.agentMessage,
+        app: this.currentApp,
+      }))
+    }
+  }
 
   async onMessage(connection: Connection, data: WSMessage): Promise<void> {
     if (data instanceof ArrayBuffer) {
@@ -72,8 +106,6 @@ export class VoiceAgent extends DeviceAgent<Env> {
     if (this.openai && this.openaiReady) return
     if (this.openaiConnecting) return this.openaiConnecting
 
-    // Debug backoff: if a connect just failed, don't re-attempt (and re-log)
-    // on every one of the ~32 audio frames/second.
     const now = Date.now()
     if (now < this.openaiNextAttempt) throw new Error("openai backoff")
     this.openaiNextAttempt = now + 2000
@@ -88,9 +120,6 @@ export class VoiceAgent extends DeviceAgent<Env> {
         throw new Error("missing OPENAI_API_KEY")
       }
 
-      // Conversational session (gpt-realtime-2). The transcription sub-model is
-      // set in session.audio.input.transcription.model below. GA API → no
-      // `OpenAI-Beta` header.
       const url = "https://api.openai.com/v1/realtime?model=" + REALTIME_MODEL
       console.log("[voice] opening OpenAI session:", url)
       const resp = await fetch(url, {
@@ -118,28 +147,29 @@ export class VoiceAgent extends DeviceAgent<Env> {
         this.openai = undefined; this.openaiReady = false
       })
 
-      // A Worker's outbound WS is usable immediately after accept() (no
-      // browser-style "open" event), so configure the transcription session now.
+      // A Worker's outbound WS is usable immediately after accept().
       ws.send(JSON.stringify({
         type: "session.update",
         session: {
           type: "realtime",
-          instructions: CSS_INSTRUCTIONS,
+          instructions: SYSTEM_PROMPT,
           output_modalities: ["text"], // silent — we don't forward response audio
           tools: [
             {
               type: "function",
-              name: "apply_css",
-              description: "Replace the web page's background stylesheet with the given CSS.",
+              name: "create_app",
+              description:
+                "Generate and run a new Lua app on the simulated M5StickC. Returns immediately with a job_id; the coding agent reports completion asynchronously.",
               parameters: {
                 type: "object",
                 properties: {
-                  css: {
+                  description: {
                     type: "string",
-                    description: "A complete CSS stylesheet. Replaces the previous one entirely.",
+                    description:
+                      "A short, concrete description of the app or visual to build (1–500 chars).",
                   },
                 },
-                required: ["css"],
+                required: ["description"],
               },
             },
           ],
@@ -169,7 +199,7 @@ export class VoiceAgent extends DeviceAgent<Env> {
     try {
       await this.ensureOpenAI()
     } catch {
-      return // no key / upgrade failed — audio still reached monitors
+      return
     }
     const pcm24 = upsample16to24(new Int16Array(buf))
     const b64 = bytesToBase64(new Uint8Array(pcm24.buffer, pcm24.byteOffset, pcm24.byteLength))
@@ -178,9 +208,6 @@ export class VoiceAgent extends DeviceAgent<Env> {
       audio: b64,
     }))
 
-    // No server VAD (turn_detection: null), so on ~0.7s of silence (the button
-    // release) commit the turn and ask the model to respond. The commit drives
-    // input transcription; the response lets the model call apply_css.
     if (this.commitTimer) clearTimeout(this.commitTimer)
     this.commitTimer = setTimeout(() => {
       this.commitTimer = undefined
@@ -194,7 +221,7 @@ export class VoiceAgent extends DeviceAgent<Env> {
 
   private onOpenAIEvent(e: MessageEvent): void {
     if (typeof e.data !== "string") return
-    let msg: any
+    let msg: { type?: string; [k: string]: unknown }
     try { msg = JSON.parse(e.data) } catch { return }
     if (!msg || typeof msg.type !== "string") return
 
@@ -203,32 +230,158 @@ export class VoiceAgent extends DeviceAgent<Env> {
     } else if (msg.type === "conversation.item.input_audio_transcription.completed") {
       this.toMonitors({ type: "transcript.completed", text: msg.transcript ?? "", itemId: msg.item_id })
     } else if (msg.type === "response.function_call_arguments.done") {
-      this.handleFunctionCall(msg.name, msg.call_id, msg.arguments)
+      this.handleFunctionCall(
+        msg.name as string,
+        msg.call_id as string,
+        msg.arguments as string,
+      )
     } else if (msg.type === "error") {
       console.error("[voice] OpenAI error:", JSON.stringify(msg.error ?? msg))
     }
   }
 
+  // ---- create_app: async tool handler ----
+
   private handleFunctionCall(name: string, callId: string, argsJson: string): void {
-    if (name === "apply_css") {
-      let css = ""
-      try {
-        css = JSON.parse(argsJson).css ?? ""
-      } catch {
-        console.error("[voice] apply_css: bad arguments JSON")
-        return
-      }
-      console.log("[voice] apply_css:", css.length, "chars")
-      this.toMonitors({ type: "css", css })
+    if (name !== "create_app") {
+      console.warn("[voice] unknown tool call:", name)
+      this.sendToolResult(callId, { ok: false, error: `unknown tool: ${name}` })
+      return
     }
-    // Return the tool result so the model can continue / chain another call.
+
+    let parsed: { description: string }
+    try {
+      parsed = CreateAppArgs.parse(JSON.parse(argsJson))
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.sendToolResult(callId, { status: "error", reason: msg })
+      return
+    }
+
+    const jobId = crypto.randomUUID()
+
+    // Cancel any in-flight job.
+    this.codingAbort?.abort()
+    this.codingAbort = new AbortController()
+
+    // Tell the model we've started.
+    this.sendToolResult(callId, { status: "started", job_id: jobId })
     if (this.openai && this.openaiReady) {
-      this.openai.send(JSON.stringify({
-        type: "conversation.item.create",
-        item: { type: "function_call_output", call_id: callId, output: '{"ok":true}' },
-      }))
       this.openai.send(JSON.stringify({ type: "response.create" }))
     }
+
+    // Tell the viewer.
+    this.setAgentStatus("working", undefined)
+
+    // Fire-and-forget.
+    this.ctx.waitUntil(this.runCodingJob(jobId, parsed.description, this.codingAbort.signal))
+  }
+
+  private sendToolResult(callId: string, payload: unknown): void {
+    if (!this.openai || !this.openaiReady) return
+    this.openai.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: { type: "function_call_output", call_id: callId, output: JSON.stringify(payload) },
+    }))
+  }
+
+  private async runCodingJob(
+    jobId: string,
+    description: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      let code = await this.callCodegenChat(description, [], signal)
+      let validation = validateLuaCode(code)
+
+      if (!validation.ok) {
+        console.warn("[voice] codegen v1 validation failed:", validation.error)
+        code = await this.callCodegenChat(description, [
+          { role: "assistant", content: code },
+          {
+            role: "user",
+            content: `That code failed validation with: ${validation.error}. Fix it. Return only Lua, no commentary.`,
+          },
+        ], signal)
+        validation = validateLuaCode(code)
+      }
+
+      if (signal.aborted) return
+
+      if (!validation.ok) {
+        this.finishJob(jobId, "error", validation.error ?? "validation failed")
+        return
+      }
+
+      this.appVersion += 1
+      this.currentApp = { code, version: this.appVersion }
+      this.toMonitors({ type: "app", code, version: this.appVersion })
+      this.finishJob(jobId, "done", undefined)
+    } catch (err) {
+      if (signal.aborted) return
+      const msg = err instanceof Error ? err.message : String(err)
+      this.finishJob(jobId, "error", msg)
+    }
+  }
+
+  private async callCodegenChat(
+    description: string,
+    followups: { role: "assistant" | "user"; content: string }[],
+    signal: AbortSignal,
+  ): Promise<string> {
+    const key = this.env.OPENAI_API_KEY
+    if (!key) throw new Error("OPENAI_API_KEY not set")
+
+    const messages = [
+      { role: "system", content: CODEGEN_SYSTEM },
+      { role: "user", content: description },
+      ...followups,
+    ]
+
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: CODEGEN_MODEL, messages }),
+      signal,
+    })
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "")
+      throw new Error(`OpenAI ${resp.status}: ${body.slice(0, 400)}`)
+    }
+    const data = await resp.json() as {
+      choices?: Array<{ message?: { content?: string } }>
+    }
+    const content = data.choices?.[0]?.message?.content ?? ""
+    return content.replace(/^```(?:lua)?\s*/i, "").replace(/```\s*$/i, "").trim()
+  }
+
+  private finishJob(jobId: string, state: "done" | "error", message: string | undefined): void {
+    this.setAgentStatus(state, message)
+    if (this.openai && this.openaiReady) {
+      const content = state === "done"
+        ? `[create_app jobId=${jobId}] completed successfully`
+        : `[create_app jobId=${jobId}] failed: ${message ?? "unknown error"}`
+      // Inject a user-role message so the realtime model sees the outcome on
+      // the next turn. (Realtime's conversation.item.create historically only
+      // accepts user/assistant on `message` items; we mark with a [system] tag.)
+      this.openai.send(JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: `[system] ${content}` }],
+        },
+      }))
+    }
+  }
+
+  private setAgentStatus(state: AgentStatus, message: string | undefined): void {
+    this.agentStatus = state
+    this.agentMessage = message
+    this.toMonitors({ type: "agent_status", state, message })
   }
 
   private toMonitors(obj: unknown): void {
