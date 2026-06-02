@@ -29,14 +29,15 @@ function fengariShims(): Plugin {
   return {
     name: "fengari-shims",
     enforce: "pre",
-    resolveId(source, importer) {
-      // fengari-web on SSR: replace with an inert stub. The validator + sim
-      // both only run in environments where fengari-web evaluates fine (the
-      // browser; node for vitest). On workerd-SSR fengari's `new Function`
-      // use trips the strings-to-code guard, so we never want it loaded.
+    resolveId(source, importer, options) {
+      // fengari-web on SSR only: stub it. The Lua simulator runs in the
+      // browser; the validator runs in node (vitest) or in the worker
+      // runtime where the validator already gracefully degrades. On
+      // workerd-SSR fengari's `new Function` use trips the strings-to-code
+      // guard, so we never want it loaded there.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const env = (this as any).environment?.name
-      if (source === "fengari-web" && env === "ssr") {
+      const ssr = options?.ssr === true || (this as any).environment?.name === "ssr"
+      if (source === "fengari-web" && ssr) {
         return fengariSsrShim
       }
 
