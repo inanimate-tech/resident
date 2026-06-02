@@ -12,9 +12,7 @@ export function SimM5Stick({ code, version }: Props) {
 
   return (
     <div style={{
-      padding: 12, background: "#000",
-      borderTop: "1px solid rgba(255,255,255,.08)",
-      borderBottom: "1px solid rgba(255,255,255,.08)",
+      padding: 12,
       display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
     }}>
       <div style={{ position: "relative" }}>

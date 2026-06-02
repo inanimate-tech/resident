@@ -32,7 +32,6 @@ export function Transcript({ items }: Props) {
       onScroll={onScroll}
       style={{
         flex: 1, overflowY: "auto", padding: 16,
-        background: "rgba(11,11,16,.4)",
       }}
     >
       {items.map((it) => (

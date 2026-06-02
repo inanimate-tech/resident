@@ -12,8 +12,7 @@ export function Header({ deviceId, status, agentStatus, agentMessage }: Props) {
   return (
     <header style={{
       padding: "10px 16px",
-      background: "rgba(11,11,16,.55)",
-      borderBottom: "1px solid rgba(255,255,255,.08)",
+      textShadow: "0 1px 3px rgba(0,0,0,.6)",
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1 style={{ fontSize: 14, margin: 0, opacity: 0.7, fontWeight: 600 }}>

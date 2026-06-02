@@ -135,8 +135,6 @@ export function FFT({ setFrameHandler }: Props) {
   return (
     <div style={{
       height: 120,
-      background: "rgba(11,11,16,.45)",
-      borderTop: "1px solid rgba(255,255,255,.08)",
     }}>
       <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
     </div>
