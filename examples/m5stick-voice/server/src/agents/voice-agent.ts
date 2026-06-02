@@ -1,6 +1,5 @@
-import { DeviceAgent, routeDeviceRequest } from "@inanimate/resident/cloudflare"
+import { DeviceAgent } from "@inanimate/resident/cloudflare"
 import type { Connection, WSMessage } from "agents"
-import { viewerHtml } from "./viewer"
 
 /** base64 without Buffer/node types — frames are ~1KB so one pass is fine. */
 function bytesToBase64(bytes: Uint8Array): string {
@@ -64,13 +63,6 @@ export class VoiceAgent extends DeviceAgent<Env> {
   }
 
   async onRequest(request: Request): Promise<Response> {
-    const url = new URL(request.url)
-    const subpath = url.pathname.replace(/^\/devices\/[^/]+/, "")
-    if ((subpath === "" || subpath === "/") && request.method === "GET") {
-      return new Response(viewerHtml(this.name), {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      })
-    }
     return super.onRequest(request)
   }
 
@@ -251,11 +243,3 @@ export class VoiceAgent extends DeviceAgent<Env> {
     this.openaiReady = false
   }
 }
-
-export default {
-  async fetch(request: Request, env: Env) {
-    const res = await routeDeviceRequest(request, env.VoiceAgent)
-    if (res) return res
-    return new Response("Not found", { status: 404 })
-  },
-} satisfies ExportedHandler<Env>
