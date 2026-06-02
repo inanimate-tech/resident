@@ -168,8 +168,14 @@ function pushValue(L: unknown, value: unknown): void {
   if (value === null || value === undefined) {
     lua.lua_pushnil(L)
   } else if (typeof value === "number") {
-    if (Number.isInteger(value)) lua.lua_pushinteger(L, value)
-    else lua.lua_pushnumber(L, value)
+    // fengari's lua_pushinteger throws "invalid argument" if the value
+    // exceeds 32-bit signed range (e.g. Date.now()). Use lua_pushnumber
+    // for anything outside that window — Lua numbers are doubles either way.
+    if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) {
+      lua.lua_pushinteger(L, value)
+    } else {
+      lua.lua_pushnumber(L, value)
+    }
   } else if (typeof value === "string") {
     lua.lua_pushstring(L, to_luastring(value))
   } else if (typeof value === "boolean") {
