@@ -3,7 +3,6 @@ import { useVoiceMonitor } from "../hooks/useVoiceMonitor"
 import { Header } from "../components/Header"
 import { Transcript } from "../components/Transcript"
 import { FFT } from "../components/FFT"
-import { Background } from "../components/Background"
 import { MicSim } from "../components/MicSim"
 
 export const Route = createFileRoute("/devices/$deviceId")({
@@ -12,12 +11,17 @@ export const Route = createFileRoute("/devices/$deviceId")({
 
 function DeviceViewer() {
   const { deviceId } = Route.useParams()
-  const { status, transcript, css, setFrameHandler } = useVoiceMonitor(deviceId)
+  const { status, transcript, agentStatus, agentMessage, setFrameHandler } =
+    useVoiceMonitor(deviceId)
 
   return (
     <>
-      <Background css={css} />
-      <Header deviceId={deviceId} status={status} agentStatus="idle" />
+      <Header
+        deviceId={deviceId}
+        status={status}
+        agentStatus={agentStatus}
+        agentMessage={agentMessage}
+      />
       <Transcript items={transcript} />
       <FFT setFrameHandler={setFrameHandler} />
       <MicSim deviceId={deviceId} />
