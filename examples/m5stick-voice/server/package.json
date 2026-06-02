@@ -2,21 +2,36 @@
   "name": "m5stick-voice-server",
   "version": "0.0.0",
   "private": true,
-  "description": "Cloudflare Worker that transcribes m5stick-voice audio via the OpenAI Realtime API and serves a live transcript + FFT viewer.",
+  "description": "TanStack Start + Cloudflare Worker that transcribes m5stick-voice audio via the OpenAI Realtime API and serves a live React viewer.",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev": "vite",
+    "build": "vite build",
+    "deploy": "vite build && wrangler deploy",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
     "types": "wrangler types env.d.ts --include-runtime false",
-    "typecheck": "tsc --noEmit"
+    "test": "vitest run"
   },
   "dependencies": {
     "@inanimate/resident": "^0.1.0",
-    "agents": "^0.10.1"
+    "@tanstack/react-router": "^1.140.0",
+    "@tanstack/react-start": "^1.140.0",
+    "agents": "^0.10.1",
+    "fengari": "^0.1.5",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.30.0",
     "@cloudflare/workers-types": "^4.20260411.1",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
     "typescript": "^6.0.2",
+    "vite": "^6.3.0",
+    "vitest": "^3.2.0",
     "wrangler": "^4.81.1"
   }
 }
