@@ -5,7 +5,7 @@
  * component / hook) calls init/tick/event in its render loop and uses
  * getScreenBuffer() to repaint a canvas.
  */
-import { createLuaVM, lua, type StubProvider } from "./lua-vm"
+import { createLuaVM, ensureFengari, lua, type StubProvider } from "./lua-vm"
 
 export const SCREEN_W = 240
 export const SCREEN_H = 135
@@ -44,7 +44,8 @@ export interface StickRuntime {
  * be driven from a rAF loop; init/tick/event return null on success or an
  * error string on failure (mirrors the validator's contract).
  */
-export function compileLua(code: string): StickRuntime {
+export async function compileLua(code: string): Promise<StickRuntime> {
+  await ensureFengari()
   // The framebuffer is the runtime's primary state — closed over by the
   // screen.* stubs below. RGB packed; alpha is implied 255.
   const screen = new Uint8Array(SCREEN_W * SCREEN_H * 3)

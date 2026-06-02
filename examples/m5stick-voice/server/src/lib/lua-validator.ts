@@ -4,7 +4,7 @@
  * five `on_tick(ctx, dt_ms)` iterations to surface runtime errors before the
  * code is broadcast to the sim.
  */
-import { createLuaVM, lua, type StubProvider } from "./lua-vm"
+import { createLuaVM, ensureFengari, lua, type StubProvider } from "./lua-vm"
 
 export interface ValidationResult {
   ok: boolean
@@ -57,7 +57,8 @@ const m5stickStubProvider: StubProvider = (moduleName, functionName) => {
   }
 }
 
-export function validateLuaCode(code: string): ValidationResult {
+export async function validateLuaCode(code: string): Promise<ValidationResult> {
+  await ensureFengari()
   const vm = createLuaVM(m5stickStubProvider)
   try {
     const loadError = vm.loadCode(code)

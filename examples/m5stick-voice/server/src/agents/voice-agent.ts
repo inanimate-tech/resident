@@ -339,7 +339,7 @@ export class VoiceAgent extends DeviceAgent<Env> {
   ): Promise<void> {
     try {
       let code = await this.callCodegenChat(description, [], signal)
-      let validation = validateLuaCode(code)
+      let validation = await validateLuaCode(code)
 
       if (!validation.ok) {
         console.warn("[voice] codegen v1 validation failed:", validation.error)
@@ -350,7 +350,7 @@ export class VoiceAgent extends DeviceAgent<Env> {
             content: `That code failed validation with: ${validation.error}. Fix it. Return only Lua, no commentary.`,
           },
         ], signal)
-        validation = validateLuaCode(code)
+        validation = await validateLuaCode(code)
       }
 
       if (signal.aborted) return

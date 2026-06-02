@@ -82,23 +82,6 @@ export function useStickDevice({ code }: Options): Result {
     let raf = 0
     let lastTick = 0
     let runtime: StickRuntime | null = null
-    try {
-      runtime = compileLua(code)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      return
-    }
-    runtimeRef.current = runtime
-    startTimeRef.current = Date.now()
-
-    // init
-    const initErr = runtime.callInit(makeCtx())
-    if (initErr) {
-      setError(initErr)
-    } else {
-      paint()
-    }
-
     const frameInterval = 1000 / FPS
     const tick = (now: number) => {
       if (cancelled) return
@@ -115,7 +98,25 @@ export function useStickDevice({ code }: Options): Result {
       }
       raf = requestAnimationFrame(tick)
     }
-    raf = requestAnimationFrame(tick)
+
+    ;(async () => {
+      try {
+        runtime = await compileLua(code)
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+        return
+      }
+      if (cancelled) { runtime.destroy(); return }
+      runtimeRef.current = runtime
+      startTimeRef.current = Date.now()
+      const initErr = runtime.callInit(makeCtx())
+      if (initErr) {
+        setError(initErr)
+        return
+      }
+      paint()
+      raf = requestAnimationFrame(tick)
+    })()
 
     return () => {
       cancelled = true

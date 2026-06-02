@@ -17,12 +17,12 @@ import {
   type DeviceApiModule,
 } from "./device-apis"
 
-// Lazy CJS load. A top-level `import fengari from "fengari"` triggers a
-// process.binding call (via unenv's polyfill) the moment this module is
-// evaluated — which happens during @cloudflare/vite-plugin's worker entry
-// analysis in dev mode, breaking `npm run dev`. Deferring the require into
-// the first createLuaVM call hides fengari from that static analysis pass
-// while keeping prod bundling unchanged (esbuild/rollup will still inline it).
+// Why dynamic import: a top-level `import fengari from "fengari"` evaluates at
+// module load, and fengari's CJS init hits process.binding via unenv's
+// polyfill. That fires during @cloudflare/vite-plugin's worker-entry analysis
+// (`npm run dev` boot fails) AND the Workers runtime itself has no `require`
+// (so a synchronous require() in a function trips at runtime). Dynamic import
+// avoids both: the analyser skips it, and Workers + vitest both honour it.
 interface FengariBindings {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   lua: any
@@ -32,30 +32,44 @@ interface FengariBindings {
   lualib: any
   to_luastring: (s: string) => unknown
 }
-declare const require: (id: string) => { lua: unknown; lauxlib: unknown; lualib: unknown; to_luastring: (s: string) => unknown }
 let _fengari: FengariBindings | null = null
-function getFengari(): FengariBindings {
+let _loading: Promise<FengariBindings> | null = null
+
+/** Load fengari once. Idempotent and concurrency-safe. */
+export async function ensureFengari(): Promise<FengariBindings> {
   if (_fengari) return _fengari
-  const mod = require("fengari")
-  _fengari = {
+  if (_loading) return _loading
+  _loading = (async () => {
+    const mod = await import("fengari")
+    // CJS-via-ESM: bindings may live on the namespace or under `.default`.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    lua: mod.lua as any,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    lauxlib: mod.lauxlib as any,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    lualib: mod.lualib as any,
-    to_luastring: mod.to_luastring,
+    const src: any = (mod as any).default ?? mod
+    _fengari = {
+      lua: src.lua,
+      lauxlib: src.lauxlib,
+      lualib: src.lualib,
+      to_luastring: src.to_luastring,
+    }
+    return _fengari
+  })()
+  return _loading
+}
+
+function fg(): FengariBindings {
+  if (!_fengari) {
+    throw new Error("fengari not loaded — call await ensureFengari() before createLuaVM()")
   }
   return _fengari
 }
 
 /**
  * `lua` is exported so callers (e.g. validator stubs) can call `lua.lua_pushnumber`
- * directly. Backed by a lazy proxy that resolves once Fengari has been loaded.
+ * inside Fengari C-API functions. Safe to use only after createLuaVM has run
+ * (which is guaranteed in any stub invoked from the VM).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const lua: any = new Proxy({}, {
-  get(_t, prop: string) { return getFengari().lua[prop] },
+  get(_t, prop: string) { return fg().lua[prop] },
 })
 
 /** Fengari C-API function: reads args from stack, pushes returns, returns count. */
@@ -85,7 +99,7 @@ export interface LuaVM {
 }
 
 export function createLuaVM(stubProvider: StubProvider): LuaVM {
-  const { lua, lauxlib, lualib, to_luastring } = getFengari()
+  const { lua, lauxlib, lualib, to_luastring } = fg()
   const L = lauxlib.luaL_newstate()
   lualib.luaL_openlibs(L)
 
@@ -131,7 +145,7 @@ export function createLuaVM(stubProvider: StubProvider): LuaVM {
 }
 
 function pushValue(L: unknown, value: unknown): void {
-  const { lua, to_luastring } = getFengari()
+  const { lua, to_luastring } = fg()
   if (value === null || value === undefined) {
     lua.lua_pushnil(L)
   } else if (typeof value === "number") {
@@ -153,7 +167,7 @@ function pushValue(L: unknown, value: unknown): void {
 }
 
 function readError(L: unknown): string {
-  const { lua } = getFengari()
+  const { lua } = fg()
   const msg = lua.lua_tojsstring(L, -1)
   lua.lua_pop(L, 1)
   return msg ?? "unknown error"
@@ -164,7 +178,7 @@ function registerModule(
   mod: DeviceApiModule,
   stubProvider: StubProvider,
 ): void {
-  const { lua, to_luastring } = getFengari()
+  const { lua, to_luastring } = fg()
   lua.lua_createtable(L, 0, mod.functions.length)
   for (const fn of mod.functions) {
     const impl = stubProvider(mod.name, fn, mod.config)
@@ -175,7 +189,7 @@ function registerModule(
 }
 
 function registerGlobalHelpers(L: unknown): void {
-  const { lua, to_luastring } = getFengari()
+  const { lua, to_luastring } = fg()
   for (const name of GLOBAL_HELPERS) {
     switch (name) {
       case "rgb":
