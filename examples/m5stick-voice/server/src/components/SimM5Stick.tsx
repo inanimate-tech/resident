@@ -36,15 +36,6 @@ export function SimM5Stick({ code, version }: Props) {
             whiteSpace: "pre-wrap", overflow: "auto",
           }}>{error}</div>
         )}
-        {!code && !error && (
-          <div style={{
-            position: "absolute", inset: 0, display: "flex",
-            alignItems: "center", justifyContent: "center",
-            color: "rgba(255,255,255,.3)", fontSize: 12,
-            fontFamily: "system-ui, sans-serif",
-            pointerEvents: "none",
-          }}>no app yet — ask for one</div>
-        )}
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={() => handleTrigger(0)} style={pillBtn}>Btn0</button>

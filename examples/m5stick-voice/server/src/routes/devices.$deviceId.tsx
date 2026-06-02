@@ -6,6 +6,7 @@ import { FFT } from "../components/FFT"
 import { Background } from "../components/Background"
 import { SimM5Stick } from "../components/SimM5Stick"
 import { MicSim } from "../components/MicSim"
+import { DEFAULT_APP } from "../lib/default-app"
 
 export const Route = createFileRoute("/devices/$deviceId")({
   component: DeviceViewer,
@@ -17,6 +18,9 @@ function DeviceViewer() {
     status, transcript, agentStatus, agentMessage, currentApp, css, setFrameHandler,
   } = useVoiceMonitor(deviceId)
 
+  const simCode = currentApp?.code ?? DEFAULT_APP
+  const simVersion = currentApp?.version ?? 0
+
   return (
     <>
       <Background css={css} />
@@ -26,7 +30,7 @@ function DeviceViewer() {
         agentStatus={agentStatus}
         agentMessage={agentMessage}
       />
-      <SimM5Stick code={currentApp?.code ?? null} version={currentApp?.version ?? 0} />
+      <SimM5Stick code={simCode} version={simVersion} />
       <Transcript items={transcript} />
       <FFT setFrameHandler={setFrameHandler} />
       <MicSim deviceId={deviceId} />
