@@ -18,7 +18,7 @@
 // Cloudflare workers.dev subdomain (or a custom domain). The device connects
 // to the Resident relay path /devices/<deviceId> and streams audio as binary
 // frames on that same socket.
-static constexpr const char* SERVER_HOST = "m5stick-voice.genmon.workers.dev";
+static constexpr const char* SERVER_HOST = "m5stick-voice.YOUR-CF-ACCOUNT.workers.dev";
 static constexpr uint16_t SERVER_PORT = 443;
 
 // Board-specific button pins. M5StickC Plus2 (ESP32 classic): GPIO 37 + 39.

@@ -10,6 +10,8 @@ A push-to-talk audio example for the M5StickC Plus2 / M5StickS3, built on the
 > browser viewer. There is no Lua-app surface yet, so this example ships no
 > `DEVICE-SKILL.md`.
 
+![Browser viewer showing live transcription and FFT strip while the device streams audio](./viewer.png)
+
 ## Structure
 
 ```
