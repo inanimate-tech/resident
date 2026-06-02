@@ -4,6 +4,7 @@ import { Header } from "../components/Header"
 import { Transcript } from "../components/Transcript"
 import { FFT } from "../components/FFT"
 import { Background } from "../components/Background"
+import { MicSim } from "../components/MicSim"
 
 export const Route = createFileRoute("/devices/$deviceId")({
   component: DeviceViewer,
@@ -19,6 +20,7 @@ function DeviceViewer() {
       <Header deviceId={deviceId} status={status} agentStatus="idle" />
       <Transcript items={transcript} />
       <FFT setFrameHandler={setFrameHandler} />
+      <MicSim deviceId={deviceId} />
     </>
   )
 }
