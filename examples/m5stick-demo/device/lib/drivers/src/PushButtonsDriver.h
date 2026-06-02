@@ -28,7 +28,7 @@ public:
 
   using LongPressFn = void(*)(bool started);
   void setLongPress(uint8_t buttonIndex, LongPressFn callback,
-                    unsigned long thresholdMs = 500);
+                    unsigned long thresholdMs = 200);
 
 private:
   static constexpr uint8_t MAX_BUTTONS = 4;

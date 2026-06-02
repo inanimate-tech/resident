@@ -1,0 +1,7 @@
+# Local dev secrets for `wrangler dev`. Copy this file to `.dev.vars` (which is
+# git-ignored) and fill in real values. For a DEPLOYED worker, set this with
+# `npx wrangler secret put OPENAI_API_KEY` instead — never commit real secrets.
+
+# Required. Your OpenAI API key. The account MUST have billing / credit enabled,
+# or the realtime session returns `insufficient_quota` and no transcript appears.
+OPENAI_API_KEY=sk-REPLACE_ME
