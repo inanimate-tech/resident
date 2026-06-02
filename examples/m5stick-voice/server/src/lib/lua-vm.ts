@@ -31,6 +31,7 @@ interface FengariBindings {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   lualib: any
   to_luastring: (s: string) => unknown
+  to_jsstring: (buf: unknown) => string | undefined
 }
 let _fengari: FengariBindings | null = null
 let _loading: Promise<FengariBindings> | null = null
@@ -41,7 +42,6 @@ export async function ensureFengari(): Promise<FengariBindings> {
   if (_loading) return _loading
   _loading = (async () => {
     const mod = await import("fengari-web")
-    // CJS-via-ESM: bindings may live on the namespace or under `.default`.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const src: any = (mod as any).default ?? mod
     _fengari = {
@@ -49,6 +49,7 @@ export async function ensureFengari(): Promise<FengariBindings> {
       lauxlib: src.lauxlib,
       lualib: src.lualib,
       to_luastring: src.to_luastring,
+      to_jsstring: src.to_jsstring,
     }
     return _fengari
   })()
@@ -167,10 +168,23 @@ function pushValue(L: unknown, value: unknown): void {
 }
 
 function readError(L: unknown): string {
-  const { lua } = fg()
-  const msg = lua.lua_tojsstring(L, -1)
+  const { lua, to_jsstring } = fg()
+  // First try the convenience accessor; on some fengari paths it returns
+  // undefined for non-string errors, so we fall back to the raw buffer
+  // and convert via to_jsstring.
+  let msg: string | undefined = lua.lua_tojsstring(L, -1)
+  if (!msg) {
+    const buf = lua.lua_tolstring(L, -1, null)
+    if (buf) {
+      try { msg = to_jsstring(buf) } catch { /* ignore */ }
+    }
+  }
+  if (!msg) {
+    const t = lua.lua_type(L, -1)
+    msg = `lua error (stack top type=${t})`
+  }
   lua.lua_pop(L, 1)
-  return msg ?? "unknown error"
+  return msg
 }
 
 function registerModule(

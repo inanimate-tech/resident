@@ -103,7 +103,11 @@ export function useStickDevice({ code }: Options): Result {
       try {
         runtime = await compileLua(code)
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+        if (!cancelled) {
+          const msg = e instanceof Error ? e.message : String(e)
+          console.error("[sim] compile failed:", msg, "\n--- code ---\n", code)
+          setError(msg)
+        }
         return
       }
       if (cancelled) { runtime.destroy(); return }
@@ -111,6 +115,7 @@ export function useStickDevice({ code }: Options): Result {
       startTimeRef.current = Date.now()
       const initErr = runtime.callInit(makeCtx())
       if (initErr) {
+        console.error("[sim] init failed:", initErr, "\n--- code ---\n", code)
         setError(initErr)
         return
       }
