@@ -34,11 +34,20 @@ export function useVoiceMonitor(deviceId: string): VoiceMonitor {
     agent: "voice-agent",
     name: deviceId,
     query: { monitor: "1" },
-    onOpen: () => setStatus("connected"),
+    onOpen: () => {
+      setStatus("connected")
+      // Default binaryType is Blob; switch so FFT can grab the ArrayBuffer
+      // synchronously without an extra async hop per frame.
+      try { (agent as unknown as WebSocket).binaryType = "arraybuffer" } catch {}
+    },
     onClose: () => setStatus("disconnected — reconnecting…"),
     onMessage: (event) => {
       if (typeof event.data !== "string") {
-        if (event.data instanceof ArrayBuffer) frameHandlerRef.current?.(event.data)
+        if (event.data instanceof ArrayBuffer) {
+          frameHandlerRef.current?.(event.data)
+        } else if (event.data instanceof Blob) {
+          event.data.arrayBuffer().then((buf) => frameHandlerRef.current?.(buf))
+        }
         return
       }
       let m: { type?: string; [k: string]: unknown }
