@@ -9,6 +9,12 @@ export const Route = createRootRoute({
     ],
   }),
   component: RootComponent,
+  notFoundComponent: () => (
+    <div style={{ padding: 24, color: "#e6e6f0" }}>
+      <h1 style={{ fontSize: 16, opacity: 0.7 }}>m5stick-voice</h1>
+      <p style={{ opacity: 0.55 }}>Open <code>/devices/&lt;deviceId&gt;</code>.</p>
+    </div>
+  ),
 })
 
 function RootComponent() {
