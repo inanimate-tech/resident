@@ -44,6 +44,16 @@ export async function ensureFengari(): Promise<FengariBindings> {
     const mod = await import("fengari-web")
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const src: any = (mod as any).default ?? mod
+    // Surface whether we got real fengari-web or the SSR stub. The stub
+    // sets toString → "[ssr-fengari-stub]"; real fengari has a function
+    // table whose keys include lua_pcall, lua_pushnumber, etc.
+    try {
+      const tag = String(src.lua)
+      const realKeys = src.lua && typeof src.lua === "object"
+        ? Object.keys(src.lua).filter((k) => k.startsWith("lua_")).length
+        : 0
+      console.log("[lua-vm] fengari-web loaded:", { tag: tag.slice(0, 64), realKeys })
+    } catch { /* ignore */ }
     _fengari = {
       lua: src.lua,
       lauxlib: src.lauxlib,
