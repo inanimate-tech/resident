@@ -58,8 +58,28 @@ const m5stickStubProvider: StubProvider = (moduleName, functionName) => {
 }
 
 export async function validateLuaCode(code: string): Promise<ValidationResult> {
-  await ensureFengari()
-  const vm = createLuaVM(m5stickStubProvider)
+  // Fengari pulls in node-internal modules (os, buffer, …) that eventually
+  // touch process.binding — unenv's polyfill throws on that, so validation
+  // doesn't work inside the Workers/Vite-dev runtime. Treat fengari as
+  // best-effort: if it can't load, we skip validation entirely. The
+  // browser-side sim has its own Fengari VM and a runtime-error overlay,
+  // so a bad app surfaces there instead.
+  try {
+    await ensureFengari()
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.warn("[validator] fengari unavailable, skipping validation:", msg)
+    return { ok: true }
+  }
+
+  let vm: ReturnType<typeof createLuaVM>
+  try {
+    vm = createLuaVM(m5stickStubProvider)
+  } catch (e) {
+    console.warn("[validator] createLuaVM failed, skipping validation:", e instanceof Error ? e.message : e)
+    return { ok: true }
+  }
+
   try {
     const loadError = vm.loadCode(code)
     if (loadError) return { ok: false, error: loadError }
