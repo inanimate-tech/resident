@@ -10,12 +10,6 @@
  * - lua-runtime.ts   (browser sim — state-tracking stubs)
  */
 
-// @ts-expect-error -- fengari is CJS-only with no type declarations
-import fengari from "fengari"
-
-const { lua, lauxlib, lualib } = fengari
-const to_luastring: (s: string) => unknown = fengari.to_luastring
-
 import {
   M5STICK_MODULES,
   GLOBAL_HELPERS,
@@ -23,7 +17,46 @@ import {
   type DeviceApiModule,
 } from "./device-apis"
 
-export { lua, lauxlib, lualib, to_luastring }
+// Lazy CJS load. A top-level `import fengari from "fengari"` triggers a
+// process.binding call (via unenv's polyfill) the moment this module is
+// evaluated — which happens during @cloudflare/vite-plugin's worker entry
+// analysis in dev mode, breaking `npm run dev`. Deferring the require into
+// the first createLuaVM call hides fengari from that static analysis pass
+// while keeping prod bundling unchanged (esbuild/rollup will still inline it).
+interface FengariBindings {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  lua: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  lauxlib: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  lualib: any
+  to_luastring: (s: string) => unknown
+}
+declare const require: (id: string) => { lua: unknown; lauxlib: unknown; lualib: unknown; to_luastring: (s: string) => unknown }
+let _fengari: FengariBindings | null = null
+function getFengari(): FengariBindings {
+  if (_fengari) return _fengari
+  const mod = require("fengari")
+  _fengari = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    lua: mod.lua as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    lauxlib: mod.lauxlib as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    lualib: mod.lualib as any,
+    to_luastring: mod.to_luastring,
+  }
+  return _fengari
+}
+
+/**
+ * `lua` is exported so callers (e.g. validator stubs) can call `lua.lua_pushnumber`
+ * directly. Backed by a lazy proxy that resolves once Fengari has been loaded.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const lua: any = new Proxy({}, {
+  get(_t, prop: string) { return getFengari().lua[prop] },
+})
 
 /** Fengari C-API function: reads args from stack, pushes returns, returns count. */
 export type FengariFunction = (L: unknown) => number
@@ -41,22 +74,64 @@ export type StubProvider = (
 export interface LuaVM {
   /** Load and execute Lua source. Returns null on success, error string on failure. */
   loadCode(code: string): string | null
-  /**
-   * Call a global Lua function with `ctx` (and optional extra args). Returns
-   * null on success, error string on failure, or null no-op if the function
-   * is undefined.
-   */
+  /** Call a global Lua function. Returns null on success, error string on failure. */
   callFunction(name: string, ...args: unknown[]): string | null
   /** True if a global function with this name exists. */
   hasFunction(name: string): boolean
-  /** Direct access to the Lua state (for advanced stub implementations). */
+  /** Direct access to the Lua state. */
   readonly L: unknown
   /** Close the VM and free resources. */
   close(): void
 }
 
-/** Push a JS value onto the Lua stack as the appropriate Lua type. */
-export function pushValue(L: unknown, value: unknown): void {
+export function createLuaVM(stubProvider: StubProvider): LuaVM {
+  const { lua, lauxlib, lualib, to_luastring } = getFengari()
+  const L = lauxlib.luaL_newstate()
+  lualib.luaL_openlibs(L)
+
+  for (const mod of M5STICK_MODULES) registerModule(L, mod, stubProvider)
+  registerGlobalHelpers(L)
+
+  // Re-bind bare math functions as globals (no `math.` prefix).
+  for (const name of BARE_MATH_FUNCTIONS) {
+    lua.lua_getglobal(L, to_luastring("math"))
+    lua.lua_getfield(L, -1, to_luastring(name))
+    lua.lua_setglobal(L, to_luastring(name))
+    lua.lua_pop(L, 1)
+  }
+
+  return {
+    loadCode(code: string): string | null {
+      const loadResult = lauxlib.luaL_loadstring(L, to_luastring(code))
+      if (loadResult !== 0) return readError(L)
+      const execResult = lua.lua_pcall(L, 0, 0, 0)
+      if (execResult !== 0) return readError(L)
+      return null
+    },
+    callFunction(name: string, ...args: unknown[]): string | null {
+      lua.lua_getglobal(L, to_luastring(name))
+      if (!lua.lua_isfunction(L, -1)) {
+        lua.lua_pop(L, 1)
+        return null
+      }
+      for (const arg of args) pushValue(L, arg)
+      const result = lua.lua_pcall(L, args.length, 0, 0)
+      if (result !== 0) return readError(L)
+      return null
+    },
+    hasFunction(name: string): boolean {
+      lua.lua_getglobal(L, to_luastring(name))
+      const isFunc = lua.lua_isfunction(L, -1)
+      lua.lua_pop(L, 1)
+      return isFunc
+    },
+    get L() { return L },
+    close() { lua.lua_close(L) },
+  }
+}
+
+function pushValue(L: unknown, value: unknown): void {
+  const { lua, to_luastring } = getFengari()
   if (value === null || value === undefined) {
     lua.lua_pushnil(L)
   } else if (typeof value === "number") {
@@ -77,61 +152,11 @@ export function pushValue(L: unknown, value: unknown): void {
   }
 }
 
-/** Pop the error message off the top of the Lua stack. */
-export function getErrorMessage(L: unknown): string {
+function readError(L: unknown): string {
+  const { lua } = getFengari()
   const msg = lua.lua_tojsstring(L, -1)
   lua.lua_pop(L, 1)
   return msg ?? "unknown error"
-}
-
-export function createLuaVM(stubProvider: StubProvider): LuaVM {
-  const L = lauxlib.luaL_newstate()
-  lualib.luaL_openlibs(L)
-
-  // Register M5StickC modules.
-  for (const mod of M5STICK_MODULES) {
-    registerModule(L, mod, stubProvider)
-  }
-
-  // Register global helpers (rgb, fract, beat, noise2d).
-  registerGlobalHelpers(L)
-
-  // Re-bind bare math functions as globals (no `math.` prefix).
-  for (const name of BARE_MATH_FUNCTIONS) {
-    lua.lua_getglobal(L, to_luastring("math"))
-    lua.lua_getfield(L, -1, to_luastring(name))
-    lua.lua_setglobal(L, to_luastring(name))
-    lua.lua_pop(L, 1)
-  }
-
-  return {
-    loadCode(code: string): string | null {
-      const loadResult = lauxlib.luaL_loadstring(L, to_luastring(code))
-      if (loadResult !== 0) return getErrorMessage(L)
-      const execResult = lua.lua_pcall(L, 0, 0, 0)
-      if (execResult !== 0) return getErrorMessage(L)
-      return null
-    },
-    callFunction(name: string, ...args: unknown[]): string | null {
-      lua.lua_getglobal(L, to_luastring(name))
-      if (!lua.lua_isfunction(L, -1)) {
-        lua.lua_pop(L, 1)
-        return null
-      }
-      for (const arg of args) pushValue(L, arg)
-      const result = lua.lua_pcall(L, args.length, 0, 0)
-      if (result !== 0) return getErrorMessage(L)
-      return null
-    },
-    hasFunction(name: string): boolean {
-      lua.lua_getglobal(L, to_luastring(name))
-      const isFunc = lua.lua_isfunction(L, -1)
-      lua.lua_pop(L, 1)
-      return isFunc
-    },
-    get L() { return L },
-    close() { lua.lua_close(L) },
-  }
 }
 
 function registerModule(
@@ -139,6 +164,7 @@ function registerModule(
   mod: DeviceApiModule,
   stubProvider: StubProvider,
 ): void {
+  const { lua, to_luastring } = getFengari()
   lua.lua_createtable(L, 0, mod.functions.length)
   for (const fn of mod.functions) {
     const impl = stubProvider(mod.name, fn, mod.config)
@@ -149,6 +175,7 @@ function registerModule(
 }
 
 function registerGlobalHelpers(L: unknown): void {
+  const { lua, to_luastring } = getFengari()
   for (const name of GLOBAL_HELPERS) {
     switch (name) {
       case "rgb":
@@ -157,7 +184,7 @@ function registerGlobalHelpers(L: unknown): void {
           const g = lua.lua_tonumber(Li, 2)
           const b = lua.lua_tonumber(Li, 3)
           // sandbox.md says rgb takes 0-1 floats and returns a packed colour
-          // via a negative-int sentinel. We pack the same way here.
+          // via a negative-int sentinel.
           const value =
             ((Math.floor(r * 255) & 0xff) << 16) |
             ((Math.floor(g * 255) & 0xff) << 8) |
@@ -182,8 +209,6 @@ function registerGlobalHelpers(L: unknown): void {
         })
         break
       case "noise2d":
-        // Deterministic value noise placeholder — returns 0. The validator
-        // doesn't care; the in-browser sim can override this if needed.
         lua.lua_pushjsfunction(L, (Li: unknown) => {
           void lua.lua_tonumber(Li, 1)
           void lua.lua_tonumber(Li, 2)
