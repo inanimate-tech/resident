@@ -2,6 +2,7 @@ import { DeviceAgent } from "@inanimate/resident/cloudflare"
 import type { Connection, ConnectionContext, WSMessage } from "agents"
 import { z } from "zod"
 import { validateLuaCode } from "../lib/lua-validator"
+import { DEFAULT_APP } from "../lib/default-app"
 import SANDBOX_MD from "../prompts/sandbox.md?raw"
 import DEVICE_SKILL_MD from "../prompts/m5stick-device-skill.md?raw"
 
@@ -40,6 +41,8 @@ const SYSTEM_PROMPT = `You can do two things via tool calls. Pick the right one 
 1. **apply_css** — repaint the WEB PAGE BACKGROUND. Use when the user asks about the page, the website, "the background", or asks for a colour/pattern/animation that fills the screen behind the content. The page has a full-viewport #bg element. Provide a COMPLETE stylesheet; it replaces the previous one. Style #bg and body, define @keyframes, use gradients, embed SVG data URIs.
 
 2. **create_app** — generate and run a Lua app on the SIMULATED M5StickC DEVICE shown on the page (a small 240×135 screen with two buttons). Use when the user asks for something to happen "on the device", "on the m5stick", "on the screen", asks for a clock, a counter, a game, a bouncing ball, anything interactive. Returns asynchronously — the coding agent writes Lua and pushes it; the user sees status in the UI.
+
+3. **push_app** — push the app CURRENTLY SHOWN IN THE SIMULATOR to the user's PHYSICAL device. Use when the user says to push / send / deploy / load the app onto the device, the stick, or the hardware (e.g. "ok push app", "send it to my stick"). No arguments — it sends whatever the simulator is showing.
 
 For ambiguous requests like "show stripes", default to apply_css (the page) unless the user mentioned the device. Prefer acting through a tool over talking; keep spoken replies brief.`
 
@@ -197,6 +200,13 @@ export class VoiceAgent extends DeviceAgent<Env> {
                 required: ["description"],
               },
             },
+            {
+              type: "function",
+              name: "push_app",
+              description:
+                "Push the app currently shown in the simulator to the PHYSICAL device over its WebSocket. Use when the user says to push / send / deploy / load the app onto the device / stick / hardware. No arguments.",
+              parameters: { type: "object", properties: {} },
+            },
           ],
           tool_choice: "auto",
           audio: {
@@ -272,6 +282,10 @@ export class VoiceAgent extends DeviceAgent<Env> {
       this.handleApplyCss(callId, argsJson)
       return
     }
+    if (name === "push_app") {
+      this.handlePushApp(callId)
+      return
+    }
     if (name !== "create_app") {
       console.warn("[voice] unknown tool call:", name)
       this.sendToolResult(callId, { ok: false, error: `unknown tool: ${name}` })
@@ -319,6 +333,25 @@ export class VoiceAgent extends DeviceAgent<Env> {
     this.currentCss = css
     this.toMonitors({ type: "css", css })
     this.sendToolResult(callId, { ok: true })
+    if (this.openai && this.openaiReady) {
+      this.openai.send(JSON.stringify({ type: "response.create" }))
+    }
+  }
+
+  private handlePushApp(callId: string): void {
+    // "The app in the sim" is currentApp (set by create_app), or the default
+    // bouncing ball the viewer renders when nothing has been generated yet.
+    const code = this.currentApp?.code ?? DEFAULT_APP
+    const frame = JSON.stringify({ type: "app", code })
+    const devices = Array.from(this.getConnections("device"))
+    for (const d of devices) d.send(frame)
+    console.log("[voice] push_app ->", devices.length, "device(s),", code.length, "chars")
+    this.sendToolResult(
+      callId,
+      devices.length > 0
+        ? { ok: true, devices: devices.length }
+        : { ok: false, error: "no device connected" },
+    )
     if (this.openai && this.openaiReady) {
       this.openai.send(JSON.stringify({ type: "response.create" }))
     }
