@@ -59,7 +59,18 @@ This is a public open-source repo. A few things to keep out of tracked files:
 - Per-developer Claude Code artefacts (`.claude/settings.local.json`,
   `.claude/napkin.md`, `.claude/projects/`) — all `.gitignore`-d.
 - Working files from plan/spec skills (Superpowers `writing-plans`,
-  `writing-skills`, etc.). Save them outside the repo, not under
-  `docs/superpowers/`. That path is `.gitignore`-d as a safety net.
+  `writing-skills`, etc.). Keep them in `.claude/superpowers/` (git-ignored),
+  not in tracked `docs/` — see **Superpowers working documents** below. The
+  legacy `docs/superpowers/` path is also `.gitignore`-d as a safety net.
 - Personal account identifiers in URLs and example configs. For Cloudflare
   Worker hostnames, use a `YOUR-CF-ACCOUNT` placeholder.
+
+## Superpowers working documents
+
+When using Superpowers, keep local working documents inside:
+
+`.claude/superpowers/`
+
+This includes plans, scratch notes, reviews, implementation notes, and temporary design docs.
+
+Do not write these into `docs/`, `plans/`, or other tracked project directories unless explicitly asked. The `.claude/superpowers/` directory is local working state and should remain ignored by git.

@@ -29,6 +29,9 @@ __pycache__/
 .claude/napkin.md
 .claude/projects/
 
+# Superpowers local working documents (plans, scratch notes, reviews, drafts)
+.claude/superpowers/
+
 # Superpowers plan/spec output — kept out of the repo to avoid leaking
 # personal context, in-progress thinking, and absolute paths.
 docs/superpowers/
