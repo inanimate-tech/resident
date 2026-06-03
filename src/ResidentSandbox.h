@@ -53,6 +53,16 @@ public:
     // State queries
     bool isAppRunning() const;
 
+    // App suspend/resume. Pauses the Lua tick (on_tick + event dispatch)
+    // without unloading the app — Courier and extension update() keep running.
+    // While suspended the status display is freed (notifyAppRunning(false)) so
+    // displayText() can show e.g. a "Listening" overlay. Both are no-ops when
+    // no app is loaded. isAppRunning() stays true while suspended; suspension
+    // is a separate axis queried via isAppSuspended().
+    void suspendApp();
+    void resumeApp();
+    bool isAppSuspended() const;
+
     // Timezone — no-op on nullptr/empty. Success means ezTime resolved the
     // zone (either from its own cache or via one UDP lookup to
     // timezoned.rop.nl). Failure logs and leaves hasTimezone() == false.
@@ -112,6 +122,7 @@ public:
 private:
     struct lua_State* _lua = nullptr;
     bool _appRunning = false;
+    bool _appSuspended = false;
 
     // Timezone selected via registration's detectedTimezone. When
     // _hasTimezone is true, ctx.localtime_* and time.hour/minute/second read

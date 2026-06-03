@@ -2,6 +2,15 @@
 
 ## v0.5.1-dev (7915694)
 
+### New features
+
+- `Resident::Sandbox::suspendApp()` / `resumeApp()` / `isAppSuspended()` — pause
+  and resume a running app's tick without unloading it. While suspended,
+  `loop()` skips the Lua `on_tick`/event dispatch (Courier and extension updates
+  keep running) and the status display is freed for direct text via
+  `StatusDisplay::displayText()`. The m5stick-voice example uses it to show
+  "Listening" over a running app during push-to-talk.
+
 ### Fixes
 
 - **Lua allocator falls back to internal RAM on boards without PSRAM** (e.g. ESP32-S3FN8 / M5Dial). Previously every Lua allocation went to `MALLOC_CAP_SPIRAM`, which returns NULL when no PSRAM exists — the Lua runtime had no usable heap and every app failed with "not enough memory". The capability is now resolved once on first use: SPIRAM when present, internal 8-bit RAM otherwise. Boards with PSRAM are unaffected.

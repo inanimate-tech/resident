@@ -33,6 +33,10 @@ void DisplayDriver::displayText(const char* text) {
   M5.Display.setTextScroll(false);   // restore global default; drawn pixels unaffected
 }
 
+void DisplayDriver::repaint() {
+  if (_initialized) _canvas.pushSprite(0, 0);
+}
+
 void DisplayDriver::onAppReset() {
   if (_initialized) {
     _canvas.fillScreen(TFT_BLACK);
