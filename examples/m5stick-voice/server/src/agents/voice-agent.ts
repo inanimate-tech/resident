@@ -2,7 +2,7 @@ import { DeviceAgent } from "@inanimate/resident/cloudflare"
 import type { Connection, ConnectionContext, WSMessage } from "agents"
 import { z } from "zod"
 import { validateLuaCode } from "../lib/lua-validator"
-import { DEFAULT_APP } from "../lib/default-app"
+import { DEFAULT_APP, WORKING_APP } from "../lib/default-app"
 import SANDBOX_MD from "../prompts/sandbox.md?raw"
 import DEVICE_SKILL_MD from "../prompts/m5stick-device-skill.md?raw"
 
@@ -316,6 +316,11 @@ export class VoiceAgent extends DeviceAgent<Env> {
     // Tell the viewer.
     this.setAgentStatus("working", undefined)
 
+    // Immediately show a "Working..." placeholder on the physical device while
+    // the coding agent generates the real app — regardless of any monitor.
+    const working = this.pushAppToDevices(WORKING_APP)
+    if (working > 0) console.log("[voice] pushed Working... ->", working, "device(s)")
+
     // Fire-and-forget.
     this.ctx.waitUntil(this.runCodingJob(jobId, parsed.description, this.codingAbort.signal))
   }
@@ -342,19 +347,25 @@ export class VoiceAgent extends DeviceAgent<Env> {
     // "The app in the sim" is currentApp (set by create_app), or the default
     // bouncing ball the viewer renders when nothing has been generated yet.
     const code = this.currentApp?.code ?? DEFAULT_APP
-    const frame = JSON.stringify({ type: "app", code })
-    const devices = Array.from(this.getConnections("device"))
-    for (const d of devices) d.send(frame)
-    console.log("[voice] push_app ->", devices.length, "device(s),", code.length, "chars")
+    const devices = this.pushAppToDevices(code)
+    console.log("[voice] push_app ->", devices, "device(s),", code.length, "chars")
     this.sendToolResult(
       callId,
-      devices.length > 0
-        ? { ok: true, devices: devices.length }
+      devices > 0
+        ? { ok: true, devices }
         : { ok: false, error: "no device connected" },
     )
     if (this.openai && this.openaiReady) {
       this.openai.send(JSON.stringify({ type: "response.create" }))
     }
+  }
+
+  /** Send a Lua app frame to every connected physical device. Returns count. */
+  private pushAppToDevices(code: string): number {
+    const frame = JSON.stringify({ type: "app", code })
+    const devices = Array.from(this.getConnections("device"))
+    for (const d of devices) d.send(frame)
+    return devices.length
   }
 
   private sendToolResult(callId: string, payload: unknown): void {
@@ -395,7 +406,18 @@ export class VoiceAgent extends DeviceAgent<Env> {
 
       this.appVersion += 1
       this.currentApp = { code, version: this.appVersion }
-      this.toMonitors({ type: "app", code, version: this.appVersion })
+
+      // The simulator lives in a monitor connection. When one is present, push
+      // there (the user pushes to hardware separately via push_app). With no
+      // monitor there's nothing to simulate into, so send straight to any
+      // connected physical device.
+      const monitors = Array.from(this.getConnections("monitor")).length
+      if (monitors > 0) {
+        this.toMonitors({ type: "app", code, version: this.appVersion })
+      } else {
+        const devices = this.pushAppToDevices(code)
+        console.log("[voice] no monitor — pushed app ->", devices, "device(s)")
+      }
       this.finishJob(jobId, "done", undefined)
     } catch (err) {
       if (signal.aborted) return
