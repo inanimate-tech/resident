@@ -13,11 +13,19 @@ export interface CurrentApp {
   version: number
 }
 
+export interface DoneEvent {
+  success: boolean
+  message?: string
+}
+
 export interface VoiceMonitor {
   status: string
   transcript: TranscriptItem[]
-  agentStatus: AgentStatus
-  agentMessage?: string
+  agentStatus: AgentStatus // idle | working | validating
+  workingLines: number
+  retryCount: number
+  lastDone: DoneEvent | null
+  dismissDone: () => void
   currentApp?: CurrentApp
   css: string
   setFrameHandler: (cb: ((buf: ArrayBuffer) => void) | null) => void
@@ -33,7 +41,10 @@ export function useVoiceMonitor(deviceId: string): VoiceMonitor {
   const [status, setStatus] = useState("connecting…")
   const [transcript, setTranscript] = useState<TranscriptItem[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus>("idle")
-  const [agentMessage, setAgentMessage] = useState<string | undefined>(undefined)
+  const [workingLines, setWorkingLines] = useState(0)
+  const [retryCount, setRetryCount] = useState(0)
+  const [lastDone, setLastDone] = useState<DoneEvent | null>(null)
+  const prevStatusRef = useRef<AgentStatus>("idle")
   const [currentApp, setCurrentApp] = useState<CurrentApp | undefined>(undefined)
   const [css, setCss] = useState("")
   const frameHandlerRef = useRef<((buf: ArrayBuffer) => void) | null>(null)
@@ -41,6 +52,8 @@ export function useVoiceMonitor(deviceId: string): VoiceMonitor {
   const setFrameHandler: VoiceMonitor["setFrameHandler"] = (cb) => {
     frameHandlerRef.current = cb
   }
+
+  const dismissDone: VoiceMonitor["dismissDone"] = () => setLastDone(null)
 
   const agent = useAgent({
     agent: "voice-agent",
@@ -74,10 +87,31 @@ export function useVoiceMonitor(deviceId: string): VoiceMonitor {
         case "transcript.completed":
           setTranscript((prev) => upsertItem(prev, String(m.itemId ?? "_cur"), String(m.text ?? ""), true, true))
           break
-        case "agent_status":
-          if (isAgentStatus(m.state)) setAgentStatus(m.state)
-          setAgentMessage(typeof m.message === "string" ? m.message : undefined)
+        case "agent_status": {
+          if (!isAgentStatus(m.state)) break
+          const next = m.state
+          const prev = prevStatusRef.current
+          if (next === "working") {
+            // validating -> working means a retry; a fresh job starts from
+            // idle/done and resets the counter.
+            if (prev === "validating") setRetryCount((n) => n + 1)
+            else if (prev === "idle" || prev === "done") setRetryCount(0)
+            setWorkingLines(typeof m.lines === "number" ? m.lines : 0)
+            setAgentStatus("working")
+          } else if (next === "validating") {
+            setAgentStatus("validating")
+          } else if (next === "idle") {
+            setWorkingLines(0)
+            setAgentStatus("idle")
+          } else if (next === "done") {
+            setLastDone({
+              success: m.success === true,
+              message: typeof m.message === "string" ? m.message : undefined,
+            })
+          }
+          prevStatusRef.current = next
           break
+        }
         case "app":
           if (typeof m.code === "string" && typeof m.version === "number") {
             setCurrentApp({ code: m.code, version: m.version })
@@ -87,8 +121,11 @@ export function useVoiceMonitor(deviceId: string): VoiceMonitor {
           if (typeof m.css === "string") setCss(m.css)
           break
         case "snapshot":
-          if (isAgentStatus(m.agent_status)) setAgentStatus(m.agent_status)
-          if (typeof m.message === "string") setAgentMessage(m.message)
+          if (isAgentStatus(m.agent_status) && m.agent_status !== "done") {
+            setAgentStatus(m.agent_status)
+            prevStatusRef.current = m.agent_status
+          }
+          if (typeof m.lines === "number") setWorkingLines(m.lines)
           if (m.app && typeof m.app === "object") {
             const a = m.app as { code?: unknown; version?: unknown }
             if (typeof a.code === "string" && typeof a.version === "number") {
@@ -103,11 +140,14 @@ export function useVoiceMonitor(deviceId: string): VoiceMonitor {
 
   useEffect(() => { void agent }, [agent])
 
-  return { status, transcript, agentStatus, agentMessage, currentApp, css, setFrameHandler }
+  return {
+    status, transcript, agentStatus, workingLines, retryCount,
+    lastDone, dismissDone, currentApp, css, setFrameHandler,
+  }
 }
 
 function isAgentStatus(s: unknown): s is AgentStatus {
-  return s === "idle" || s === "working" || s === "done" || s === "error"
+  return s === "idle" || s === "working" || s === "validating" || s === "done"
 }
 
 function upsertItem(
