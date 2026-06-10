@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.1-dev (7915694)
+
+### Fixes
+
+- **Lua allocator falls back to internal RAM on boards without PSRAM** (e.g. ESP32-S3FN8 / M5Dial). Previously every Lua allocation went to `MALLOC_CAP_SPIRAM`, which returns NULL when no PSRAM exists — the Lua runtime had no usable heap and every app failed with "not enough memory". The capability is now resolved once on first use: SPIRAM when present, internal 8-bit RAM otherwise. Boards with PSRAM are unaffected.
+
+---
+
 ## v0.5.0
 
 First public alpha.

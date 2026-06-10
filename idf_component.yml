@@ -1,4 +1,4 @@
-version: "0.5.0"
+version: "0.5.1-dev"
 description: "Sandbox with hardware IO and hot reload for ESP32 devices"
 url: "https://github.com/inanimate-tech/resident"
 
