@@ -17,7 +17,7 @@ export function StatusPill({ status, lines = 0, retryCount = 0 }: Props) {
   }
   const s = styles[status]
   const active = status === "working" || status === "validating"
-  const label = retryCount > 0 ? `${s.label} · retry ${retryCount}` : s.label
+  const label = active && retryCount > 0 ? `${s.label} · retry ${retryCount}` : s.label
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", gap: 6,
