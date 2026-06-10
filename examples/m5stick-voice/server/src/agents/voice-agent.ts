@@ -1,7 +1,8 @@
 import { DeviceAgent } from "@inanimate/resident/cloudflare"
 import type { Connection, ConnectionContext, WSMessage } from "agents"
 import { z } from "zod"
-import { validateLuaCode } from "../lib/lua-validator"
+import { validateLuaCode, type ValidationResult } from "../lib/lua-validator"
+import { parseSSELine, createLineProgress } from "../lib/codegen-stream"
 import { DEFAULT_APP, WORKING_APP } from "../lib/default-app"
 import SANDBOX_MD from "../prompts/sandbox.md?raw"
 import DEVICE_SKILL_MD from "../prompts/m5stick-device-skill.md?raw"
@@ -48,7 +49,7 @@ For ambiguous requests like "show stripes", default to apply_css (the page) unle
 
 const CODEGEN_SYSTEM = `${SANDBOX_MD}\n\n---\n\n${DEVICE_SKILL_MD}\n\n---\n\nWrite a complete Lua app for the M5StickC Plus2 matching the user's description. Use only the documented APIs. Return ONLY Lua source — no commentary, no markdown fences.`
 
-type AgentStatus = "idle" | "working" | "done" | "error"
+type AgentStatus = "idle" | "working" | "validating" | "done"
 
 interface CurrentApp {
   code: string
@@ -67,7 +68,7 @@ export class VoiceAgent extends DeviceAgent<Env> {
 
   // M2 codegen state.
   private agentStatus: AgentStatus = "idle"
-  private agentMessage?: string
+  private agentLines = 0
   private currentApp?: CurrentApp
   private appVersion = 0
   private codingAbort?: AbortController
@@ -82,8 +83,8 @@ export class VoiceAgent extends DeviceAgent<Env> {
     if (url.searchParams.get("monitor") === "1") {
       connection.send(JSON.stringify({
         type: "snapshot",
-        agent_status: this.agentStatus,
-        message: this.agentMessage,
+        agent_status: this.agentStatus, // idle | working | validating (never done)
+        lines: this.agentLines,
         app: this.currentApp,
         css: this.currentCss,
       }))
@@ -313,8 +314,8 @@ export class VoiceAgent extends DeviceAgent<Env> {
       this.openai.send(JSON.stringify({ type: "response.create" }))
     }
 
-    // Tell the viewer.
-    this.setAgentStatus("working", undefined)
+    // Tell the viewer + device: started (zero lines so far).
+    this.setAgentStatus("working", { lines: 0 })
 
     // Immediately show a "Working..." placeholder on the physical device while
     // the coding agent generates the real app — regardless of any monitor.
@@ -382,35 +383,45 @@ export class VoiceAgent extends DeviceAgent<Env> {
     signal: AbortSignal,
   ): Promise<void> {
     try {
-      let code = await this.callCodegenChat(description, [], signal)
-      let validation = await validateLuaCode(code)
+      const followups: { role: "assistant" | "user"; content: string }[] = []
+      let code = ""
+      let validation: ValidationResult = { ok: false }
 
-      if (!validation.ok) {
-        console.warn("[voice] codegen v1 validation failed:", validation.error)
-        code = await this.callCodegenChat(description, [
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        code = await this.callCodegenChat(
+          description,
+          followups,
+          signal,
+          (lines) => this.setAgentStatus("working", { lines }),
+        )
+        if (signal.aborted) return
+
+        this.setAgentStatus("validating", {})
+        validation = await validateLuaCode(code)
+        if (signal.aborted) return
+        if (validation.ok) break
+
+        console.warn(`[voice] codegen v${attempt} validation failed:`, validation.error)
+        followups.push(
           { role: "assistant", content: code },
           {
             role: "user",
             content: `That code failed validation with: ${validation.error}. Fix it. Return only Lua, no commentary.`,
           },
-        ], signal)
-        validation = await validateLuaCode(code)
+        )
       }
 
-      if (signal.aborted) return
-
       if (!validation.ok) {
-        this.finishJob(jobId, "error", validation.error ?? "validation failed")
+        this.finishJob(jobId, false, validation.error ?? "validation failed")
         return
       }
 
       this.appVersion += 1
       this.currentApp = { code, version: this.appVersion }
 
-      // The simulator lives in a monitor connection. When one is present, push
-      // there (the user pushes to hardware separately via push_app). With no
-      // monitor there's nothing to simulate into, so send straight to any
-      // connected physical device.
+      // With a monitor present, push into the simulator (the user pushes to
+      // hardware separately via push_app). With no monitor, send straight to
+      // any connected physical device.
       const monitors = Array.from(this.getConnections("monitor")).length
       if (monitors > 0) {
         this.toMonitors({ type: "app", code, version: this.appVersion })
@@ -418,11 +429,11 @@ export class VoiceAgent extends DeviceAgent<Env> {
         const devices = this.pushAppToDevices(code)
         console.log("[voice] no monitor — pushed app ->", devices, "device(s)")
       }
-      this.finishJob(jobId, "done", undefined)
+      this.finishJob(jobId, true, undefined)
     } catch (err) {
       if (signal.aborted) return
       const msg = err instanceof Error ? err.message : String(err)
-      this.finishJob(jobId, "error", msg)
+      this.finishJob(jobId, false, msg)
     }
   }
 
@@ -430,6 +441,7 @@ export class VoiceAgent extends DeviceAgent<Env> {
     description: string,
     followups: { role: "assistant" | "user"; content: string }[],
     signal: AbortSignal,
+    onProgress: (lines: number) => void,
   ): Promise<string> {
     const key = this.env.OPENAI_API_KEY
     if (!key) throw new Error("OPENAI_API_KEY not set")
@@ -446,29 +458,57 @@ export class VoiceAgent extends DeviceAgent<Env> {
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ model: CODEGEN_MODEL, messages }),
+      body: JSON.stringify({ model: CODEGEN_MODEL, messages, stream: true }),
       signal,
     })
     if (!resp.ok) {
       const body = await resp.text().catch(() => "")
       throw new Error(`OpenAI ${resp.status}: ${body.slice(0, 400)}`)
     }
-    const data = await resp.json() as {
-      choices?: Array<{ message?: { content?: string } }>
+    if (!resp.body) throw new Error("OpenAI returned no response stream")
+
+    const progress = createLineProgress(onProgress)
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+    let content = ""
+
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let nl: number
+        while ((nl = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, nl)
+          buffer = buffer.slice(nl + 1)
+          const parsed = parseSSELine(line)
+          if (parsed.done) { buffer = ""; break }
+          if (parsed.content) {
+            content += parsed.content
+            progress.update(content)
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock()
     }
-    const content = data.choices?.[0]?.message?.content ?? ""
+    progress.flush()
+
+    // The line count above includes any markdown fence lines; the displayed app
+    // strips them here. Progress is an indicator, so the small discrepancy is fine.
     return content.replace(/^```(?:lua)?\s*/i, "").replace(/```\s*$/i, "").trim()
   }
 
-  private finishJob(jobId: string, state: "done" | "error", message: string | undefined): void {
-    this.setAgentStatus(state, message)
+  private finishJob(jobId: string, success: boolean, message: string | undefined): void {
+    // Transient terminal event (drives the client toast), then back to idle.
+    this.setAgentStatus("done", { success, message })
+    this.setAgentStatus("idle", {})
+
     if (this.openai && this.openaiReady) {
-      const content = state === "done"
+      const content = success
         ? `[create_app jobId=${jobId}] completed successfully`
         : `[create_app jobId=${jobId}] failed: ${message ?? "unknown error"}`
-      // Inject a user-role message so the realtime model sees the outcome on
-      // the next turn. (Realtime's conversation.item.create historically only
-      // accepts user/assistant on `message` items; we mark with a [system] tag.)
       this.openai.send(JSON.stringify({
         type: "conversation.item.create",
         item: {
@@ -480,10 +520,25 @@ export class VoiceAgent extends DeviceAgent<Env> {
     }
   }
 
-  private setAgentStatus(state: AgentStatus, message: string | undefined): void {
-    this.agentStatus = state
-    this.agentMessage = message
-    this.toMonitors({ type: "agent_status", state, message })
+  private setAgentStatus(
+    state: AgentStatus,
+    extra: { lines?: number; success?: boolean; message?: string } = {},
+  ): void {
+    // `done` is a transient event (the toast); the caller follows it with `idle`.
+    // Only persist resting states so a refreshed tab's snapshot is accurate.
+    if (state !== "done") {
+      this.agentStatus = state
+      this.agentLines = extra.lines ?? 0
+    }
+    this.broadcastAgentStatus({ type: "agent_status", state, ...extra })
+  }
+
+  /** Send a JSON status frame to every monitor AND every device connection.
+   *  Named to avoid colliding with the base class's `broadcastStatus()`. */
+  private broadcastAgentStatus(obj: unknown): void {
+    const s = JSON.stringify(obj)
+    for (const m of this.getConnections("monitor")) m.send(s)
+    for (const d of this.getConnections("device")) d.send(s)
   }
 
   private toMonitors(obj: unknown): void {
