@@ -1,6 +1,6 @@
 {
   "name": "resident",
-  "version": "0.5.0",
+  "version": "0.5.1-dev",
   "description": "Sandbox with hardware IO and hot reload for ESP32 devices",
   "keywords": "esp32, sandbox, iot, hot-reload",
   "repository": {

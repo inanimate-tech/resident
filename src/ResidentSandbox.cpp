@@ -14,18 +14,23 @@ extern "C" {
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 
-// Custom Lua allocator that routes all allocations to PSRAM.
+// Custom Lua allocator. Prefers PSRAM, but transparently falls back to
+// internal RAM on boards without PSRAM (e.g. ESP32-S3FN8). The capability is
+// resolved once on first use from whether any SPIRAM is actually present.
 static void* psramLuaAlloc(void* ud, void* ptr, size_t osize, size_t nsize) {
   (void)ud;
   (void)osize;
+  static const uint32_t kLuaHeapCaps =
+      (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0) ? MALLOC_CAP_SPIRAM
+                                                        : MALLOC_CAP_8BIT;
   if (nsize == 0) {
     heap_caps_free(ptr);
     return NULL;
   }
   if (ptr == NULL) {
-    return heap_caps_malloc(nsize, MALLOC_CAP_SPIRAM);
+    return heap_caps_malloc(nsize, kLuaHeapCaps);
   }
-  return heap_caps_realloc(ptr, nsize, MALLOC_CAP_SPIRAM);
+  return heap_caps_realloc(ptr, nsize, kLuaHeapCaps);
 }
 #endif
 
