@@ -69,4 +69,15 @@ describe("createLineProgress", () => {
     p.flush()                // already emitted 2 -> no-op
     expect(emitted).toEqual([2])
   })
+
+  it("records emit time on flush so a following update is throttled", () => {
+    let clock = 0
+    const emitted: number[] = []
+    const p = createLineProgress((n) => emitted.push(n), { intervalMs: 250, now: () => clock })
+    p.update("a\nb\n")     // t=0 -> suppressed
+    p.flush()              // t=0 -> emits 2, and now records lastEmitAt=0
+    clock = 100
+    p.update("a\nb\nc\n")  // t=100, 100-0 < 250 -> suppressed (would WRONGLY emit if flush didn't set lastEmitAt)
+    expect(emitted).toEqual([2])
+  })
 })

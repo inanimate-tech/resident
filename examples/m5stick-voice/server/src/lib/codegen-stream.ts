@@ -56,6 +56,7 @@ export function createLineProgress(
     flush() {
       if (latestLines !== emittedLines) {
         emittedLines = latestLines
+        lastEmitAt = now()
         emit(latestLines)
       }
     },
