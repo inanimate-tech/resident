@@ -1,5 +1,7 @@
 #include <M5Unified.h>
 #include <Resident.h>
+#include <ArduinoJson.h>
+#include <cstring>
 #include "DisplayDriver.h"
 #include "IMUDriver.h"
 #include "BuzzerDriver.h"
@@ -47,6 +49,14 @@ static size_t  recIdx  = 2;   // slot M5.Mic.record() is filling now
 static size_t  sendIdx = 0;   // completed slot ready to send (lags recIdx by 2)
 
 static volatile bool streaming = false;
+
+// ---- Coding-agent status (agent_status frames from the server) -------------
+// awaitingDismiss gates "show the Done/Error result until a tap, then restore
+// the suspended app (or the push-to-talk default screen if none)".
+// lastPressCount detects taps: only a short press bumps getTotalPressCount();
+// a push-to-talk hold fires onHold() instead, so the two never collide.
+static bool awaitingDismiss = false;
+static uint16_t lastPressCount = 0;
 
 // ---- Serial telemetry for the audio path -----------------------------------
 // Kept in deliberately: a once-per-second [voice] stat line is the quickest way
@@ -170,6 +180,42 @@ void setup() {
         if (!streaming) showIdlePrompt();
     });
 
+    // Coding-agent status from the server. Render generic status text through
+    // the status display, suspending a running app on the first "working" frame
+    // so displayText() isn't gated off — the same takeover push-to-talk uses.
+    sandbox.onMessage([](const char* /*transport*/, const char* type, JsonDocument& doc) {
+        if (strcmp(type, "agent_status") != 0) return;
+        const char* state = doc["state"] | "";
+
+        if (strcmp(state, "working") == 0) {
+            if (sandbox.isAppRunning() && !sandbox.isAppSuspended()) sandbox.suspendApp();
+            awaitingDismiss = false;
+            int lines = doc["lines"] | 0;
+            if (lines > 0) {
+                char buf[40];
+                snprintf(buf, sizeof(buf), "Working...\n%d lines", lines);
+                displayDriver.displayText(buf);
+            } else {
+                displayDriver.displayText("Working...");
+            }
+        } else if (strcmp(state, "validating") == 0) {
+            displayDriver.displayText("Validating...");
+        } else if (strcmp(state, "done") == 0) {
+            // Show the terminal result and hold it until the user taps to
+            // dismiss. The finished app is NOT auto-loaded on the device — it
+            // stays in the sim and is deployed only via push_app.
+            bool success = doc["success"] | false;
+            if (success) {
+                displayDriver.displayText("Done");
+            } else {
+                const char* msg = doc["message"] | "Error";
+                displayDriver.displayText(msg && msg[0] ? msg : "Error");
+            }
+            awaitingDismiss = true;
+        }
+        // "idle": ignored — the Done/Error result stays up until the user taps.
+    });
+
     // Push-to-talk on button 0 (the front button). Uses the 200ms default
     // threshold so a tap is rejected but talk starts promptly.
     buttonDriver.setLongPress(0, onHold);
@@ -190,6 +236,22 @@ void loop() {
 
     M5.update();
     sandbox.loop();  // drives buttonDriver.update(), which fires onHold
+
+    // Tap (short press) dismisses the Done/Error result and restores the app
+    // that was suspended to show status. Only taps bump pressCount (holds fire
+    // onHold instead), so this never interferes with push-to-talk. ">" tolerates
+    // the driver resetting pressCount to 0 on app load/unload (onAppReset).
+    uint16_t pc = buttonDriver.getTotalPressCount();
+    if (pc > lastPressCount && awaitingDismiss) {
+        awaitingDismiss = false;
+        if (sandbox.isAppRunning()) {
+            sandbox.resumeApp();
+            displayDriver.repaint();
+        } else {
+            showIdlePrompt();
+        }
+    }
+    lastPressCount = pc;
 
     // While holding, capture a frame and send the completed (lagging) slot.
     if (streaming && M5.Mic.isEnabled()) {
