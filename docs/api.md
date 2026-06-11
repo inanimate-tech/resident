@@ -174,6 +174,9 @@ sandbox.sendAppEvent(name, dataJson);  // queue an app_event to the running app
 sandbox.setTimezone("Europe/London");  // IANA zone — performs UDP lookup on first use
 sandbox.hasTimezone();                 // true after a successful setTimezone call
 sandbox.isAppRunning();                // true when an app is compiled and active
+sandbox.suspendApp();                  // pause the running app's tick without unloading it
+sandbox.resumeApp();                   // resume a suspended app
+sandbox.isAppSuspended();              // true between suspendApp() and resumeApp()
 sandbox.generationId();                // const String& — ID of the last loaded app/shader
 sandbox.setTelemetryCallback(cb);      // wire telemetry JSON to your transport
 ```
@@ -181,6 +184,8 @@ sandbox.setTelemetryCallback(cb);      // wire telemetry JSON to your transport
 `loadApp` stops any running app, calls `onAppReset()` on all extensions, generates a new `generationId`, and compiles the new app. An app must define at least one of `init`, `on_tick`, or `on_event` — compilation is rejected otherwise.
 
 `loadShader` requires `SandboxConfig::shaderTemplate` to be set; it converts the `ShaderFields` map to Lua source, then calls `loadApp`.
+
+`suspendApp` pauses the Lua tick (`on_tick` and event dispatch) without unloading the app — Courier and extension `update()` keep running. While suspended, drivers receive `onAppRunning(false)` so the status display is freed for direct text (e.g. a "Listening" overlay via `StatusDisplay::displayText()`); `resumeApp` reverses this with `onAppRunning(true)`. Both are no-ops when no app is loaded, and repeated calls don't re-notify. `isAppRunning()` stays `true` while suspended — suspension is a separate axis queried via `isAppSuspended()`. Events arriving while suspended are queued, not dropped (though a long suspend can overflow the 8-slot ring, losing the oldest), and `loadApp` always clears suspension.
 
 `setTimezone` is a no-op on `nullptr` or empty input. Success means ezTime resolved the zone (either from its own cache or via one UDP lookup to `timezoned.rop.nl`); failure logs and leaves `hasTimezone() == false`. Affects `ctx.localtime_h`, `ctx.localtime_m`, `time.hour()`, `time.minute()`, and `time.second()` in Lua.
 

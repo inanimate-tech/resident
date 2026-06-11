@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.1-dev (7915694)
+## v0.5.1-dev (77afc9a)
 
 ### New features
 
