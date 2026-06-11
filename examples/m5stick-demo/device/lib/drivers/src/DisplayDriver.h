@@ -41,6 +41,12 @@ public:
   // Call once after M5.begin() to create the sprite framebuffer
   void begin() override;
 
+  // Re-push the current off-screen sprite to the display without redrawing it.
+  // Restores the last app frame after a direct displayText() overlay (e.g. the
+  // m5stick-voice "Listening" prompt). Essential for apps that render only in
+  // init(); tick-driven apps would otherwise redraw on their next on_tick.
+  void repaint();
+
 protected:
   M5Canvas _canvas{&M5.Display};
 

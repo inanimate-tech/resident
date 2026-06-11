@@ -1,6 +1,15 @@
 # Changelog
 
-## v0.5.1-dev (7915694)
+## v0.5.1-dev (77afc9a)
+
+### New features
+
+- `Resident::Sandbox::suspendApp()` / `resumeApp()` / `isAppSuspended()` — pause
+  and resume a running app's tick without unloading it. While suspended,
+  `loop()` skips the Lua `on_tick`/event dispatch (Courier and extension updates
+  keep running) and the status display is freed for direct text via
+  `StatusDisplay::displayText()`. The m5stick-voice example uses it to show
+  "Listening" over a running app during push-to-talk.
 
 ### Fixes
 

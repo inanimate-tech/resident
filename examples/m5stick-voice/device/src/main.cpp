@@ -96,6 +96,13 @@ Resident::SandboxConfig makeConfig() {
 
 Resident::Sandbox sandbox{makeConfig()};
 
+// Idle prompt: the hold-to-talk hint with the deviceId on the line below, so
+// the id needed to pair/push is readable straight off the screen.
+static void showIdlePrompt() {
+    String msg = String("Hold button\nto talk\n") + sandbox.getDeviceId();
+    displayDriver.displayText(msg.c_str());
+}
+
 // Push-to-talk. A plain C function pointer — cannot capture, so it works
 // against the file-scope globals above. The same callback fires for both
 // edges: started=true once the hold passes the threshold, started=false on
@@ -107,12 +114,18 @@ static void onHold(bool started) {
         dbgFramesRec = dbgFramesSent = dbgSendFail = 0;
         dbgHoldStarts++;
         streaming = true;
+        if (sandbox.isAppRunning()) sandbox.suspendApp();
         displayDriver.displayText("Listening");
         Serial.printf("[voice] %lu HOLD start (#%lu) -> streaming\n",
                       millis(), dbgHoldStarts);
     } else {
         streaming = false;
-        displayDriver.displayText("Hold button\nto talk");
+        if (sandbox.isAppRunning()) {
+            sandbox.resumeApp();
+            displayDriver.repaint();  // restore the app's last frame immediately
+        } else {
+            showIdlePrompt();
+        }
         Serial.printf("[voice] %lu HOLD end -> stopped "
                       "(rec=%lu sent=%lu fail=%lu)\n",
                       millis(), dbgFramesRec, dbgFramesSent, dbgSendFail);
@@ -154,7 +167,7 @@ void setup() {
         Serial.printf("[voice] device id %s — viewer: https://%s/devices/%s/\n",
                       sandbox.getDeviceId().c_str(), SERVER_HOST,
                       sandbox.getDeviceId().c_str());
-        if (!streaming) displayDriver.displayText("Hold button\nto talk");
+        if (!streaming) showIdlePrompt();
     });
 
     // Push-to-talk on button 0 (the front button). Uses the 200ms default

@@ -410,8 +410,8 @@ void Sandbox::loop() {
     _config.extensions.items[i]->update();
   }
 
-  // Lua tick + event dispatch only when an app is running.
-  if (!_appRunning) return;
+  // Lua tick + event dispatch only when an app is running and not suspended.
+  if (!_appRunning || _appSuspended) return;
 
   unsigned long now = millis();
   unsigned long elapsed = now - _lastTickTime;
@@ -425,6 +425,9 @@ void Sandbox::loop() {
 
 void Sandbox::loadApp(const char* luaCode)
 {
+  // A freshly loaded app starts running, never suspended.
+  _appSuspended = false;
+
   // Stop current app before loading new one
   if (_appRunning) {
     _appRunning = false;
@@ -461,6 +464,11 @@ void Sandbox::loadShader(const ShaderFields& fields) {
   loadApp(luaCode.c_str());
 }
 
+// Events received while the app is suspended are still queued onto the ring
+// here; loop() defers dispatch (processNextEvent) until resumeApp(), so they
+// are deferred — not dropped — though a long suspend can overflow the 8-slot
+// ring and lose the oldest. Gating on _appRunning (not _appSuspended) is
+// deliberate: a suspended app is still loaded and will see the events.
 void Sandbox::sendAppEvent(const char* name, const char* dataJson)
 {
   if (!_appRunning || !_onEventFuncRef) return;
@@ -470,6 +478,25 @@ void Sandbox::sendAppEvent(const char* name, const char* dataJson)
 bool Sandbox::isAppRunning() const
 {
   return _appRunning;
+}
+
+void Sandbox::suspendApp()
+{
+  if (!_appRunning || _appSuspended) return;
+  _appSuspended = true;
+  notifyAppRunning(false);  // free the status display for overlay text
+}
+
+void Sandbox::resumeApp()
+{
+  if (!_appRunning || !_appSuspended) return;
+  _appSuspended = false;
+  notifyAppRunning(true);   // re-suppress status display; app owns the screen
+}
+
+bool Sandbox::isAppSuspended() const
+{
+  return _appSuspended;
 }
 
 // --- Lua compilation ---
