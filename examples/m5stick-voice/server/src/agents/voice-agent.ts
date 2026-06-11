@@ -3,7 +3,7 @@ import type { Connection, ConnectionContext, WSMessage } from "agents"
 import { z } from "zod"
 import { validateLuaCode, type ValidationResult } from "../lib/lua-validator"
 import { parseSSELine, createLineProgress } from "../lib/codegen-stream"
-import { DEFAULT_APP, WORKING_APP } from "../lib/default-app"
+import { DEFAULT_APP } from "../lib/default-app"
 import SANDBOX_MD from "../prompts/sandbox.md?raw"
 import DEVICE_SKILL_MD from "../prompts/m5stick-device-skill.md?raw"
 
@@ -314,13 +314,9 @@ export class VoiceAgent extends DeviceAgent<Env> {
       this.openai.send(JSON.stringify({ type: "response.create" }))
     }
 
-    // Tell the viewer + device: started (zero lines so far).
+    // Tell the viewer + device: started (zero lines so far). The device renders
+    // its own status from this agent_status stream — no placeholder app push.
     this.setAgentStatus("working", { lines: 0 })
-
-    // Immediately show a "Working..." placeholder on the physical device while
-    // the coding agent generates the real app — regardless of any monitor.
-    const working = this.pushAppToDevices(WORKING_APP)
-    if (working > 0) console.log("[voice] pushed Working... ->", working, "device(s)")
 
     // Fire-and-forget.
     this.ctx.waitUntil(this.runCodingJob(jobId, parsed.description, this.codingAbort.signal))

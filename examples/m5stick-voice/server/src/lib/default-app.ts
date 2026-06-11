@@ -27,18 +27,3 @@ function on_tick(ctx, dt_ms)
   screen.flip()
 end
 `
-
-/**
- * Placeholder shown on the device while the coding agent is generating an app.
- * Screen is small (240×135) so keep it to one short line.
- */
-export const WORKING_APP = `
-function init(ctx)
-  screen.clear()
-  screen.text(58, 58, "Working...", 2, 255, 255, 255)
-  screen.flip()
-end
-
-function on_tick(ctx, dt_ms)
-end
-`
