@@ -68,6 +68,7 @@ def unit_tests() -> None:
 
 PLATFORMIO_EXAMPLES = [
     ROOT / "examples" / "m5stick-demo" / "device",
+    ROOT / "examples" / "m5stick-grove-vision-ai" / "device",
     ROOT / "examples" / "adafruit-esp32-s2-feather" / "device",
     ROOT / "examples" / "adafruit-esp32-s2-feather" / "device-minimal-resident",
     # device-no-resident doesn't use Resident; included as a smoke test that
