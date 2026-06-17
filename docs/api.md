@@ -42,6 +42,9 @@ void loop()  { sandbox.loop(); }
 | `statusDisplay` | `StatusDisplay*` | `nullptr` | Optional text display; Resident's internal handler calls `displayText()` automatically on connection state changes |
 | `statusLED` | `StatusLED*` | `nullptr` | Optional LED indicator; Resident's internal handler calls `solidColor()` automatically on connection state changes |
 | `network` | `std::optional<Courier::Config>` | unset | Networking opt-in. Set ⇒ Sandbox constructs an internal `Courier::Client`, drives WiFi / transports, fires connection callbacks. Unset ⇒ standalone runtime, no WiFi pulled in. |
+| `persistApps` | `bool` | `true` | Save the last successfully-loaded app to flash and restore it on boot. Set to `false` to disable for a build. |
+| `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown. Implement `Resident::SystemButton` and pass a pointer here. |
+| `persistentStore` | `Resident::PersistentStore*` | `nullptr` | Override the backing store for persistence. `nullptr` uses NVS on device; inject a fake in tests. |
 
 The `extensions` field is filled with a brace-list of `Extension*` pointers in registration order:
 
@@ -179,6 +182,7 @@ sandbox.resumeApp();                   // resume a suspended app
 sandbox.isAppSuspended();              // true between suspendApp() and resumeApp()
 sandbox.generationId();                // const String& — ID of the last loaded app/shader
 sandbox.setTelemetryCallback(cb);      // wire telemetry JSON to your transport
+sandbox.clearPersistedApp();           // wipe the saved app from the persistent store
 ```
 
 `loadApp` stops any running app, calls `onAppReset()` on all extensions, generates a new `generationId`, and compiles the new app. An app must define at least one of `init`, `on_tick`, or `on_event` — compilation is rejected otherwise.
@@ -628,6 +632,37 @@ The entire JSON document (as a `ShaderFields` map of string key/value pairs) is 
 
 Calls `Sandbox::sendAppEvent(name, dataJson)`. The event arrives in Lua as `on_event(ctx, event)` with `event.data` set to the parsed `data` object.
 
+### `forget` — clear the persisted app
+
+```json
+{ "type": "forget" }
+```
+
+Calls `Sandbox::clearPersistedApp()`. The next boot will not restore any app. Equivalent to calling `clearPersistedApp()` directly.
+
+### App persistence
+
+The last app (or shader) that loads successfully — compiles **and** runs `init()` without error — is saved to flash (NVS) and auto-reloaded on the next boot.
+
+On boot, if a saved app exists, the device shows its device ID and a 20-second countdown on the status display before loading it:
+
+```
+<deviceType> <deviceId>
+20s
+```
+
+You need the device ID to push apps to the device, so the countdown is a reminder. It is a timer (not press-to-continue) because not every board has a button. The countdown is skipped early by a configured `SystemButton` press or by an app/shader arriving over the network.
+
+If the saved app fails to load — for example after the firmware was reflashed with a changed runtime surface — it is discarded and the device falls back to the status screen (telemetry `persist_load_failed`).
+
+Config fields related to persistence:
+
+- `persistApps` (default `true`) — turn persistence off for a build.
+- `systemButton` (`Resident::SystemButton*`, default `nullptr`) — a button the runtime polls to skip the countdown.
+- `persistentStore` (`Resident::PersistentStore*`, default `nullptr`) — override the backing store; `nullptr` uses NVS on device.
+
+Send `{"type":"forget"}` (or call `clearPersistedApp()`) to wipe the saved app.
+
 ### Telemetry (outgoing)
 
 The sandbox emits telemetry events via `TelemetryCallback`. Format:
@@ -644,6 +679,9 @@ The sandbox emits telemetry events via `TelemetryCallback`. Format:
 | `compile_error` | Compilation or execution failed; `data.error` contains the message |
 | `runtime_error` | A Lua callback threw an error. `on_tick` errors are rate-limited (see [Limits](#limits)); `init` and `on_event` errors are emitted immediately. |
 | `log_error` | App called `log.error(msg)` |
+| `app_restored` | A persisted app was successfully restored on boot |
+| `persist_load_failed` | A persisted app failed to load on boot and was discarded |
+| `persist_too_big` | An app was too large to save to the persistent store |
 
 Wire the callback up before `setup()` to forward telemetry over the connected WebSocket transport:
 
