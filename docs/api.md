@@ -648,6 +648,7 @@ On boot, if a saved app exists, the device shows its device ID and a 20-second c
 
 ```
 <deviceType> <deviceId>
+
 20s
 ```
 
