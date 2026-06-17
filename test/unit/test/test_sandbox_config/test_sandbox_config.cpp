@@ -62,10 +62,18 @@ void test_network_optional_can_be_assigned(void) {
     TEST_ASSERT_EQUAL_UINT32(0x08080808, cfg.network->dns1);
 }
 
+void test_persistence_config_defaults(void) {
+  Resident::SandboxConfig cfg;
+  TEST_ASSERT_TRUE(cfg.persistApps);                  // persistence on by default
+  TEST_ASSERT_NULL(cfg.systemButton);                 // no system button by default
+  TEST_ASSERT_NULL(cfg.persistentStore);              // default store selected by Sandbox
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_default_construction);
     RUN_TEST(test_assign_top_level_fields);
     RUN_TEST(test_network_optional_can_be_assigned);
+    RUN_TEST(test_persistence_config_defaults);
     return UNITY_END();
 }
