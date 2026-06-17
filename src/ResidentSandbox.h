@@ -184,10 +184,16 @@ private:
     bool _lastInitOk = false;   // set by compileApp via callInit()
     bool loadAppInternal(const char* luaCode, bool persistOnSuccess);
 
-    // Boot countdown (see Task 3 for the loop()/setup() wiring)
+    // Boot countdown: when a saved app exists, show the device ID for
+    // BOOT_COUNTDOWN_MS before auto-loading it. Hard-coded duration.
     enum class BootPhase { Idle, Countdown };
     BootPhase _bootPhase = BootPhase::Idle;
     String _pendingPersistedSource;
+    unsigned long _countdownStartMs = 0;
+    int _lastCountdownSecondShown = -1;
+    static constexpr unsigned long BOOT_COUNTDOWN_MS = 20000;
+    void updateBootCountdown();
+    void finishBootCountdown();
 
     // Frame timing
     unsigned long _lastTickTime = 0;

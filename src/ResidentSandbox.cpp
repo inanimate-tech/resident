@@ -238,10 +238,11 @@ void Sandbox::setup()
   if (_initialized) return;
   _initialized = true;
 
-  if (_courier.has_value()) {
-    // Re-derive deviceId in case it wasn't ready at construction.
-    _deviceId = ::getDeviceId();
+  // deviceId is derived from the chip MAC and needed for the boot countdown
+  // even in standalone (networkless) mode.
+  _deviceId = ::getDeviceId();
 
+  if (_courier.has_value()) {
     // 1. User's onConfigureNetwork — first; lets them register transports,
     //    set certs, etc., before any Courier setup runs.
     if (_onConfigureNetwork) {
@@ -273,6 +274,16 @@ void Sandbox::setup()
   // Select the persistence store: explicit override wins; otherwise the
   // platform default (NVS on device) is chosen in Task 4. Native stays null.
   _store = _config.persistentStore;
+
+  // Arm the boot countdown if a previously-saved app exists.
+  if (_config.persistApps && _store) {
+    _pendingPersistedSource = _store->load();
+    if (!_pendingPersistedSource.isEmpty()) {
+      _bootPhase = BootPhase::Countdown;
+      _countdownStartMs = millis();
+      _lastCountdownSecondShown = -1;
+    }
+  }
 
   // 6. Kick off Courier (WiFi + transports).
   if (_courier.has_value()) {
@@ -339,20 +350,21 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
   // Resident's internal status-text handling. Runs unconditionally if a
   // statusDisplay is configured. User's onConnectionChange callback runs
   // after, in addition (does not replace).
-  switch (state) {
-    case S::WifiConnecting:        showStatusText("WiFi..."); break;
-    case S::WifiConfiguring: {
-      // Build status text, appending AP name when available
-      String s = _apName.isEmpty() ? "Configure WiFi" : (String("Configure WiFi\n\n") + _apName);
-      showStatusText(s.c_str());
-      break;
+  if (_bootPhase != BootPhase::Countdown) {
+    switch (state) {
+      case S::WifiConnecting:        showStatusText("WiFi..."); break;
+      case S::WifiConfiguring: {
+        String s = _apName.isEmpty() ? "Configure WiFi" : (String("Configure WiFi\n\n") + _apName);
+        showStatusText(s.c_str());
+        break;
+      }
+      case S::WifiConnected:         showStatusText("WiFi connected"); break;
+      case S::TransportsConnecting:  showStatusText("Connecting..."); break;
+      case S::Connected:             showStatusText("Connected"); break;
+      case S::Reconnecting:          showStatusText("Reconnecting..."); break;
+      case S::ConnectionFailed:      showStatusText("Connection failed"); break;
+      default: break;
     }
-    case S::WifiConnected:         showStatusText("WiFi connected"); break;
-    case S::TransportsConnecting:  showStatusText("Connecting..."); break;
-    case S::Connected:             showStatusText("Connected"); break;
-    case S::Reconnecting:          showStatusText("Reconnecting..."); break;
-    case S::ConnectionFailed:      showStatusText("Connection failed"); break;
-    default: break;
   }
 
   if (_config.statusLED) {
@@ -399,6 +411,11 @@ void Sandbox::loop() {
     _courier->loop();
   }
   if (_config.statusDisplay) _config.statusDisplay->update();
+
+  if (_bootPhase == BootPhase::Countdown) {
+    updateBootCountdown();
+    return;  // app not loaded yet; skip the tick path
+  }
 
   if (!_lua) return;
 
@@ -476,6 +493,55 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   }
 
   return loadedOk;
+}
+
+void Sandbox::updateBootCountdown()
+{
+  unsigned long elapsed = millis() - _countdownStartMs;
+  bool skip = _config.systemButton && _config.systemButton->pressed();
+  if (skip || elapsed >= BOOT_COUNTDOWN_MS) {
+    finishBootCountdown();
+    return;
+  }
+
+  // Ceil to whole seconds so the first frame reads "20s" and the last "1s".
+  int remaining = (int)((BOOT_COUNTDOWN_MS - elapsed + 999) / 1000);
+  if (remaining != _lastCountdownSecondShown) {
+    _lastCountdownSecondShown = remaining;
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%s %s\n\n%ds",
+             getDeviceType(), _deviceId.c_str(), remaining);
+    showStatusText(buf);
+  }
+}
+
+void Sandbox::finishBootCountdown()
+{
+  String src = _pendingPersistedSource;
+  _pendingPersistedSource = "";
+  _bootPhase = BootPhase::Idle;
+  if (src.isEmpty()) return;
+
+  // Restore through the normal load path, but never re-persist a restore.
+  bool ok = loadAppInternal(src.c_str(), /*persistOnSuccess=*/false);
+  if (ok) {
+    emitTelemetry("app_restored");
+    return;
+  }
+
+  // "Just C": a saved app that no longer loads (e.g. the sandbox was reflashed)
+  // is discarded; stop any partial app and fall back to the status screen.
+  if (_appRunning) {
+    _appRunning = false;
+    _appSuspended = false;
+    notifyAppRunning(false);
+  }
+  if (_store) _store->clear();
+  emitTelemetry("persist_load_failed");
+
+  char buf[48];
+  snprintf(buf, sizeof(buf), "%s %s", getDeviceType(), _deviceId.c_str());
+  showStatusText(buf);
 }
 
 void Sandbox::loadShader(const ShaderFields& fields) {
