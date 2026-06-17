@@ -338,6 +338,10 @@ void Sandbox::onCourierMessage(const char* transportName,
     if (name) sendAppEvent(name, dataJson);
     return;
   }
+  if (strcmp(type, "forget") == 0) {
+    clearPersistedApp();
+    return;
+  }
 
   // Anything else → user callback if registered.
   if (_onMessage) _onMessage(transportName, type, doc);
@@ -542,6 +546,11 @@ void Sandbox::finishBootCountdown()
   char buf[48];
   snprintf(buf, sizeof(buf), "%s %s", getDeviceType(), _deviceId.c_str());
   showStatusText(buf);
+}
+
+void Sandbox::clearPersistedApp()
+{
+  if (_store) _store->clear();
 }
 
 void Sandbox::loadShader(const ShaderFields& fields) {

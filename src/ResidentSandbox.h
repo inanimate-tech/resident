@@ -50,6 +50,9 @@ public:
     // Send an app event to the running app
     void sendAppEvent(const char* name, const char* dataJson);
 
+    // Forget any persisted app (so the next boot has nothing to restore).
+    void clearPersistedApp();
+
     // State queries
     bool isAppRunning() const;
 

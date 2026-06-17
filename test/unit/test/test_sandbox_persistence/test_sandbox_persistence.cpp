@@ -209,6 +209,14 @@ void test_persist_disabled_no_countdown(void) {
   TEST_ASSERT_EQUAL_INT(0, (int)display->texts.size());  // no countdown text
 }
 
+void test_clear_persisted_app(void) {
+  store->save(GOOD_APP, strlen(GOOD_APP));
+  makeSandbox(true, false);
+  sandbox->clearPersistedApp();
+  TEST_ASSERT_FALSE(store->hasValue);
+  TEST_ASSERT_TRUE(store->clearCalls >= 1);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_save_after_successful_load);
@@ -222,6 +230,7 @@ int main(int, char**) {
   RUN_TEST(test_network_push_cancels_countdown);
   RUN_TEST(test_restore_failure_discards_and_falls_back);
   RUN_TEST(test_persist_disabled_no_countdown);
+  RUN_TEST(test_clear_persisted_app);
   UNITY_END();
   return 0;
 }
