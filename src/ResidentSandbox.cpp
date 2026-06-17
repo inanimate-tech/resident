@@ -4,6 +4,7 @@
 #include <math.h>
 #include <cassert>
 #include "chipstring.h"
+#include "ResidentNvsStore.h"   // device-only; no-op on native
 
 extern "C" {
   #include "lua/lua.h"
@@ -271,9 +272,16 @@ void Sandbox::setup()
   // 5. Sandbox internals (Lua state, extensions). Always.
   initialize();
 
-  // Select the persistence store: explicit override wins; otherwise the
-  // platform default (NVS on device) is chosen in Task 4. Native stays null.
+  // Explicit override wins; otherwise use the platform default (NVS on
+  // device). On native (neither macro defined) _store stays null unless a
+  // test injected one.
   _store = _config.persistentStore;
+#if defined(ARDUINO) || defined(ESP_PLATFORM)
+  if (!_store && _config.persistApps) {
+    static NvsPersistentStore s_defaultStore;
+    if (s_defaultStore.begin()) _store = &s_defaultStore;
+  }
+#endif
 
   // Arm the boot countdown if a previously-saved app exists.
   if (_config.persistApps && _store) {
