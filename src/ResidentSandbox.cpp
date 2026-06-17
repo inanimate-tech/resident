@@ -270,6 +270,10 @@ void Sandbox::setup()
   // 5. Sandbox internals (Lua state, extensions). Always.
   initialize();
 
+  // Select the persistence store: explicit override wins; otherwise the
+  // platform default (NVS on device) is chosen in Task 4. Native stays null.
+  _store = _config.persistentStore;
+
   // 6. Kick off Courier (WiFi + transports).
   if (_courier.has_value()) {
     _courier->setup();
@@ -425,6 +429,17 @@ void Sandbox::loop() {
 
 void Sandbox::loadApp(const char* luaCode)
 {
+  loadAppInternal(luaCode, /*persistOnSuccess=*/true);
+}
+
+bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
+{
+  // An explicit load supersedes a pending boot-countdown restore.
+  if (_bootPhase == BootPhase::Countdown) {
+    _bootPhase = BootPhase::Idle;
+    _pendingPersistedSource = "";
+  }
+
   // A freshly loaded app starts running, never suspended.
   _appSuspended = false;
 
@@ -443,12 +458,24 @@ void Sandbox::loadApp(const char* luaCode)
   _generationId = String(millis(), HEX);
   emitTelemetry("app_received");
 
-  if (compileApp(luaCode)) {
+  bool compiled = compileApp(luaCode);
+  if (compiled) {
     Serial.println("Resident::Sandbox: app compiled successfully");
     emitTelemetry("app_compiled");
   } else {
     Serial.println("Resident::Sandbox: app compilation failed");
   }
+
+  bool loadedOk = compiled && _lastInitOk;
+
+  // Persist only an app we know loaded cleanly, and never re-persist a restore.
+  if (persistOnSuccess && loadedOk && _config.persistApps && _store) {
+    if (!_store->save(luaCode, strlen(luaCode))) {
+      emitTelemetry("persist_too_big");
+    }
+  }
+
+  return loadedOk;
 }
 
 void Sandbox::loadShader(const ShaderFields& fields) {
@@ -522,6 +549,7 @@ bool Sandbox::compileApp(const char* code)
   // Reset runtime error rate limiter
   _runtimeErrorCount = 0;
   _lastRuntimeErrorMillis = 0;
+  _lastInitOk = false;
 
   // Clear old global functions
   lua_pushnil(_lua);
@@ -597,15 +625,15 @@ bool Sandbox::compileApp(const char* code)
 
   _appRunning = true;
   notifyAppRunning(true);
-  callInit();
+  _lastInitOk = callInit();
 
   Serial.println("Resident::Sandbox: app compiled successfully");
   return true;
 }
 
-void Sandbox::callInit()
+bool Sandbox::callInit()
 {
-  if (!_lua || _initFuncRef == LUA_NOREF) return;
+  if (!_lua || _initFuncRef == LUA_NOREF) return true;
 
   lua_rawgeti(_lua, LUA_REGISTRYINDEX, _initFuncRef);
 
@@ -626,7 +654,9 @@ void Sandbox::callInit()
     Serial.printf("Resident::Sandbox: init() error: %s\n", errMsg);
     emitTelemetry("runtime_error", errMsg);
     lua_pop(_lua, 1);
+    return false;
   }
+  return true;
 }
 
 void Sandbox::callOnTick(unsigned long dt_ms)

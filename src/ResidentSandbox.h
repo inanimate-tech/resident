@@ -179,6 +179,16 @@ private:
     int _onTickFuncRef = 0;
     int _onEventFuncRef = 0;
 
+    // App persistence
+    PersistentStore* _store = nullptr;
+    bool _lastInitOk = false;   // set by compileApp via callInit()
+    bool loadAppInternal(const char* luaCode, bool persistOnSuccess);
+
+    // Boot countdown (see Task 3 for the loop()/setup() wiring)
+    enum class BootPhase { Idle, Countdown };
+    BootPhase _bootPhase = BootPhase::Idle;
+    String _pendingPersistedSource;
+
     // Frame timing
     unsigned long _lastTickTime = 0;
     static constexpr unsigned long TICK_INTERVAL = 100; // 10 FPS
@@ -203,7 +213,7 @@ private:
     // Lua setup
     void setupLuaEnvironment();
     bool compileApp(const char* code);
-    void callInit();
+    bool callInit();  // true if init ran without error (or no init function)
     void callOnTick(unsigned long dt_ms);
     void processNextEvent();
     void pushLocalTimeFields();  // pushes utc_h/utc_m/localtime_h/localtime_m onto the Lua table at stack top
