@@ -290,7 +290,7 @@ void Sandbox::setup()
       if (_config.statusDisplay) {
         // The countdown's sole purpose is to show the device ID on the display.
         // Only arm it when there is a display to show it on.
-        _bootPhase = BootPhase::Countdown;
+        _runState = RunState::Pending;
         _countdownStartMs = millis();
         _lastCountdownSecondShown = -1;
       } else {
@@ -369,7 +369,7 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
   // Resident's internal status-text handling. Runs unconditionally if a
   // statusDisplay is configured. User's onConnectionChange callback runs
   // after, in addition (does not replace).
-  if (_bootPhase != BootPhase::Countdown) {
+  if (_runState != RunState::Pending) {
     switch (state) {
       case S::WifiConnecting:        showStatusText("WiFi..."); break;
       case S::WifiConfiguring: {
@@ -431,7 +431,7 @@ void Sandbox::loop() {
   }
   if (_config.statusDisplay) _config.statusDisplay->update();
 
-  if (_bootPhase == BootPhase::Countdown) {
+  if (_runState == RunState::Pending) {
     updateBootCountdown();
     return;  // app not loaded yet; skip the tick path
   }
@@ -451,7 +451,7 @@ void Sandbox::loop() {
   }
 
   // Lua tick + event dispatch only when an app is running and not suspended.
-  if (!_appRunning || _appSuspended) return;
+  if (_runState != RunState::Running) return;
 
   unsigned long now = millis();
   unsigned long elapsed = now - _lastTickTime;
@@ -471,17 +471,16 @@ void Sandbox::loadApp(const char* luaCode)
 bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
 {
   // An explicit load supersedes a pending boot-countdown restore.
-  if (_bootPhase == BootPhase::Countdown) {
-    _bootPhase = BootPhase::Idle;
+  if (_runState == RunState::Pending) {
+    _runState = RunState::Idle;
     _pendingPersistedSource = "";
   }
 
-  // A freshly loaded app starts running, never suspended.
-  _appSuspended = false;
-
-  // Stop current app before loading new one
-  if (_appRunning) {
-    _appRunning = false;
+  // Stop any currently-loaded app (Running or Suspended) before loading the
+  // new one. A freshly loaded app starts Running, never Suspended — compileApp
+  // sets that below.
+  if (isAppRunning()) {
+    _runState = RunState::Idle;
     notifyAppRunning(false);
   }
 
@@ -538,7 +537,7 @@ void Sandbox::finishBootCountdown()
 {
   String src = _pendingPersistedSource;
   _pendingPersistedSource = "";
-  _bootPhase = BootPhase::Idle;
+  _runState = RunState::Idle;
   if (src.isEmpty()) return;
 
   // Restore through the normal load path, but never re-persist a restore.
@@ -550,9 +549,8 @@ void Sandbox::finishBootCountdown()
 
   // "Just C": a saved app that no longer loads (e.g. the sandbox was reflashed)
   // is discarded; stop any partial app and fall back to the status screen.
-  if (_appRunning) {
-    _appRunning = false;
-    _appSuspended = false;
+  if (isAppRunning()) {
+    _runState = RunState::Idle;
     notifyAppRunning(false);
   }
   if (_store) _store->clear();
@@ -584,36 +582,36 @@ void Sandbox::loadShader(const ShaderFields& fields) {
 // Events received while the app is suspended are still queued onto the ring
 // here; loop() defers dispatch (processNextEvent) until resumeApp(), so they
 // are deferred — not dropped — though a long suspend can overflow the 8-slot
-// ring and lose the oldest. Gating on _appRunning (not _appSuspended) is
+// ring and lose the oldest. Gating on isAppRunning() (true while Suspended) is
 // deliberate: a suspended app is still loaded and will see the events.
 void Sandbox::sendAppEvent(const char* name, const char* dataJson)
 {
-  if (!_appRunning || !_onEventFuncRef) return;
+  if (!isAppRunning() || !_onEventFuncRef) return;
   pushAppEvent(name, dataJson ? dataJson : "{}", "", millis());
 }
 
 bool Sandbox::isAppRunning() const
 {
-  return _appRunning;
+  return _runState == RunState::Running || _runState == RunState::Suspended;
 }
 
 void Sandbox::suspendApp()
 {
-  if (!_appRunning || _appSuspended) return;
-  _appSuspended = true;
+  if (_runState != RunState::Running) return;
+  _runState = RunState::Suspended;
   notifyAppRunning(false);  // free the status display for overlay text
 }
 
 void Sandbox::resumeApp()
 {
-  if (!_appRunning || !_appSuspended) return;
-  _appSuspended = false;
+  if (_runState != RunState::Suspended) return;
+  _runState = RunState::Running;
   notifyAppRunning(true);   // re-suppress status display; app owns the screen
 }
 
 bool Sandbox::isAppSuspended() const
 {
-  return _appSuspended;
+  return _runState == RunState::Suspended;
 }
 
 // --- Lua compilation ---
@@ -713,7 +711,7 @@ bool Sandbox::compileApp(const char* code)
   _triggerResetTime = millis();
   _lastTickTime = millis();
 
-  _appRunning = true;
+  _runState = RunState::Running;
   notifyAppRunning(true);
   _lastInitOk = callInit();
 

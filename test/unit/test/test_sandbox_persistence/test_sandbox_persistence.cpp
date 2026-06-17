@@ -240,6 +240,26 @@ void test_persist_no_display_skips_countdown(void) {
   TEST_ASSERT_TRUE(telemetryHas("app_restored"));
 }
 
+// Suspension is only legal once an app is loaded (RunState::Running). During
+// the boot countdown (RunState::Pending) no app exists yet, so suspendApp()
+// must be ignored — and must not corrupt the pending restore.
+void test_suspend_during_countdown_is_ignored(void) {
+  store->save(GOOD_APP, strlen(GOOD_APP));
+  makeSandbox(true, false);             // arms the countdown (Pending)
+  sandbox->loop();                       // counting down, no app yet
+  TEST_ASSERT_FALSE(sandbox->isAppRunning());
+
+  sandbox->suspendApp();                 // no-op: nothing loaded to suspend
+  TEST_ASSERT_FALSE(sandbox->isAppSuspended());
+  TEST_ASSERT_FALSE(sandbox->isAppRunning());
+
+  testMillis() = 20000;                  // countdown still completes normally
+  sandbox->loop();
+  TEST_ASSERT_TRUE(sandbox->isAppRunning());
+  TEST_ASSERT_FALSE(sandbox->isAppSuspended());
+  TEST_ASSERT_TRUE(telemetryHas("app_restored"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_save_after_successful_load);
@@ -255,6 +275,7 @@ int main(int, char**) {
   RUN_TEST(test_persist_disabled_no_countdown);
   RUN_TEST(test_clear_persisted_app);
   RUN_TEST(test_persist_no_display_skips_countdown);
+  RUN_TEST(test_suspend_during_countdown_is_ignored);
   UNITY_END();
   return 0;
 }

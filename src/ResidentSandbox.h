@@ -124,8 +124,17 @@ public:
 
 private:
     struct lua_State* _lua = nullptr;
-    bool _appRunning = false;
-    bool _appSuspended = false;
+
+    // Unified execution state — the sandbox's single source of truth for what
+    // the Lua VM is doing. Idle: no app loaded. Pending: a persisted app is
+    // waiting behind the boot countdown (no app loaded yet). Running: app
+    // loaded and ticking. Suspended: app loaded but tick + event dispatch are
+    // paused and the status display is freed for overlay text. isAppRunning()
+    // is true for both Running and Suspended; the Lua tick runs only in
+    // Running. Transitions: Idle/Pending → Running (loadApp); Running ⇄
+    // Suspended (suspendApp/resumeApp); any → Idle (failed/replaced load).
+    enum class RunState { Idle, Pending, Running, Suspended };
+    RunState _runState = RunState::Idle;
 
     // Timezone selected via registration's detectedTimezone. When
     // _hasTimezone is true, ctx.localtime_* and time.hour/minute/second read
@@ -187,10 +196,9 @@ private:
     bool _lastInitOk = false;   // set by compileApp via callInit()
     bool loadAppInternal(const char* luaCode, bool persistOnSuccess);
 
-    // Boot countdown: when a saved app exists, show the device ID for
-    // BOOT_COUNTDOWN_MS before auto-loading it. Hard-coded duration.
-    enum class BootPhase { Idle, Countdown };
-    BootPhase _bootPhase = BootPhase::Idle;
+    // Boot countdown data (active while _runState == RunState::Pending): show
+    // the device ID for BOOT_COUNTDOWN_MS before auto-loading the persisted
+    // app. Hard-coded duration.
     String _pendingPersistedSource;
     unsigned long _countdownStartMs = 0;
     int _lastCountdownSecondShown = -1;
