@@ -217,6 +217,29 @@ void test_clear_persisted_app(void) {
   TEST_ASSERT_TRUE(store->clearCalls >= 1);
 }
 
+// A board with no statusDisplay must not arm the 20-second countdown —
+// the countdown's sole purpose is to show the device ID on a screen.
+// Instead, setup() must restore the app immediately via finishBootCountdown().
+void test_persist_no_display_skips_countdown(void) {
+  store->save(GOOD_APP, strlen(GOOD_APP));  // seed a saved app
+
+  // Build without a statusDisplay; do not use makeSandbox() which always sets one.
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  cfg.persistApps = true;
+  cfg.persistentStore = store;
+  // cfg.statusDisplay intentionally left null
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setTelemetryCallback([](const char* json) {
+    telemetry->push_back(json ? json : "");
+  });
+  sandbox->setup();
+
+  // App must already be running — no loop() call, no time advance needed.
+  TEST_ASSERT_TRUE(sandbox->isAppRunning());
+  TEST_ASSERT_TRUE(telemetryHas("app_restored"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_save_after_successful_load);
@@ -231,6 +254,7 @@ int main(int, char**) {
   RUN_TEST(test_restore_failure_discards_and_falls_back);
   RUN_TEST(test_persist_disabled_no_countdown);
   RUN_TEST(test_clear_persisted_app);
+  RUN_TEST(test_persist_no_display_skips_countdown);
   UNITY_END();
   return 0;
 }

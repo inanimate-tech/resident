@@ -287,9 +287,16 @@ void Sandbox::setup()
   if (_config.persistApps && _store) {
     _pendingPersistedSource = _store->load();
     if (!_pendingPersistedSource.isEmpty()) {
-      _bootPhase = BootPhase::Countdown;
-      _countdownStartMs = millis();
-      _lastCountdownSecondShown = -1;
+      if (_config.statusDisplay) {
+        // The countdown's sole purpose is to show the device ID on the display.
+        // Only arm it when there is a display to show it on.
+        _bootPhase = BootPhase::Countdown;
+        _countdownStartMs = millis();
+        _lastCountdownSecondShown = -1;
+      } else {
+        // No display — nothing to show, no reason to stall. Restore immediately.
+        finishBootCountdown();
+      }
     }
   }
 
@@ -520,7 +527,7 @@ void Sandbox::updateBootCountdown()
   int remaining = (int)((BOOT_COUNTDOWN_MS - elapsed + 999) / 1000);
   if (remaining != _lastCountdownSecondShown) {
     _lastCountdownSecondShown = remaining;
-    char buf[48];
+    char buf[64];
     snprintf(buf, sizeof(buf), "%s %s\n\n%ds",
              getDeviceType(), _deviceId.c_str(), remaining);
     showStatusText(buf);
@@ -551,7 +558,7 @@ void Sandbox::finishBootCountdown()
   if (_store) _store->clear();
   emitTelemetry("persist_load_failed");
 
-  char buf[48];
+  char buf[64];
   snprintf(buf, sizeof(buf), "%s %s", getDeviceType(), _deviceId.c_str());
   showStatusText(buf);
 }
