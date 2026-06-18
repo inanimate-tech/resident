@@ -41,9 +41,6 @@ Resident::SandboxConfig makeConfig() {
 
 Resident::Sandbox sandbox{makeConfig()};
 
-// Stash the registered timezone so the welcome app can display it.
-static String g_timezone;
-
 // POST /devices/<id>/register on the custom server and apply whatever config
 // comes back. For this example, the only thing we care about is `timezone` —
 // once applied via Sandbox::setTimezone, ctx.localtime_h/m in Lua reflect it.
@@ -78,7 +75,6 @@ static void registerWithServer() {
     if (tz && *tz) {
         Serial.printf("[register] timezone: %s\n", tz);
         sandbox.setTimezone(tz);
-        g_timezone = tz;
     }
 }
 
@@ -98,27 +94,10 @@ void setup() {
         sandbox.ws().setEndpoint(RESIDENT_HOST, RESIDENT_PORT, wsPath.c_str());
     });
 
-    // Welcome screen on first connect — pushed apps replace it.
-    sandbox.onConnected([]() {
-        static bool loaded = false;
-        if (loaded) return;
-        loaded = true;
-        String app = "function init(ctx)\n"
-                     "  screen.clear()\n"
-                     "  screen.text(10, 10, 'Resident', 3)\n"
-                     "  screen.text(10, 46, 'Device ID:', 2)\n"
-                     "  screen.text(10, 68, '";
-        app += sandbox.getDeviceId();
-        app += "', 3, 0, 255, 0)\n";
-        if (g_timezone.length() > 0) {
-            app += "  screen.text(10, 108, 'TZ: ";
-            app += g_timezone;
-            app += "', 2)\n";
-        }
-        app += "  screen.flip()\n"
-               "end\n";
-        sandbox.loadApp(app.c_str());
-    });
+    // No welcome/bootstrap app on connect: Resident shows the device ID
+    // itself (the boot countdown screen) and auto-restores the last persisted
+    // app. A hand-rolled onConnected loadApp here would cancel that restore
+    // and overwrite the persisted app in NVS.
 
     sandbox.setup();
 }

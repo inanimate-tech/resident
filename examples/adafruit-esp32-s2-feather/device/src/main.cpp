@@ -97,29 +97,10 @@ void setup() {
     sandbox.ws().setEndpoint(RESIDENT_HOST, RESIDENT_PORT, wsPath.c_str());
   });
 
-  // On first successful connection, replace the StatusDisplay's text with
-  // a tiny Lua app that paints the device ID on the TFT and sets the
-  // NeoPixel green. A real app sent via push-app replaces this. Function-
-  // local static guards against re-firing on reconnect (would otherwise
-  // clobber a user-pushed app).
-  sandbox.onConnected([]() {
-    static bool loaded = false;
-    if (loaded) return;
-    loaded = true;
-    String app = "function init(ctx)\n"
-                 "  screen.clear()\n"
-                 "  screen.text(5, 5, 'Resident', 2, 0, 255, 255)\n"
-                 "  screen.text(5, 30, 'feather-tft', 1)\n"
-                 "  screen.text(5, 55, 'Device ID:', 1, 200, 200, 200)\n"
-                 "  screen.text(5, 75, '";
-    app += sandbox.getDeviceId();
-    app += "', 2, 0, 255, 0)\n"
-           "  screen.flip()\n"
-           "  led.set_brightness(20)\n"
-           "  led.set(0, 255, 0)\n"
-           "end\n";
-    sandbox.loadApp(app.c_str());
-  });
+  // No bootstrap app on connect: Resident now shows the device ID itself
+  // (the boot countdown screen) and auto-restores the last persisted app. A
+  // hand-rolled onConnected loadApp here would cancel that restore and
+  // overwrite the persisted app in NVS.
 
   // Hand off to Resident. It owns: WiFi (via WiFiManager captive portal
   // on first boot, persisted to NVS thereafter), time sync (via ezTime),
