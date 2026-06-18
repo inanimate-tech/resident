@@ -436,11 +436,11 @@ void Sandbox::showIdentityScreen(int countdownSecs)
   if (!_config.statusDisplay) return;
   char buf[96];
   if (countdownSecs >= 0) {
-    snprintf(buf, sizeof(buf), "Device type: %s\nDevice ID: %s\n\n%ds",
-             getDeviceType(), _deviceId.c_str(), countdownSecs);
+    snprintf(buf, sizeof(buf), "Device ID: %s\nType: %s\n\n%ds",
+             _deviceId.c_str(), getDeviceType(), countdownSecs);
   } else {
-    snprintf(buf, sizeof(buf), "Device type: %s\nDevice ID: %s",
-             getDeviceType(), _deviceId.c_str());
+    snprintf(buf, sizeof(buf), "Device ID: %s\nType: %s",
+             _deviceId.c_str(), getDeviceType());
   }
   showStatusText(buf);
 }
@@ -550,9 +550,12 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
 
 void Sandbox::updateBootCountdown()
 {
+  // System button (if present): a tap loads the saved app now; a long press
+  // forgets it. Either gesture ends the countdown.
+  if (_config.systemButton && handleCountdownButton()) return;
+
   unsigned long elapsed = millis() - _countdownStartMs;
-  bool skip = _config.systemButton && _config.systemButton->pressed();
-  if (skip || elapsed >= BOOT_COUNTDOWN_MS) {
+  if (elapsed >= BOOT_COUNTDOWN_MS) {
     finishBootCountdown();
     return;
   }
@@ -563,6 +566,45 @@ void Sandbox::updateBootCountdown()
     _lastCountdownSecondShown = remaining;
     showIdentityScreen(remaining);
   }
+}
+
+bool Sandbox::handleCountdownButton()
+{
+  bool down = _config.systemButton->pressed();
+
+  if (down && !_buttonWasDown) {
+    // Press edge — start timing.
+    _buttonWasDown = true;
+    _buttonDownSince = millis();
+    _longPressFired = false;
+    return false;
+  }
+
+  if (down && _buttonWasDown) {
+    // Held — fire the long press once the threshold is crossed (no release
+    // needed, so a long hold has tactile feedback as soon as it counts).
+    if (!_longPressFired &&
+        millis() - _buttonDownSince >= SYSTEM_BUTTON_LONG_PRESS_MS) {
+      _longPressFired = true;
+      _buttonWasDown = false;
+      _pendingPersistedSource = "";
+      if (_store) _store->clear();
+      _runState = RunState::Ready;
+      showReadyScreen();           // settle on the device-identity screen
+      return true;
+    }
+    return false;
+  }
+
+  if (!down && _buttonWasDown) {
+    // Release edge.
+    _buttonWasDown = false;
+    if (!_longPressFired) {
+      finishBootCountdown();       // tap → load the saved app now
+      return true;
+    }
+  }
+  return false;
 }
 
 void Sandbox::finishBootCountdown()

@@ -133,13 +133,13 @@ void test_countdown_shows_deviceid_and_counts_down(void) {
   makeSandbox(true, false);                  // setup() arms the countdown
 
   sandbox->loop();                            // t=0 -> "20s"
-  TEST_ASSERT_EQUAL_STRING("Device type: native-test\nDevice ID: a4cf1200\n\n20s",
+  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test\n\n20s",
                            display->last().c_str());
   TEST_ASSERT_FALSE(sandbox->isAppRunning()); // not loaded during countdown
 
   testMillis() = 5000;                        // 15s remaining
   sandbox->loop();
-  TEST_ASSERT_EQUAL_STRING("Device type: native-test\nDevice ID: a4cf1200\n\n15s",
+  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test\n\n15s",
                            display->last().c_str());
 }
 
@@ -156,14 +156,29 @@ void test_countdown_autoloads_after_20s(void) {
   TEST_ASSERT_TRUE(telemetryHas("app_restored"));
 }
 
-void test_button_skips_countdown(void) {
+void test_button_tap_loads_app_now(void) {
   store->save(GOOD_APP, strlen(GOOD_APP));
   makeSandbox(/*persist=*/true, /*withButton=*/true);
-  button->down = true;                // pressed at t=0
 
-  sandbox->loop();
-  TEST_ASSERT_TRUE(sandbox->isAppRunning());   // loaded immediately
+  sandbox->loop();                    // counting down, button up
+  button->down = true;  sandbox->loop();   // press
+  button->down = false; sandbox->loop();   // quick release → tap
+
+  TEST_ASSERT_TRUE(sandbox->isAppRunning());   // saved app loaded
   TEST_ASSERT_TRUE(telemetryHas("app_restored"));
+}
+
+void test_button_long_press_forgets_app(void) {
+  store->save(GOOD_APP, strlen(GOOD_APP));
+  makeSandbox(/*persist=*/true, /*withButton=*/true);
+
+  sandbox->loop();                    // counting down
+  button->down = true;  sandbox->loop();          // press at t=0
+  testMillis() = 1000;  sandbox->loop();          // held ≥ 1000ms → long press
+
+  TEST_ASSERT_FALSE(sandbox->isAppRunning());     // not loaded
+  TEST_ASSERT_FALSE(store->hasValue);             // persisted app forgotten
+  TEST_ASSERT_TRUE(store->clearCalls >= 1);
 }
 
 void test_network_push_cancels_countdown(void) {
@@ -197,7 +212,7 @@ void test_restore_failure_discards_and_falls_back(void) {
   TEST_ASSERT_FALSE(store->hasValue);                  // discarded
   TEST_ASSERT_TRUE(store->clearCalls >= 1);
   TEST_ASSERT_TRUE(telemetryHas("persist_load_failed"));
-  TEST_ASSERT_EQUAL_STRING("Device type: native-test\nDevice ID: a4cf1200",
+  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test",
                            display->last().c_str());
 }
 
@@ -211,7 +226,7 @@ void test_persist_disabled_no_countdown(void) {
   TEST_ASSERT_FALSE(sandbox->isAppRunning());            // no auto-load, no countdown
   // No countdown ran; the device rests on the Ready identity screen instead
   // (standalone, so painted at setup).
-  TEST_ASSERT_EQUAL_STRING("Device type: native-test\nDevice ID: a4cf1200",
+  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test",
                            display->last().c_str());
 }
 
@@ -221,7 +236,7 @@ void test_ready_screen_shown_when_no_persisted_app(void) {
   makeSandbox(/*persist=*/true, false);   // store left empty -> nothing to restore
 
   TEST_ASSERT_FALSE(sandbox->isAppRunning());
-  TEST_ASSERT_EQUAL_STRING("Device type: native-test\nDevice ID: a4cf1200",
+  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test",
                            display->last().c_str());
 }
 
@@ -232,7 +247,7 @@ void test_failed_load_returns_to_ready_screen(void) {
   sandbox->loadApp("this is not valid lua %%%");
 
   TEST_ASSERT_FALSE(sandbox->isAppRunning());
-  TEST_ASSERT_EQUAL_STRING("Device type: native-test\nDevice ID: a4cf1200",
+  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test",
                            display->last().c_str());
 }
 
@@ -296,7 +311,8 @@ int main(int, char**) {
   RUN_TEST(test_persist_disabled_never_saves);
   RUN_TEST(test_countdown_shows_deviceid_and_counts_down);
   RUN_TEST(test_countdown_autoloads_after_20s);
-  RUN_TEST(test_button_skips_countdown);
+  RUN_TEST(test_button_tap_loads_app_now);
+  RUN_TEST(test_button_long_press_forgets_app);
   RUN_TEST(test_network_push_cancels_countdown);
   RUN_TEST(test_restore_failure_discards_and_falls_back);
   RUN_TEST(test_persist_disabled_no_countdown);

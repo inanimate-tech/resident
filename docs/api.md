@@ -647,19 +647,19 @@ The last app (or shader) that loads successfully — compiles **and** runs `init
 On boot, if a saved app exists, the device shows its identity and a 20-second countdown on the status display before loading it:
 
 ```
-Device type: <deviceType>
 Device ID: <deviceId>
+Type: <deviceType>
 
 20s
 ```
 
-You need the device ID to push apps to the device, so the countdown is a reminder. It is a timer (not press-to-continue) because not every board has a button. The countdown is skipped early by a configured `SystemButton` press or by an app/shader arriving over the network.
+You need the device ID to push apps to the device, so the countdown is a reminder. It is a timer (not press-to-continue) because not every board has a button. An app/shader arriving over the network also ends the countdown (it loads the incoming app). If a `SystemButton` is configured, then during the countdown a **tap** loads the saved app immediately and a **long press** (≥1s) forgets it — the device then settles on the ready screen with nothing to restore.
 
 When **no** app is loaded — a fresh device, or after a load fails — the status display rests on the same identity screen without the countdown line:
 
 ```
-Device type: <deviceType>
 Device ID: <deviceId>
+Type: <deviceType>
 ```
 
 This "ready" screen appears once the device is reachable (connected, or immediately in standalone mode); while connecting, the usual connection-status text shows instead, and while an app runs the app owns the screen.

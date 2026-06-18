@@ -172,8 +172,8 @@ private:
 
     // Status display helpers.
     void showStatusText(const char* text);
-    // Paint the device-identity screen: "Device type: <t>\nDevice ID: <id>",
-    // plus a "\n\n<secs>s" line when countdownSecs >= 0 (the boot countdown).
+    // Paint the device-identity screen: "Device ID: <id>\nType: <t>", plus a
+    // "\n\n<secs>s" line when countdownSecs >= 0 (the boot countdown).
     void showIdentityScreen(int countdownSecs = -1);
     // Paint the Ready identity screen when the device is idle and reachable
     // (connected, or standalone). No-op while connecting or app-owned.
@@ -213,6 +213,16 @@ private:
     static constexpr unsigned long BOOT_COUNTDOWN_MS = 20000;
     void updateBootCountdown();
     void finishBootCountdown();
+
+    // SystemButton gesture tracking during the countdown (Pending): a tap
+    // loads the saved app, a long press forgets it. pressed() is a level read,
+    // so the runtime times the hold itself.
+    bool _buttonWasDown = false;
+    unsigned long _buttonDownSince = 0;
+    bool _longPressFired = false;
+    static constexpr unsigned long SYSTEM_BUTTON_LONG_PRESS_MS = 1000;
+    // Returns true when a gesture ended the countdown (loaded or forgot).
+    bool handleCountdownButton();
 
     // Frame timing
     unsigned long _lastTickTime = 0;
