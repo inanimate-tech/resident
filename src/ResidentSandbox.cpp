@@ -304,6 +304,12 @@ void Sandbox::setup()
   if (_courier.has_value()) {
     _courier->setup();
   }
+
+  // Standalone (no network): no Connected event will arrive to paint the
+  // Ready identity screen, so paint it now when idle.
+  if (!_courier.has_value() && _runState == RunState::Ready) {
+    showReadyScreen();
+  }
 }
 
 void Sandbox::wireInternalCourierHooks()
@@ -379,7 +385,7 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
       }
       case S::WifiConnected:         showStatusText("WiFi connected"); break;
       case S::TransportsConnecting:  showStatusText("Connecting..."); break;
-      case S::Connected:             showStatusText("Connected"); break;
+      case S::Connected:             if (_runState == RunState::Ready) showIdentityScreen(); break;
       case S::Reconnecting:          showStatusText("Reconnecting..."); break;
       case S::ConnectionFailed:      showStatusText("Connection failed"); break;
       default: break;
@@ -423,6 +429,29 @@ void Sandbox::showStatusText(const char* text)
   if (_lastStatusText == text) return;
   _lastStatusText = text;
   _config.statusDisplay->displayText(text);
+}
+
+void Sandbox::showIdentityScreen(int countdownSecs)
+{
+  if (!_config.statusDisplay) return;
+  char buf[96];
+  if (countdownSecs >= 0) {
+    snprintf(buf, sizeof(buf), "Device type: %s\nDevice ID: %s\n\n%ds",
+             getDeviceType(), _deviceId.c_str(), countdownSecs);
+  } else {
+    snprintf(buf, sizeof(buf), "Device type: %s\nDevice ID: %s",
+             getDeviceType(), _deviceId.c_str());
+  }
+  showStatusText(buf);
+}
+
+void Sandbox::showReadyScreen()
+{
+  // The Ready identity screen is the resting display when no app is loaded.
+  // Show it once the device is reachable (connected, or standalone); while
+  // connecting, the connection-status text shows instead, and while an app
+  // runs it owns the screen.
+  if (!_courier.has_value() || isConnected()) showIdentityScreen();
 }
 
 void Sandbox::loop() {
@@ -472,7 +501,7 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
 {
   // An explicit load supersedes a pending boot-countdown restore.
   if (_runState == RunState::Pending) {
-    _runState = RunState::Idle;
+    _runState = RunState::Ready;
     _pendingPersistedSource = "";
   }
 
@@ -480,7 +509,7 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   // new one. A freshly loaded app starts Running, never Suspended — compileApp
   // sets that below.
   if (isAppRunning()) {
-    _runState = RunState::Idle;
+    _runState = RunState::Ready;
     notifyAppRunning(false);
   }
 
@@ -510,6 +539,12 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
     }
   }
 
+  // A load that failed outright (compile error → no app running) returns the
+  // display to the Ready identity screen.
+  if (!loadedOk && _runState == RunState::Ready) {
+    showReadyScreen();
+  }
+
   return loadedOk;
 }
 
@@ -526,10 +561,7 @@ void Sandbox::updateBootCountdown()
   int remaining = (int)((BOOT_COUNTDOWN_MS - elapsed + 999) / 1000);
   if (remaining != _lastCountdownSecondShown) {
     _lastCountdownSecondShown = remaining;
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%s %s\n\n%ds",
-             getDeviceType(), _deviceId.c_str(), remaining);
-    showStatusText(buf);
+    showIdentityScreen(remaining);
   }
 }
 
@@ -537,7 +569,7 @@ void Sandbox::finishBootCountdown()
 {
   String src = _pendingPersistedSource;
   _pendingPersistedSource = "";
-  _runState = RunState::Idle;
+  _runState = RunState::Ready;
   if (src.isEmpty()) return;
 
   // Restore through the normal load path, but never re-persist a restore.
@@ -550,15 +582,16 @@ void Sandbox::finishBootCountdown()
   // "Just C": a saved app that no longer loads (e.g. the sandbox was reflashed)
   // is discarded; stop any partial app and fall back to the status screen.
   if (isAppRunning()) {
-    _runState = RunState::Idle;
+    _runState = RunState::Ready;
     notifyAppRunning(false);
   }
   if (_store) _store->clear();
   emitTelemetry("persist_load_failed");
 
-  char buf[64];
-  snprintf(buf, sizeof(buf), "%s %s", getDeviceType(), _deviceId.c_str());
-  showStatusText(buf);
+  // Back to the Ready identity screen. (loadAppInternal already repaints it on
+  // a compile failure; this also covers the init-failure case, where the app
+  // briefly entered Running before we stopped it above.)
+  showReadyScreen();
 }
 
 void Sandbox::clearPersistedApp()

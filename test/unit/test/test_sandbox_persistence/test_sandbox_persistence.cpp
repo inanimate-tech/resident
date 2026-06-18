@@ -133,12 +133,14 @@ void test_countdown_shows_deviceid_and_counts_down(void) {
   makeSandbox(true, false);                  // setup() arms the countdown
 
   sandbox->loop();                            // t=0 -> "20s"
-  TEST_ASSERT_EQUAL_STRING("native-test a4cf1200\n\n20s", display->last().c_str());
+  TEST_ASSERT_EQUAL_STRING("Device type: native-test\nDevice ID: a4cf1200\n\n20s",
+                           display->last().c_str());
   TEST_ASSERT_FALSE(sandbox->isAppRunning()); // not loaded during countdown
 
   testMillis() = 5000;                        // 15s remaining
   sandbox->loop();
-  TEST_ASSERT_EQUAL_STRING("native-test a4cf1200\n\n15s", display->last().c_str());
+  TEST_ASSERT_EQUAL_STRING("Device type: native-test\nDevice ID: a4cf1200\n\n15s",
+                           display->last().c_str());
 }
 
 void test_countdown_autoloads_after_20s(void) {
@@ -195,7 +197,8 @@ void test_restore_failure_discards_and_falls_back(void) {
   TEST_ASSERT_FALSE(store->hasValue);                  // discarded
   TEST_ASSERT_TRUE(store->clearCalls >= 1);
   TEST_ASSERT_TRUE(telemetryHas("persist_load_failed"));
-  TEST_ASSERT_EQUAL_STRING("native-test a4cf1200", display->last().c_str());
+  TEST_ASSERT_EQUAL_STRING("Device type: native-test\nDevice ID: a4cf1200",
+                           display->last().c_str());
 }
 
 void test_persist_disabled_no_countdown(void) {
@@ -205,8 +208,32 @@ void test_persist_disabled_no_countdown(void) {
   sandbox->loop();
   testMillis() = 25000;
   sandbox->loop();
-  TEST_ASSERT_FALSE(sandbox->isAppRunning());            // no auto-load
-  TEST_ASSERT_EQUAL_INT(0, (int)display->texts.size());  // no countdown text
+  TEST_ASSERT_FALSE(sandbox->isAppRunning());            // no auto-load, no countdown
+  // No countdown ran; the device rests on the Ready identity screen instead
+  // (standalone, so painted at setup).
+  TEST_ASSERT_EQUAL_STRING("Device type: native-test\nDevice ID: a4cf1200",
+                           display->last().c_str());
+}
+
+// With no persisted app, a standalone device paints the Ready identity screen
+// at setup so the device ID is visible (you need it to push apps).
+void test_ready_screen_shown_when_no_persisted_app(void) {
+  makeSandbox(/*persist=*/true, false);   // store left empty -> nothing to restore
+
+  TEST_ASSERT_FALSE(sandbox->isAppRunning());
+  TEST_ASSERT_EQUAL_STRING("Device type: native-test\nDevice ID: a4cf1200",
+                           display->last().c_str());
+}
+
+// A load that fails to compile leaves no app running and returns the display
+// to the Ready identity screen.
+void test_failed_load_returns_to_ready_screen(void) {
+  makeSandbox(/*persist=*/true, false);
+  sandbox->loadApp("this is not valid lua %%%");
+
+  TEST_ASSERT_FALSE(sandbox->isAppRunning());
+  TEST_ASSERT_EQUAL_STRING("Device type: native-test\nDevice ID: a4cf1200",
+                           display->last().c_str());
 }
 
 void test_clear_persisted_app(void) {
@@ -273,6 +300,8 @@ int main(int, char**) {
   RUN_TEST(test_network_push_cancels_countdown);
   RUN_TEST(test_restore_failure_discards_and_falls_back);
   RUN_TEST(test_persist_disabled_no_countdown);
+  RUN_TEST(test_ready_screen_shown_when_no_persisted_app);
+  RUN_TEST(test_failed_load_returns_to_ready_screen);
   RUN_TEST(test_clear_persisted_app);
   RUN_TEST(test_persist_no_display_skips_countdown);
   RUN_TEST(test_suspend_during_countdown_is_ignored);

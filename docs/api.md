@@ -644,17 +644,27 @@ Calls `Sandbox::clearPersistedApp()`. The next boot will not restore any app. Eq
 
 The last app (or shader) that loads successfully — compiles **and** runs `init()` without error — is saved to flash (NVS) and auto-reloaded on the next boot.
 
-On boot, if a saved app exists, the device shows its device ID and a 20-second countdown on the status display before loading it:
+On boot, if a saved app exists, the device shows its identity and a 20-second countdown on the status display before loading it:
 
 ```
-<deviceType> <deviceId>
+Device type: <deviceType>
+Device ID: <deviceId>
 
 20s
 ```
 
 You need the device ID to push apps to the device, so the countdown is a reminder. It is a timer (not press-to-continue) because not every board has a button. The countdown is skipped early by a configured `SystemButton` press or by an app/shader arriving over the network.
 
-If the saved app fails to load — for example after the firmware was reflashed with a changed runtime surface — it is discarded and the device falls back to the status screen (telemetry `persist_load_failed`).
+When **no** app is loaded — a fresh device, or after a load fails — the status display rests on the same identity screen without the countdown line:
+
+```
+Device type: <deviceType>
+Device ID: <deviceId>
+```
+
+This "ready" screen appears once the device is reachable (connected, or immediately in standalone mode); while connecting, the usual connection-status text shows instead, and while an app runs the app owns the screen.
+
+If a saved app fails to load — for example after the firmware was reflashed with a changed runtime surface — it is discarded and the device falls back to the ready screen (telemetry `persist_load_failed`).
 
 Config fields related to persistence:
 

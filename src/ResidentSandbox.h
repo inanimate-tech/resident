@@ -126,15 +126,17 @@ private:
     struct lua_State* _lua = nullptr;
 
     // Unified execution state — the sandbox's single source of truth for what
-    // the Lua VM is doing. Idle: no app loaded. Pending: a persisted app is
-    // waiting behind the boot countdown (no app loaded yet). Running: app
-    // loaded and ticking. Suspended: app loaded but tick + event dispatch are
-    // paused and the status display is freed for overlay text. isAppRunning()
-    // is true for both Running and Suspended; the Lua tick runs only in
-    // Running. Transitions: Idle/Pending → Running (loadApp); Running ⇄
-    // Suspended (suspendApp/resumeApp); any → Idle (failed/replaced load).
-    enum class RunState { Idle, Pending, Running, Suspended };
-    RunState _runState = RunState::Idle;
+    // the Lua VM is doing. Ready: no app loaded; the status display rests on
+    // the device-identity screen (device type + ID) so the device is "ready"
+    // to receive an app. Pending: a persisted app is waiting behind the boot
+    // countdown (no app loaded yet). Running: app loaded and ticking.
+    // Suspended: app loaded but tick + event dispatch are paused and the
+    // status display is freed for overlay text. isAppRunning() is true for
+    // both Running and Suspended; the Lua tick runs only in Running.
+    // Transitions: Ready/Pending → Running (loadApp); Running ⇄ Suspended
+    // (suspendApp/resumeApp); any → Ready (failed/replaced/cleared load).
+    enum class RunState { Ready, Pending, Running, Suspended };
+    RunState _runState = RunState::Ready;
 
     // Timezone selected via registration's detectedTimezone. When
     // _hasTimezone is true, ctx.localtime_* and time.hour/minute/second read
@@ -168,8 +170,14 @@ private:
     void onCourierConnected();
     void onCourierTransportsWillConnect();
 
-    // Status display helper.
+    // Status display helpers.
     void showStatusText(const char* text);
+    // Paint the device-identity screen: "Device type: <t>\nDevice ID: <id>",
+    // plus a "\n\n<secs>s" line when countdownSecs >= 0 (the boot countdown).
+    void showIdentityScreen(int countdownSecs = -1);
+    // Paint the Ready identity screen when the device is idle and reachable
+    // (connected, or standalone). No-op while connecting or app-owned.
+    void showReadyScreen();
     String _lastStatusText;
 
     // Track whether the Lua state has been initialised, so setup() is idempotent.
