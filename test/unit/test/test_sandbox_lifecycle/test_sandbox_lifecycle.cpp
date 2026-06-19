@@ -133,6 +133,42 @@ public:
   }
 };
 
+// A StatusDisplay assigned to cfg.statusDisplay ONLY (not in extensions[]) must
+// be begun and updated (lifecycle set covers it) but must NOT receive a Lua
+// global under its name(). luaGlobalBoolForTest("spy-display") reads nil (false)
+// for an unregistered name; a registered empty table reads true.
+void test_slot_only_display_no_lua_global(void) {
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  // display is NOT in cfg.extensions — slot only
+  cfg.statusDisplay = display;
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setup();
+
+  // Begun via lifecycle set
+  TEST_ASSERT_EQUAL_INT(1, display->beginCount);
+
+  // No Lua global registered for slot-only peripheral
+  TEST_ASSERT_FALSE(sandbox->luaGlobalBoolForTest("spy-display"));
+
+  // Updated on every loop (peripheral cadence)
+  int u0 = display->updateCount;
+  sandbox->loop();
+  TEST_ASSERT_EQUAL_INT(u0 + 1, display->updateCount);
+}
+
+// Counterpart: a driver in extensions[] DOES get a Lua global.
+void test_extension_driver_has_lua_global(void) {
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  cfg.extensions = {driver};
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setup();
+
+  // driver ("spy-driver") is in extensions[] -> its Lua global is registered
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("spy-driver"));
+}
+
 void test_driver_event_dropped_until_app_loaded(void) {
   EventSpy* spy = new EventSpy();
   Resident::SandboxConfig cfg;
@@ -161,6 +197,8 @@ int main(int, char**) {
   RUN_TEST(test_begin_once_when_display_in_both_list_and_slot);
   RUN_TEST(test_peripheral_updates_without_app_but_plain_driver_does_not);
   RUN_TEST(test_dual_role_object_updates_once_per_loop);
+  RUN_TEST(test_slot_only_display_no_lua_global);
+  RUN_TEST(test_extension_driver_has_lua_global);
   RUN_TEST(test_driver_event_dropped_until_app_loaded);
   UNITY_END();
   return 0;

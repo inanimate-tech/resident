@@ -191,9 +191,12 @@ void Sandbox::initialize()
 
   setupLuaEnvironment();
 
-  // Build the de-duped lifecycle set (extensions[] + role slots), then walk it:
-  // begin (idempotent), wire event sink if Driver, build Lua module table.
+  // Build the de-duped lifecycle set (extensions[] + role slots).
   buildLifecycleSet();
+
+  // Pass 1 — Lifecycle: wire event sink (so begin() can safely sendEvent()),
+  // then begin(). Covers all managed objects: declared extensions and any
+  // role-slot peripherals not also in extensions[].
   for (uint8_t i = 0; i < _lifecycleCount; i++) {
     Extension* ext = _lifecycle[i];
     Serial.printf("  Initializing extension: %s\n", ext->name());
@@ -205,9 +208,15 @@ void Sandbox::initialize()
     }
 
     Extension::beginExtension(*ext);
+  }
 
-    // Register Lua module: push fresh table, let extension populate it,
-    // setglobal under the extension's name.
+  // Pass 2 — Lua modules: register globals for declared extensions only.
+  // A role-slot peripheral that is NOT in extensions[] (e.g. a TFTStatusDisplay
+  // assigned only to cfg.statusDisplay) must NOT get a Lua global — it has no
+  // API surface to expose. A role object that also wants a Lua module must be
+  // listed in extensions[] explicitly.
+  for (uint8_t i = 0; i < _config.extensions.count; i++) {
+    Extension* ext = _config.extensions.items[i];
     lua_newtable(_lua);
     LuaModule m(_lua, ext);
     ext->registerModule(m);
@@ -541,7 +550,9 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
     notifyAppRunning(false);
   }
 
-  // Reset extensions
+  // Reset extensions (declared extensions only, not slot-only peripherals).
+  // onAppReset() is an app-facing hook; slot-only peripherals are begun/updated
+  // via the lifecycle set but deliberately don't receive app lifecycle events.
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
     _config.extensions.items[i]->onAppReset();
   }
@@ -1109,6 +1120,9 @@ void Sandbox::driverEventHandler(void* ctx, const char* name,
 }
 
 void Sandbox::notifyAppRunning(bool running) {
+  // Declared extensions only — same intentional carve-out as onAppReset():
+  // slot-only peripherals are begun/updated via the lifecycle set but don't
+  // receive app-facing hooks (onAppRunning / onAppReset).
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
     Driver* driver = _config.extensions.items[i]->asDriver();
     if (driver) driver->onAppRunning(running);

@@ -22,6 +22,9 @@
   from one de-duplicated list: `begin()` once; `update()` every loop for
   role peripherals and (only while an app is loaded) for other extensions,
   independent of connectivity. Driver events are dropped when no app is loaded.
+  **Migration:** any custom `StatusDisplay`, `SystemButton`, or `StatusLED`
+  implementation must now also implement `Driver::name()` (a pure virtual
+  returning a `const char*` identifier).
 
 ### Fixes
 
