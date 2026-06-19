@@ -57,23 +57,27 @@ void PushButtonsDriver::update()
       }
     }
 
-    // Release detection (LOW → HIGH)
+    // Release detection (LOW → HIGH), debounced so contact chatter mid-hold
+    // can't momentarily read "released".
     if (current == HIGH && btn.lastState == LOW) {
-      if (btn.isDown) {
-        if (btn.longPressTriggered) {
-          if (_longPress[i].callback) {
-            _longPress[i].callback(false);
+      if (now - btn.lastDebounceTime > DEBOUNCE_MS) {
+        btn.lastDebounceTime = now;
+        if (btn.isDown) {
+          if (btn.longPressTriggered) {
+            if (_longPress[i].callback) {
+              _longPress[i].callback(false);
+            }
+          } else {
+            btn.pressCount++;
+            Resident::EventField fields[] = {
+              {"index", Resident::EventField::INT, {.i = (int)i}},
+              {"count", Resident::EventField::INT, {.i = (int)btn.pressCount}}
+            };
+            sendEvent("button", fields, 2);
+            Serial.printf("PushButton[%d] pressed (count=%d)\n", i, btn.pressCount);
           }
-        } else {
-          btn.pressCount++;
-          Resident::EventField fields[] = {
-            {"index", Resident::EventField::INT, {.i = (int)i}},
-            {"count", Resident::EventField::INT, {.i = (int)btn.pressCount}}
-          };
-          sendEvent("button", fields, 2);
-          Serial.printf("PushButton[%d] pressed (count=%d)\n", i, btn.pressCount);
+          btn.isDown = false;
         }
-        btn.isDown = false;
       }
     }
 
@@ -83,20 +87,10 @@ void PushButtonsDriver::update()
 
 bool PushButtonsDriver::pressed()
 {
-  if (_config.numButtons == 0) return _sysStable;
-
-  // Read button 0 directly (active-low, INPUT_PULLUP). This is independent of
-  // update() so it stays live during the boot countdown; debounce it here.
-  bool raw = (digitalRead(_config.pins[0]) == LOW);
-  unsigned long now = millis();
-  if (raw != _sysRawLast) {
-    _sysRawLast = raw;
-    _sysRawChangedAt = now;
-  }
-  if (now - _sysRawChangedAt >= DEBOUNCE_MS) {
-    _sysStable = raw;
-  }
-  return _sysStable;
+  // Debounced held-level of button 0, maintained by update() (which the
+  // runtime now calls every loop while this is the system button — including
+  // during the boot countdown).
+  return _buttons[0].isDown;
 }
 
 void PushButtonsDriver::setLongPress(uint8_t buttonIndex, LongPressFn callback,
