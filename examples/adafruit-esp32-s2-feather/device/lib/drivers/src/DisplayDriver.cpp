@@ -13,7 +13,6 @@ static constexpr uint16_t toRGB565(int r, int g, int b) {
 }
 
 void DisplayDriver::begin() {
-  if (_initialized) return;  // dual-inherit (Driver + StatusDisplay) → guard
   // Canvas matches the TFT's post-rotation logical size (set in main.cpp
   // before handing off to Resident, so width()/height() reflect rotation).
   _canvas = new GFXcanvas16(_tft->width(), _tft->height());
@@ -21,7 +20,7 @@ void DisplayDriver::begin() {
   ledcSetup(BACKLIGHT_LEDC_CH, 5000, 8);  // 5 kHz, 8-bit
   ledcAttachPin(_backlitePin, BACKLIGHT_LEDC_CH);
   ledcWrite(BACKLIGHT_LEDC_CH, 255);
-  _initialized = true;
+  _spriteReady = true;
 }
 
 void DisplayDriver::displayText(const char* text) {

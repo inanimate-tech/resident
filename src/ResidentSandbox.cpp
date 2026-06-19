@@ -131,6 +131,38 @@ int Sandbox::luaGlobalIntForTest(const char* name)
 }
 
 
+void Sandbox::addLifecycle(Extension* e)
+{
+  if (!e) return;
+  for (uint8_t i = 0; i < _lifecycleCount; i++) {
+    if (_lifecycle[i] == e) return;   // already present — de-dup
+  }
+  if (_lifecycleCount < (Extensions::MAX + 3)) {
+    _lifecycle[_lifecycleCount++] = e;
+  }
+}
+
+void Sandbox::buildLifecycleSet()
+{
+  _lifecycleCount = 0;
+  for (uint8_t i = 0; i < _config.extensions.count; i++) {
+    addLifecycle(_config.extensions.items[i]);
+  }
+  // Role slots are Driver subclasses, so they upcast to Extension*. Append any
+  // not already in extensions[] so an assigned-but-unlisted peripheral is
+  // still begun and updated.
+  addLifecycle(_config.statusDisplay);
+  addLifecycle(_config.statusLED);
+  addLifecycle(_config.systemButton);
+}
+
+bool Sandbox::isPeripheral(Extension* e) const
+{
+  return e == static_cast<Extension*>(_config.statusDisplay)
+      || e == static_cast<Extension*>(_config.statusLED)
+      || e == static_cast<Extension*>(_config.systemButton);
+}
+
 void Sandbox::initialize()
 {
   Serial.println("Initializing Resident::Sandbox");
@@ -159,10 +191,11 @@ void Sandbox::initialize()
 
   setupLuaEnvironment();
 
-  // Walk extensions in registration order: begin (idempotent), wire
-  // event sink if Driver, build Lua module table.
-  for (uint8_t i = 0; i < _config.extensions.count; i++) {
-    Extension* ext = _config.extensions.items[i];
+  // Build the de-duped lifecycle set (extensions[] + role slots), then walk it:
+  // begin (idempotent), wire event sink if Driver, build Lua module table.
+  buildLifecycleSet();
+  for (uint8_t i = 0; i < _lifecycleCount; i++) {
+    Extension* ext = _lifecycle[i];
     Serial.printf("  Initializing extension: %s\n", ext->name());
 
     // Wire event sink first so a Driver's begin() can safely sendEvent().
@@ -266,10 +299,7 @@ void Sandbox::setup()
                   getDeviceType(), _deviceId.c_str());
   }
 
-  // 4. Status display starts up regardless of network.
-  if (_config.statusDisplay) _config.statusDisplay->begin();
-
-  // 5. Sandbox internals (Lua state, extensions). Always.
+  // 4. Sandbox internals (Lua state, extensions + role slots). Always.
   initialize();
 
   // Explicit override wins; otherwise use the platform default (NVS on

@@ -183,6 +183,15 @@ private:
     // Track whether the Lua state has been initialised, so setup() is idempotent.
     bool _initialized = false;
 
+    // Unified lifecycle set: extensions[] plus any role-slot object not
+    // already present, de-duped by pointer. Driven for begin() and update().
+    Extension* _lifecycle[Extensions::MAX + 3] = {};
+    uint8_t _lifecycleCount = 0;
+    void buildLifecycleSet();
+    void addLifecycle(Extension* e);
+    // True iff e is one of the assigned role-slot objects (a peripheral).
+    bool isPeripheral(Extension* e) const;
+
     // Telemetry
     TelemetryCallback _telemetryCb;
     String _generationId;

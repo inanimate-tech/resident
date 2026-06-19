@@ -11,14 +11,11 @@ extern "C" {
 #endif
 
 void DisplayDriver::begin() {
-  if (_initialized) return;   // dual-inherit (Driver + StatusDisplay) →
-                              // Device.setup() and Sandbox.initialize()
-                              // both reach us; guard against re-init.
   // setColorDepth must come BEFORE createSprite — the sprite buffer is
   // allocated at whatever depth is set when create is called.
   _canvas.setColorDepth(16);
   _canvas.createSprite(M5.Display.width(), M5.Display.height());
-  _initialized = true;
+  _spriteReady = true;
 }
 
 void DisplayDriver::displayText(const char* text) {
@@ -28,7 +25,7 @@ void DisplayDriver::displayText(const char* text) {
   // directly to M5.Display (fillScreen + print) blacks out the panel between
   // the clear and the redraw, which flickers visibly when the text updates
   // frequently — e.g. the once-a-second boot countdown.
-  if (!_initialized) {              // sprite not allocated yet (pre-begin)
+  if (!_spriteReady) {              // sprite not allocated yet (pre-begin)
     M5.Display.fillScreen(TFT_BLACK);
     return;
   }
@@ -44,11 +41,11 @@ void DisplayDriver::displayText(const char* text) {
 }
 
 void DisplayDriver::repaint() {
-  if (_initialized) _canvas.pushSprite(0, 0);
+  if (_spriteReady) _canvas.pushSprite(0, 0);
 }
 
 void DisplayDriver::onAppReset() {
-  if (_initialized) {
+  if (_spriteReady) {
     _canvas.fillScreen(TFT_BLACK);
     _canvas.pushSprite(0, 0);
   } else {
