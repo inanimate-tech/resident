@@ -17,6 +17,12 @@
   `StatusDisplay::displayText()`. The m5stick-voice example uses it to show
   "Listening" over a running app during push-to-talk.
 
+- **Unified driver lifecycle.** Role interfaces (`StatusDisplay`,
+  `SystemButton`, `StatusLED`) are now `Driver` subclasses. Lifecycle is driven
+  from one de-duplicated list: `begin()` once; `update()` every loop for
+  role peripherals and (only while an app is loaded) for other extensions,
+  independent of connectivity. Driver events are dropped when no app is loaded.
+
 ### Fixes
 
 - **Lua allocator falls back to internal RAM on boards without PSRAM** (e.g. ESP32-S3FN8 / M5Dial). Previously every Lua allocation went to `MALLOC_CAP_SPIRAM`, which returns NULL when no PSRAM exists — the Lua runtime had no usable heap and every app failed with "not enough memory". The capability is now resolved once on first use: SPIRAM when present, internal 8-bit RAM otherwise. Boards with PSRAM are unaffected.

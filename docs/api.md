@@ -344,6 +344,30 @@ This matters because `LuaModule::method<>` casts the stored `Extension*` pointer
 - Use `Extension` when you only register a Lua module (read sensors, control outputs from Lua, but no driver-generated events).
 - Use `Driver` when your extension needs to push events into Lua (`sendEvent`) or respond to app start/stop (`onAppRunning`).
 
+### Driver lifecycle and update cadence
+
+Every object Resident manages — sandbox extensions and the device-role
+peripherals (status display, system button, status LED) — is a `Driver`
+(hence an `Extension`). `begin()` runs once for each at setup. `update()`
+runs on a single de-duplicated list every loop:
+
+- **Role peripherals** (whatever you assign to `config.statusDisplay` /
+  `statusLED` / `systemButton`) update **every loop, always** — so the status
+  screen and system button work before any app exists and across a brief
+  reconnect.
+- **Other extensions** update **only while an app is loaded** (running or
+  suspended).
+- **Connectivity gates neither** `update()`. (The Lua `on_tick` still waits
+  for the first connection on networked boards.)
+
+A driver fills a device role by implementing the role interface (`StatusDisplay`
+/ `SystemButton` / `StatusLED`, each a `Driver` subclass) — that's the
+*capability*. Whether it's *used* in that role is the per-device config slot,
+so the same driver is reusable across boards. An object fills at most one role.
+
+Driver events (`sendEvent`) are delivered to the app only while an app is
+loaded; emitted with no app loaded, they are dropped.
+
 ---
 
 ## Resident::LuaModule
