@@ -4,6 +4,7 @@
 #include <math.h>
 #include <cassert>
 #include "chipstring.h"
+#include "ResidentNvsStore.h"   // device-only; no-op on native
 
 extern "C" {
   #include "lua/lua.h"
@@ -238,10 +239,11 @@ void Sandbox::setup()
   if (_initialized) return;
   _initialized = true;
 
-  if (_courier.has_value()) {
-    // Re-derive deviceId in case it wasn't ready at construction.
-    _deviceId = ::getDeviceId();
+  // deviceId is derived from the chip MAC and needed for the boot countdown
+  // even in standalone (networkless) mode.
+  _deviceId = ::getDeviceId();
 
+  if (_courier.has_value()) {
     // 1. User's onConfigureNetwork — first; lets them register transports,
     //    set certs, etc., before any Courier setup runs.
     if (_onConfigureNetwork) {
@@ -270,9 +272,43 @@ void Sandbox::setup()
   // 5. Sandbox internals (Lua state, extensions). Always.
   initialize();
 
+  // Explicit override wins; otherwise use the platform default (NVS on
+  // device). On native (neither macro defined) _store stays null unless a
+  // test injected one.
+  _store = _config.persistentStore;
+#if defined(ARDUINO) || defined(ESP_PLATFORM)
+  if (!_store && _config.persistApps) {
+    static NvsPersistentStore s_defaultStore;
+    if (s_defaultStore.begin()) _store = &s_defaultStore;
+  }
+#endif
+
+  // Arm the boot countdown if a previously-saved app exists.
+  if (_config.persistApps && _store) {
+    _pendingPersistedSource = _store->load();
+    if (!_pendingPersistedSource.isEmpty()) {
+      if (_config.statusDisplay) {
+        // The countdown's sole purpose is to show the device ID on the display.
+        // Only arm it when there is a display to show it on.
+        _runState = RunState::Pending;
+        _countdownStartMs = millis();
+        _lastCountdownSecondShown = -1;
+      } else {
+        // No display — nothing to show, no reason to stall. Restore immediately.
+        finishBootCountdown();
+      }
+    }
+  }
+
   // 6. Kick off Courier (WiFi + transports).
   if (_courier.has_value()) {
     _courier->setup();
+  }
+
+  // Standalone (no network): no Connected event will arrive to paint the
+  // Ready identity screen, so paint it now when idle.
+  if (!_courier.has_value() && _runState == RunState::Ready) {
+    showReadyScreen();
   }
 }
 
@@ -323,6 +359,10 @@ void Sandbox::onCourierMessage(const char* transportName,
     if (name) sendAppEvent(name, dataJson);
     return;
   }
+  if (strcmp(type, "forget") == 0) {
+    clearPersistedApp();
+    return;
+  }
 
   // Anything else → user callback if registered.
   if (_onMessage) _onMessage(transportName, type, doc);
@@ -335,20 +375,21 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
   // Resident's internal status-text handling. Runs unconditionally if a
   // statusDisplay is configured. User's onConnectionChange callback runs
   // after, in addition (does not replace).
-  switch (state) {
-    case S::WifiConnecting:        showStatusText("WiFi..."); break;
-    case S::WifiConfiguring: {
-      // Build status text, appending AP name when available
-      String s = _apName.isEmpty() ? "Configure WiFi" : (String("Configure WiFi\n\n") + _apName);
-      showStatusText(s.c_str());
-      break;
+  if (_runState != RunState::Pending) {
+    switch (state) {
+      case S::WifiConnecting:        showStatusText("WiFi..."); break;
+      case S::WifiConfiguring: {
+        String s = _apName.isEmpty() ? "Configure WiFi" : (String("Configure WiFi\n\n") + _apName);
+        showStatusText(s.c_str());
+        break;
+      }
+      case S::WifiConnected:         showStatusText("WiFi connected"); break;
+      case S::TransportsConnecting:  showStatusText("Connecting..."); break;
+      case S::Connected:             if (_runState == RunState::Ready) showIdentityScreen(); break;
+      case S::Reconnecting:          showStatusText("Reconnecting..."); break;
+      case S::ConnectionFailed:      showStatusText("Connection failed"); break;
+      default: break;
     }
-    case S::WifiConnected:         showStatusText("WiFi connected"); break;
-    case S::TransportsConnecting:  showStatusText("Connecting..."); break;
-    case S::Connected:             showStatusText("Connected"); break;
-    case S::Reconnecting:          showStatusText("Reconnecting..."); break;
-    case S::ConnectionFailed:      showStatusText("Connection failed"); break;
-    default: break;
   }
 
   if (_config.statusLED) {
@@ -390,11 +431,39 @@ void Sandbox::showStatusText(const char* text)
   _config.statusDisplay->displayText(text);
 }
 
+void Sandbox::showIdentityScreen(int countdownSecs)
+{
+  if (!_config.statusDisplay) return;
+  char buf[96];
+  if (countdownSecs >= 0) {
+    snprintf(buf, sizeof(buf), "Device ID: %s\nType: %s\n\n%ds",
+             _deviceId.c_str(), getDeviceType(), countdownSecs);
+  } else {
+    snprintf(buf, sizeof(buf), "Device ID: %s\nType: %s",
+             _deviceId.c_str(), getDeviceType());
+  }
+  showStatusText(buf);
+}
+
+void Sandbox::showReadyScreen()
+{
+  // The Ready identity screen is the resting display when no app is loaded.
+  // Show it once the device is reachable (connected, or standalone); while
+  // connecting, the connection-status text shows instead, and while an app
+  // runs it owns the screen.
+  if (!_courier.has_value() || isConnected()) showIdentityScreen();
+}
+
 void Sandbox::loop() {
   if (_courier.has_value()) {
     _courier->loop();
   }
   if (_config.statusDisplay) _config.statusDisplay->update();
+
+  if (_runState == RunState::Pending) {
+    updateBootCountdown();
+    return;  // app not loaded yet; skip the tick path
+  }
 
   if (!_lua) return;
 
@@ -411,7 +480,7 @@ void Sandbox::loop() {
   }
 
   // Lua tick + event dispatch only when an app is running and not suspended.
-  if (!_appRunning || _appSuspended) return;
+  if (_runState != RunState::Running) return;
 
   unsigned long now = millis();
   unsigned long elapsed = now - _lastTickTime;
@@ -425,12 +494,22 @@ void Sandbox::loop() {
 
 void Sandbox::loadApp(const char* luaCode)
 {
-  // A freshly loaded app starts running, never suspended.
-  _appSuspended = false;
+  loadAppInternal(luaCode, /*persistOnSuccess=*/true);
+}
 
-  // Stop current app before loading new one
-  if (_appRunning) {
-    _appRunning = false;
+bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
+{
+  // An explicit load supersedes a pending boot-countdown restore.
+  if (_runState == RunState::Pending) {
+    _runState = RunState::Ready;
+    _pendingPersistedSource = "";
+  }
+
+  // Stop any currently-loaded app (Running or Suspended) before loading the
+  // new one. A freshly loaded app starts Running, never Suspended — compileApp
+  // sets that below.
+  if (isAppRunning()) {
+    _runState = RunState::Ready;
     notifyAppRunning(false);
   }
 
@@ -443,12 +522,123 @@ void Sandbox::loadApp(const char* luaCode)
   _generationId = String(millis(), HEX);
   emitTelemetry("app_received");
 
-  if (compileApp(luaCode)) {
+  bool compiled = compileApp(luaCode);
+  if (compiled) {
     Serial.println("Resident::Sandbox: app compiled successfully");
     emitTelemetry("app_compiled");
   } else {
     Serial.println("Resident::Sandbox: app compilation failed");
   }
+
+  bool loadedOk = compiled && _lastInitOk;
+
+  // Persist only an app we know loaded cleanly, and never re-persist a restore.
+  if (persistOnSuccess && loadedOk && _config.persistApps && _store) {
+    if (!_store->save(luaCode, strlen(luaCode))) {
+      emitTelemetry("persist_too_big");
+    }
+  }
+
+  // A load that failed outright (compile error → no app running) returns the
+  // display to the Ready identity screen.
+  if (!loadedOk && _runState == RunState::Ready) {
+    showReadyScreen();
+  }
+
+  return loadedOk;
+}
+
+void Sandbox::updateBootCountdown()
+{
+  // System button (if present): a tap loads the saved app now; a long press
+  // forgets it. Either gesture ends the countdown.
+  if (_config.systemButton && handleCountdownButton()) return;
+
+  unsigned long elapsed = millis() - _countdownStartMs;
+  if (elapsed >= BOOT_COUNTDOWN_MS) {
+    finishBootCountdown();
+    return;
+  }
+
+  // Ceil to whole seconds so the first frame reads "20s" and the last "1s".
+  int remaining = (int)((BOOT_COUNTDOWN_MS - elapsed + 999) / 1000);
+  if (remaining != _lastCountdownSecondShown) {
+    _lastCountdownSecondShown = remaining;
+    showIdentityScreen(remaining);
+  }
+}
+
+bool Sandbox::handleCountdownButton()
+{
+  bool down = _config.systemButton->pressed();
+
+  if (down && !_buttonWasDown) {
+    // Press edge — start timing.
+    _buttonWasDown = true;
+    _buttonDownSince = millis();
+    _longPressFired = false;
+    return false;
+  }
+
+  if (down && _buttonWasDown) {
+    // Held — fire the long press once the threshold is crossed (no release
+    // needed, so a long hold has tactile feedback as soon as it counts).
+    if (!_longPressFired &&
+        millis() - _buttonDownSince >= SYSTEM_BUTTON_LONG_PRESS_MS) {
+      _longPressFired = true;
+      _buttonWasDown = false;
+      _pendingPersistedSource = "";
+      if (_store) _store->clear();
+      _runState = RunState::Ready;
+      showReadyScreen();           // settle on the device-identity screen
+      return true;
+    }
+    return false;
+  }
+
+  if (!down && _buttonWasDown) {
+    // Release edge.
+    _buttonWasDown = false;
+    if (!_longPressFired) {
+      finishBootCountdown();       // tap → load the saved app now
+      return true;
+    }
+  }
+  return false;
+}
+
+void Sandbox::finishBootCountdown()
+{
+  String src = _pendingPersistedSource;
+  _pendingPersistedSource = "";
+  _runState = RunState::Ready;
+  if (src.isEmpty()) return;
+
+  // Restore through the normal load path, but never re-persist a restore.
+  bool ok = loadAppInternal(src.c_str(), /*persistOnSuccess=*/false);
+  if (ok) {
+    emitTelemetry("app_restored");
+    return;
+  }
+
+  // "Just C": a saved app that no longer loads (e.g. the sandbox was reflashed)
+  // is discarded; stop any partial app and fall back to the status screen.
+  if (isAppRunning()) {
+    _runState = RunState::Ready;
+    notifyAppRunning(false);
+  }
+  if (_store) _store->clear();
+  emitTelemetry("persist_load_failed");
+
+  // Back to the Ready identity screen. (loadAppInternal already repaints it on
+  // a compile failure; this also covers the init-failure case, where the app
+  // briefly entered Running before we stopped it above.)
+  showReadyScreen();
+}
+
+void Sandbox::clearPersistedApp()
+{
+  if (_store) _store->clear();
 }
 
 void Sandbox::loadShader(const ShaderFields& fields) {
@@ -467,36 +657,36 @@ void Sandbox::loadShader(const ShaderFields& fields) {
 // Events received while the app is suspended are still queued onto the ring
 // here; loop() defers dispatch (processNextEvent) until resumeApp(), so they
 // are deferred — not dropped — though a long suspend can overflow the 8-slot
-// ring and lose the oldest. Gating on _appRunning (not _appSuspended) is
+// ring and lose the oldest. Gating on isAppRunning() (true while Suspended) is
 // deliberate: a suspended app is still loaded and will see the events.
 void Sandbox::sendAppEvent(const char* name, const char* dataJson)
 {
-  if (!_appRunning || !_onEventFuncRef) return;
+  if (!isAppRunning() || !_onEventFuncRef) return;
   pushAppEvent(name, dataJson ? dataJson : "{}", "", millis());
 }
 
 bool Sandbox::isAppRunning() const
 {
-  return _appRunning;
+  return _runState == RunState::Running || _runState == RunState::Suspended;
 }
 
 void Sandbox::suspendApp()
 {
-  if (!_appRunning || _appSuspended) return;
-  _appSuspended = true;
+  if (_runState != RunState::Running) return;
+  _runState = RunState::Suspended;
   notifyAppRunning(false);  // free the status display for overlay text
 }
 
 void Sandbox::resumeApp()
 {
-  if (!_appRunning || !_appSuspended) return;
-  _appSuspended = false;
+  if (_runState != RunState::Suspended) return;
+  _runState = RunState::Running;
   notifyAppRunning(true);   // re-suppress status display; app owns the screen
 }
 
 bool Sandbox::isAppSuspended() const
 {
-  return _appSuspended;
+  return _runState == RunState::Suspended;
 }
 
 // --- Lua compilation ---
@@ -522,6 +712,7 @@ bool Sandbox::compileApp(const char* code)
   // Reset runtime error rate limiter
   _runtimeErrorCount = 0;
   _lastRuntimeErrorMillis = 0;
+  _lastInitOk = false;
 
   // Clear old global functions
   lua_pushnil(_lua);
@@ -595,17 +786,17 @@ bool Sandbox::compileApp(const char* code)
   _triggerResetTime = millis();
   _lastTickTime = millis();
 
-  _appRunning = true;
+  _runState = RunState::Running;
   notifyAppRunning(true);
-  callInit();
+  _lastInitOk = callInit();
 
   Serial.println("Resident::Sandbox: app compiled successfully");
   return true;
 }
 
-void Sandbox::callInit()
+bool Sandbox::callInit()
 {
-  if (!_lua || _initFuncRef == LUA_NOREF) return;
+  if (!_lua || _initFuncRef == LUA_NOREF) return true;
 
   lua_rawgeti(_lua, LUA_REGISTRYINDEX, _initFuncRef);
 
@@ -626,7 +817,9 @@ void Sandbox::callInit()
     Serial.printf("Resident::Sandbox: init() error: %s\n", errMsg);
     emitTelemetry("runtime_error", errMsg);
     lua_pop(_lua, 1);
+    return false;
   }
+  return true;
 }
 
 void Sandbox::callOnTick(unsigned long dt_ms)

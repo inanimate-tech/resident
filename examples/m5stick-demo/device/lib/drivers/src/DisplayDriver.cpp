@@ -23,14 +23,24 @@ void DisplayDriver::begin() {
 
 void DisplayDriver::displayText(const char* text) {
   if (_appRunning) return;
-  M5.Display.fillScreen(TFT_BLACK);
-  M5.Display.setTextColor(TFT_WHITE);
-  M5.Display.setTextSize(2);
-  M5.Display.setScrollRect(4, 60, M5.Display.width() - 8, M5.Display.height() - 60);
-  M5.Display.setTextScroll(true);
-  M5.Display.setCursor(4, 60);
-  M5.Display.print(text);
-  M5.Display.setTextScroll(false);   // restore global default; drawn pixels unaffected
+
+  // Render into the off-screen sprite and push it in one shot. Drawing
+  // directly to M5.Display (fillScreen + print) blacks out the panel between
+  // the clear and the redraw, which flickers visibly when the text updates
+  // frequently — e.g. the once-a-second boot countdown.
+  if (!_initialized) {              // sprite not allocated yet (pre-begin)
+    M5.Display.fillScreen(TFT_BLACK);
+    return;
+  }
+  _canvas.fillScreen(TFT_BLACK);
+  _canvas.setTextColor(TFT_WHITE);
+  _canvas.setTextSize(2);
+  _canvas.setScrollRect(4, 60, _canvas.width() - 8, _canvas.height() - 60);
+  _canvas.setTextScroll(true);
+  _canvas.setCursor(4, 60);
+  _canvas.print(text);
+  _canvas.setTextScroll(false);    // restore default; drawn pixels unaffected
+  _canvas.pushSprite(0, 0);
 }
 
 void DisplayDriver::repaint() {

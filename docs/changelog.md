@@ -4,6 +4,12 @@
 
 ### New features
 
+- **Device app persistence.** The last successfully-loaded app is saved to NVS
+  and auto-reloaded on boot, behind a 20-second device-ID countdown screen. A
+  saved app that no longer loads is discarded. New config: `persistApps`
+  (default on), `systemButton`, `persistentStore`. New `clearPersistedApp()` /
+  `{"type":"forget"}`.
+
 - `Resident::Sandbox::suspendApp()` / `resumeApp()` / `isAppSuspended()` — pause
   and resume a running app's tick without unloading it. While suspended,
   `loop()` skips the Lua `on_tick`/event dispatch (Courier and extension updates

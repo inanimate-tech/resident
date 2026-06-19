@@ -10,6 +10,8 @@
 #include "ResidentExtensions.h"
 #include "ResidentStatusLED.h"
 #include "ResidentStatusDisplay.h"
+#include "ResidentSystemButton.h"
+#include "ResidentPersistentStore.h"
 
 namespace Resident {
 
@@ -36,6 +38,16 @@ struct SandboxConfig {
   // is configured.
   StatusDisplay* statusDisplay = nullptr;
   StatusLED* statusLED = nullptr;
+
+  // A button the runtime can poll directly (e.g. to skip the boot countdown).
+  SystemButton* systemButton = nullptr;
+
+  // App persistence. When persistApps is true (default), the last app that
+  // loads successfully is saved and auto-reloaded on the next boot. Leave
+  // persistentStore null to use the platform default (NVS on device); set it
+  // to override the backing store (tests inject an in-memory fake).
+  bool persistApps = true;
+  PersistentStore* persistentStore = nullptr;
 
   // Networking opt-in. Presence ⇒ Sandbox constructs a Courier::Client with
   // this config, drives WiFi/transports, fires onConnected/onMessage/etc.

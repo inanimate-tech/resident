@@ -50,6 +50,9 @@ public:
     // Send an app event to the running app
     void sendAppEvent(const char* name, const char* dataJson);
 
+    // Forget any persisted app (so the next boot has nothing to restore).
+    void clearPersistedApp();
+
     // State queries
     bool isAppRunning() const;
 
@@ -121,8 +124,19 @@ public:
 
 private:
     struct lua_State* _lua = nullptr;
-    bool _appRunning = false;
-    bool _appSuspended = false;
+
+    // Unified execution state — the sandbox's single source of truth for what
+    // the Lua VM is doing. Ready: no app loaded; the status display rests on
+    // the device-identity screen (device type + ID) so the device is "ready"
+    // to receive an app. Pending: a persisted app is waiting behind the boot
+    // countdown (no app loaded yet). Running: app loaded and ticking.
+    // Suspended: app loaded but tick + event dispatch are paused and the
+    // status display is freed for overlay text. isAppRunning() is true for
+    // both Running and Suspended; the Lua tick runs only in Running.
+    // Transitions: Ready/Pending → Running (loadApp); Running ⇄ Suspended
+    // (suspendApp/resumeApp); any → Ready (failed/replaced/cleared load).
+    enum class RunState { Ready, Pending, Running, Suspended };
+    RunState _runState = RunState::Ready;
 
     // Timezone selected via registration's detectedTimezone. When
     // _hasTimezone is true, ctx.localtime_* and time.hour/minute/second read
@@ -156,8 +170,14 @@ private:
     void onCourierConnected();
     void onCourierTransportsWillConnect();
 
-    // Status display helper.
+    // Status display helpers.
     void showStatusText(const char* text);
+    // Paint the device-identity screen: "Device ID: <id>\nType: <t>", plus a
+    // "\n\n<secs>s" line when countdownSecs >= 0 (the boot countdown).
+    void showIdentityScreen(int countdownSecs = -1);
+    // Paint the Ready identity screen when the device is idle and reachable
+    // (connected, or standalone). No-op while connecting or app-owned.
+    void showReadyScreen();
     String _lastStatusText;
 
     // Track whether the Lua state has been initialised, so setup() is idempotent.
@@ -178,6 +198,31 @@ private:
     int _initFuncRef = 0;
     int _onTickFuncRef = 0;
     int _onEventFuncRef = 0;
+
+    // App persistence
+    PersistentStore* _store = nullptr;
+    bool _lastInitOk = false;   // set by compileApp via callInit()
+    bool loadAppInternal(const char* luaCode, bool persistOnSuccess);
+
+    // Boot countdown data (active while _runState == RunState::Pending): show
+    // the device ID for BOOT_COUNTDOWN_MS before auto-loading the persisted
+    // app. Hard-coded duration.
+    String _pendingPersistedSource;
+    unsigned long _countdownStartMs = 0;
+    int _lastCountdownSecondShown = -1;
+    static constexpr unsigned long BOOT_COUNTDOWN_MS = 20000;
+    void updateBootCountdown();
+    void finishBootCountdown();
+
+    // SystemButton gesture tracking during the countdown (Pending): a tap
+    // loads the saved app, a long press forgets it. pressed() is a level read,
+    // so the runtime times the hold itself.
+    bool _buttonWasDown = false;
+    unsigned long _buttonDownSince = 0;
+    bool _longPressFired = false;
+    static constexpr unsigned long SYSTEM_BUTTON_LONG_PRESS_MS = 1000;
+    // Returns true when a gesture ended the countdown (loaded or forgot).
+    bool handleCountdownButton();
 
     // Frame timing
     unsigned long _lastTickTime = 0;
@@ -203,7 +248,7 @@ private:
     // Lua setup
     void setupLuaEnvironment();
     bool compileApp(const char* code);
-    void callInit();
+    bool callInit();  // true if init ran without error (or no init function)
     void callOnTick(unsigned long dt_ms);
     void processNextEvent();
     void pushLocalTimeFields();  // pushes utc_h/utc_m/localtime_h/localtime_m onto the Lua table at stack top

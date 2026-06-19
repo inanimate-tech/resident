@@ -116,20 +116,10 @@ void setup() {
     sandbox.ws().setEndpoint(RESIDENT_HOST, RESIDENT_PORT, wsPath.c_str());
   });
 
-  // On first successful connection, log the device id and redraw the TFT
-  // with the device id prominently displayed (since the StatusDisplay path
-  // will be suppressed once an app is running). Function-local static
-  // guards against re-firing on reconnect.
-  sandbox.onConnected([]() {
-    static bool loaded = false;
-    if (loaded) return;
-    loaded = true;
-    String app = "function init(ctx)\n"
-                 "  log.info('feather-tft ready, id=" + sandbox.getDeviceId() + "')\n"
-                 "end\n";
-    sandbox.loadApp(app.c_str());
-    tftStatus.displayText(sandbox.getDeviceId().c_str());
-  });
+  // No bootstrap app on connect: Resident now shows the device ID itself
+  // (the boot countdown screen) and auto-restores the last persisted app. A
+  // hand-rolled onConnected loadApp here would cancel that restore and
+  // overwrite the persisted app in NVS.
 
   sandbox.setup();
 }
