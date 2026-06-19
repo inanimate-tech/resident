@@ -20,7 +20,6 @@ void DisplayDriver::begin() {
   ledcSetup(BACKLIGHT_LEDC_CH, 5000, 8);  // 5 kHz, 8-bit
   ledcAttachPin(_backlitePin, BACKLIGHT_LEDC_CH);
   ledcWrite(BACKLIGHT_LEDC_CH, 255);
-  _spriteReady = true;
 }
 
 void DisplayDriver::displayText(const char* text) {

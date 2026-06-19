@@ -49,7 +49,6 @@ private:
   Adafruit_ST7789* _tft;
   uint8_t _backlitePin;
   GFXcanvas16* _canvas = nullptr;
-  bool _spriteReady = false;
   bool _appRunning = false;
 
   int clear(lua_State* L);
