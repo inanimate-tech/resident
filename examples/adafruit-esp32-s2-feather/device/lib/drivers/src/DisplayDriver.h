@@ -14,7 +14,7 @@
 //
 // The PWM channel for TFT_BACKLITE is owned here so `screen.set_brightness`
 // can control it.
-class DisplayDriver : public Resident::Driver, public Resident::StatusDisplay {
+class DisplayDriver : public Resident::StatusDisplay {
 public:
   DisplayDriver(Adafruit_ST7789* tft, uint8_t backlitePin)
       : _tft(tft), _backlitePin(backlitePin) {}

@@ -33,6 +33,7 @@ public:
 
 class SpyDisplay : public Resident::StatusDisplay {
 public:
+  const char* name() const override { return "spy-display"; }
   std::vector<std::string> texts;
   void displayText(const char* text) override { texts.push_back(text ? text : ""); }
   std::string last() const { return texts.empty() ? "" : texts.back(); }
@@ -40,6 +41,7 @@ public:
 
 class SpyButton : public Resident::SystemButton {
 public:
+  const char* name() const override { return "spy-button"; }
   bool down = false;
   bool pressed() override { return down; }
 };

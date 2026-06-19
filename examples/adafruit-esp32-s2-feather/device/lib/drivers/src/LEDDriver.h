@@ -15,7 +15,7 @@
 // Once an app is running, `solidColor()` no-ops so the app fully owns
 // the pixel. The Adafruit_NeoPixel must already be `begin()`'d in
 // main.cpp before Resident::Device::setup() runs.
-class LEDDriver : public Resident::Driver, public Resident::StatusLED {
+class LEDDriver : public Resident::StatusLED {
 public:
   explicit LEDDriver(Adafruit_NeoPixel* pixel) : _pixel(pixel) {}
 

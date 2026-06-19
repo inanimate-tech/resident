@@ -2,14 +2,16 @@
 #ifndef RESIDENT_STATUS_DISPLAY_H
 #define RESIDENT_STATUS_DISPLAY_H
 
+#include "ResidentDriver.h"
+
 namespace Resident {
 
-class StatusDisplay {
+// A status display is a Driver that renders lines of status text. Lifecycle
+// (begin/update) comes from Extension; a device assigns one via
+// SandboxConfig::statusDisplay.
+class StatusDisplay : public Driver {
 public:
-  virtual void begin() {}                         // Device calls once at setup
-  virtual void update() {}                        // Device calls every loop
   virtual void displayText(const char* text) = 0;
-  virtual ~StatusDisplay() = default;
 };
 
 } // namespace Resident

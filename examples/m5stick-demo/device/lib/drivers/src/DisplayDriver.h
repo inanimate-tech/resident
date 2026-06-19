@@ -10,7 +10,7 @@
 // Dual role: Resident::Driver (Lua screen.* module via sprite buffer)
 //          + Resident::StatusDisplay (connection state text, direct to display)
 // When an app is running, status display calls are suppressed.
-class DisplayDriver : public Resident::Driver, public Resident::StatusDisplay {
+class DisplayDriver : public Resident::StatusDisplay {
 public:
   const char* name() const override { return "screen"; }
 

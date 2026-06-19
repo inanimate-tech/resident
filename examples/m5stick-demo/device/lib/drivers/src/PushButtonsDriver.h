@@ -14,7 +14,7 @@ struct PushButtonsConfig {
 // Also acts as the Resident::SystemButton (button 0 — the front button), so the
 // runtime can read it directly during the boot countdown (tap = load now, long
 // press = forget the saved app), independent of the app-facing button events.
-class PushButtonsDriver : public Resident::Driver, public Resident::SystemButton {
+class PushButtonsDriver : public Resident::SystemButton {
 public:
   explicit PushButtonsDriver(const PushButtonsConfig& config);
 
