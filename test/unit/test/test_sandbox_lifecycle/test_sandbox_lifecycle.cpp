@@ -119,12 +119,49 @@ void test_dual_role_object_updates_once_per_loop(void) {
   TEST_ASSERT_EQUAL_INT(b0 + 1, button->updateCount);   // once, not twice
 }
 
+class EventSpy : public Resident::Driver {
+public:
+  int fired = 0;
+  const char* name() const override { return "probe"; }
+  void registerModule(Resident::LuaModule& m) override {
+    m.method<EventSpy, &EventSpy::luaFired>("fired");
+  }
+  int luaFired(lua_State*) { fired++; return 0; }
+  void emit() {
+    Resident::EventField f[] = {{"v", Resident::EventField::INT, {.i = 1}}};
+    sendEvent("ping", f, 1);
+  }
+};
+
+void test_driver_event_dropped_until_app_loaded(void) {
+  EventSpy* spy = new EventSpy();
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  cfg.extensions = {spy};
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setup();                       // Ready, no app
+
+  spy->emit();                            // event while no app is loaded
+  const char* APP_EV =
+      "function on_tick(ctx, dt) end\n"
+      "function on_event(ctx, e) probe.fired() end\n";
+  sandbox->loadApp(APP_EV);               // now Running
+  testMillis() += 200; sandbox->loop();   // dispatch a queued event, if any
+  TEST_ASSERT_EQUAL_INT(0, spy->fired);   // the Ready-time event was dropped
+
+  spy->emit();                            // event while Running
+  testMillis() += 200; sandbox->loop();
+  TEST_ASSERT_EQUAL_INT(1, spy->fired);   // delivered
+  delete spy;
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_begin_once_when_in_both_list_and_slot);
   RUN_TEST(test_begin_once_when_display_in_both_list_and_slot);
   RUN_TEST(test_peripheral_updates_without_app_but_plain_driver_does_not);
   RUN_TEST(test_dual_role_object_updates_once_per_loop);
+  RUN_TEST(test_driver_event_dropped_until_app_loaded);
   UNITY_END();
   return 0;
 }

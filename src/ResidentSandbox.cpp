@@ -1066,6 +1066,11 @@ void Sandbox::driverEventHandler(void* ctx, const char* name,
 {
   Sandbox* self = (Sandbox*)ctx;
 
+  // Accept events only while an app is loaded (Running or Suspended). In
+  // Suspended they are queued and dispatched on resume (loop() gates dispatch
+  // on Running); in Ready/Pending there is no app, so drop them.
+  if (!self->isAppRunning()) return;
+
   // Count button events for ctx.trigger_count
   if (strcmp(name, "button") == 0) {
     self->_triggerCount++;
