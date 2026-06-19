@@ -103,19 +103,17 @@ sandbox.loop();    // call from Arduino loop()
    1. The user-registered `onConfigureNetwork(cb)` fires (if any), receiving the `Courier::Client&`. Use this to configure transports, register additional transports, or set TLS certificates.
    2. Resident's internal Courier hooks are wired (status-display / status-LED updates, reserved-type message routing).
    3. WiFiManager AP name is set to `"Resident <DeviceType> <id-suffix>"`.
-   4. The `StatusDisplay::begin()` lifecycle runs (if a `statusDisplay` is configured).
-   5. The sandbox itself initialises: Lua state is created, extensions get `begin()` and `registerModule()` calls in registration order, globals are registered.
-   6. `Courier::Client::setup()` runs, which kicks WiFi and transports. During this:
+   4. The sandbox initialises: Lua state is created, then Resident builds a de-duplicated lifecycle list of all managed objects — the `extensions[]` entries plus any role-slot peripherals (`statusDisplay`, `statusLED`, `systemButton`). Each object in that list receives `begin()` and `registerModule()` exactly once (idempotent), in registration order. Globals are registered.
+   5. `Courier::Client::setup()` runs, which kicks WiFi and transports. During this:
       - `onCourierConnectionChange` fires for each state transition (`WifiConnecting` → `WifiConnected` → `TransportsConnecting` → `Connected`, etc.). Internal handler updates `statusDisplay`/`statusLED`, then the user's `onConnectionChange(cb)` callback fires.
       - `onCourierTransportsWillConnect` fires once before transports begin. Internal handler sets the default `/agents/<type>-agent/<id>` WS path, then the user's `onTransportsWillConnect(cb)` callback fires (override the path here).
       - `onCourierConnected` fires when fully connected. The user's `onConnected(cb)` callback runs.
 3. **`loop()`** — in order:
    1. `Courier::Client::loop()` drives the network state machine and reads transports.
-   2. `StatusDisplay::update()` (if configured).
-   3. If networked, gates the Lua tick on `isConnected()`. Standalone always ticks.
-   4. Every extension's `update()` runs at full main-loop rate.
-   5. The Lua `on_tick(ctx, dt_ms)` callback fires at 10 FPS (100 ms interval).
-   6. Up to one pending event is delivered to `on_event(ctx, event)`.
+   2. **Driver heartbeat:** the de-duplicated lifecycle list is walked once and `update()` is called on each object. Role peripherals (`statusDisplay`, `statusLED`, `systemButton`) update every loop regardless of app state or connectivity. All other extensions update only while an app is loaded (running or suspended). Connectivity does not gate either cadence.
+   3. If a persisted app is waiting to load, the boot countdown runs (and the function returns early).
+   4. The Lua `on_tick(ctx, dt_ms)` callback fires at 10 FPS (100 ms interval) — only while an app is Running, and (when networked) only once connected. Standalone always ticks unconditionally.
+   5. Up to one pending event is delivered to `on_event(ctx, event)`.
 
 ### Setup-phase callbacks (register before `setup()`)
 
@@ -486,7 +484,7 @@ public:
 |--------|---------|-------------|
 | `solidColor(uint32_t color)` | *(pure virtual)* | Set the LED to a packed `0xRRGGBB` color — called by Resident's internal handler on connection state changes |
 
-Resident's internal handler calls `solidColor` automatically as the connection state changes (yellow during WiFi setup, cyan while transports connect, green when connected, orange while reconnecting, red on failure). There are no `begin()` or `update()` lifecycle hooks — initialize LED hardware in your subclass constructor or before `sandbox.setup()`.
+Resident's internal handler calls `solidColor` automatically as the connection state changes (yellow during WiFi setup, cyan while transports connect, green when connected, orange while reconnecting, red on failure). `StatusLED` is a `Driver` subclass and therefore inherits the standard `Driver` lifecycle: `begin()` is called once during `Sandbox::setup()` and `update()` is called every loop (both default to no-ops). Override `begin()` to initialize LED hardware there rather than in the constructor.
 
 ---
 
