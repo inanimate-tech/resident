@@ -34,6 +34,7 @@ Resident::SandboxConfig makeConfig() {
     cfg.deviceType    = "stick";
     cfg.extensions    = {&displayDriver, &imuDriver, &buzzerDriver, &buttonDriver};
     cfg.statusDisplay = &displayDriver;
+    cfg.systemButton  = &buttonDriver;   // front button: tap = load, hold = forget
 
     // Courier::Config has a constructor with default args, so designated
     // initializers (.host = ...) don't compile under strict ESP-IDF builds.

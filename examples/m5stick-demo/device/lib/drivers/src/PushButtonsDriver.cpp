@@ -81,6 +81,24 @@ void PushButtonsDriver::update()
   }
 }
 
+bool PushButtonsDriver::pressed()
+{
+  if (_config.numButtons == 0) return _sysStable;
+
+  // Read button 0 directly (active-low, INPUT_PULLUP). This is independent of
+  // update() so it stays live during the boot countdown; debounce it here.
+  bool raw = (digitalRead(_config.pins[0]) == LOW);
+  unsigned long now = millis();
+  if (raw != _sysRawLast) {
+    _sysRawLast = raw;
+    _sysRawChangedAt = now;
+  }
+  if (now - _sysRawChangedAt >= DEBOUNCE_MS) {
+    _sysStable = raw;
+  }
+  return _sysStable;
+}
+
 void PushButtonsDriver::setLongPress(uint8_t buttonIndex, LongPressFn callback,
                                       unsigned long thresholdMs)
 {
