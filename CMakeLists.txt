@@ -41,4 +41,9 @@ idf_component_register(
     SRCS "src/ResidentSandbox.cpp"
     INCLUDE_DIRS "src"
     REQUIRES ${RESIDENT_REQUIRES}
+    # nvs_flash (a core ESP-IDF component) provides nvs_flash.h / nvs.h, used
+    # only by ResidentNvsStore.h via ResidentSandbox.cpp — private, not part of
+    # the public header surface. On Arduino/PlatformIO these headers are on the
+    # include path implicitly; under strict ESP-IDF they must be declared.
+    PRIV_REQUIRES nvs_flash
 )
