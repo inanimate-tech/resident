@@ -488,29 +488,27 @@ void Sandbox::loop() {
   if (_courier.has_value()) {
     _courier->loop();
   }
-  if (_config.statusDisplay) _config.statusDisplay->update();
+  if (!_lua) return;
+
+  // Driver heartbeat — single de-duped walk, connectivity-independent.
+  // Peripherals (role-assigned) update every loop; other extensions only
+  // while an app is loaded (Running or Suspended).
+  for (uint8_t i = 0; i < _lifecycleCount; i++) {
+    Extension* e = _lifecycle[i];
+    if (isPeripheral(e) || isAppRunning()) {
+      e->update();
+    }
+  }
 
   if (_runState == RunState::Pending) {
     updateBootCountdown();
     return;  // app not loaded yet; skip the tick path
   }
 
-  if (!_lua) return;
-
-  // Standalone path always ticks; networked path gates on isConnected
-  // (matches today's Device::loop behavior).
-  bool shouldTick = !_courier.has_value() || isConnected();
-  if (!shouldTick) return;
-
-  // Drive every registered extension's update() at full main-loop rate
-  // — independent of whether an app is loaded. Drivers like button
-  // pollers depend on continuous polling for debounce and latency.
-  for (uint8_t i = 0; i < _config.extensions.count; i++) {
-    _config.extensions.items[i]->update();
-  }
-
-  // Lua tick + event dispatch only when an app is running and not suspended.
   if (_runState != RunState::Running) return;
+
+  // Networked apps tick only once connected (unchanged); standalone always.
+  if (_courier.has_value() && !isConnected()) return;
 
   unsigned long now = millis();
   unsigned long elapsed = now - _lastTickTime;

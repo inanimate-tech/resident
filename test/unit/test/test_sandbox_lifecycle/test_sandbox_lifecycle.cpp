@@ -85,10 +85,46 @@ void test_begin_once_when_display_in_both_list_and_slot(void) {
   TEST_ASSERT_EQUAL_INT(1, display->beginCount);  // de-duped: begun once
 }
 
+void test_peripheral_updates_without_app_but_plain_driver_does_not(void) {
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  cfg.extensions = {button, driver};   // button is also the system button
+  cfg.systemButton = button;           // -> peripheral
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setup();                     // no app loaded -> RunState::Ready
+
+  int b0 = button->updateCount, d0 = driver->updateCount;
+  sandbox->loop();
+  TEST_ASSERT_EQUAL_INT(b0 + 1, button->updateCount);   // peripheral: always
+  TEST_ASSERT_EQUAL_INT(d0,     driver->updateCount);    // plain driver: not yet
+
+  sandbox->loadApp(APP);                // app loaded -> Running
+  int b1 = button->updateCount, d1 = driver->updateCount;
+  sandbox->loop();
+  TEST_ASSERT_EQUAL_INT(b1 + 1, button->updateCount);   // still updates
+  TEST_ASSERT_EQUAL_INT(d1 + 1, driver->updateCount);    // now updates too
+}
+
+void test_dual_role_object_updates_once_per_loop(void) {
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  cfg.extensions = {button};            // in the list...
+  cfg.systemButton = button;            // ...and the slot (peripheral)
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setup();
+  sandbox->loadApp(APP);                // Running: both cadences would apply
+
+  int b0 = button->updateCount;
+  sandbox->loop();
+  TEST_ASSERT_EQUAL_INT(b0 + 1, button->updateCount);   // once, not twice
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_begin_once_when_in_both_list_and_slot);
   RUN_TEST(test_begin_once_when_display_in_both_list_and_slot);
+  RUN_TEST(test_peripheral_updates_without_app_but_plain_driver_does_not);
+  RUN_TEST(test_dual_role_object_updates_once_per_loop);
   UNITY_END();
   return 0;
 }
