@@ -2,6 +2,8 @@
 #ifndef RESIDENT_SYSTEM_BUTTON_H
 #define RESIDENT_SYSTEM_BUTTON_H
 
+#include "ResidentDriver.h"
+
 namespace Resident {
 
 // A single hardware button read directly by the runtime — distinct from the
@@ -13,10 +15,9 @@ namespace Resident {
 // press + release) loads the saved app immediately, and a long press forgets
 // it. A natural home for future core button uses (e.g. hold-to-enter WiFi
 // config).
-class SystemButton {
+class SystemButton : public Driver {
 public:
   virtual bool pressed() = 0;
-  virtual ~SystemButton() = default;
 };
 
 } // namespace Resident

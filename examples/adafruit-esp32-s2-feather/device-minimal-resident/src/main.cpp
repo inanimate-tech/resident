@@ -21,6 +21,8 @@ static bool batteryReady = false;
 // the device id, which is what the user needs to push apps. We draw it big.
 class TFTStatusDisplay : public Resident::StatusDisplay {
 public:
+  const char* name() const override { return "screen"; }
+
   void begin() override {
     tft.fillScreen(ST77XX_BLACK);
     tft.setTextWrap(false);

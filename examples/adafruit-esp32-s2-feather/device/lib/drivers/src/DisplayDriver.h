@@ -7,14 +7,11 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 
-// Resident driver wrapping Adafruit_ST7789 for Lua access via the `screen.*`
-// module. Dual role: Resident::Driver (Lua surface against an off-screen
-// GFXcanvas16) + Resident::StatusDisplay (connection-state text written
-// straight to the TFT, suppressed while a Lua app is running).
-//
-// The PWM channel for TFT_BACKLITE is owned here so `screen.set_brightness`
-// can control it.
-class DisplayDriver : public Resident::Driver, public Resident::StatusDisplay {
+// A StatusDisplay (which is a Driver): renders Lua screen.* via an off-screen
+// GFXcanvas16 and writes connection-state text straight to the TFT, suppressed
+// while a Lua app is running. Owns the PWM channel for TFT_BACKLITE so
+// screen.set_brightness can control it.
+class DisplayDriver : public Resident::StatusDisplay {
 public:
   DisplayDriver(Adafruit_ST7789* tft, uint8_t backlitePin)
       : _tft(tft), _backlitePin(backlitePin) {}
@@ -52,7 +49,6 @@ private:
   Adafruit_ST7789* _tft;
   uint8_t _backlitePin;
   GFXcanvas16* _canvas = nullptr;
-  bool _initialized = false;
   bool _appRunning = false;
 
   int clear(lua_State* L);

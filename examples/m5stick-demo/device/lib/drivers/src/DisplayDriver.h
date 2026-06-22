@@ -6,11 +6,10 @@
 #include <ResidentStatusDisplay.h>
 #include <M5Unified.h>
 
-// Resident driver wrapping M5.Display for Lua access.
-// Dual role: Resident::Driver (Lua screen.* module via sprite buffer)
-//          + Resident::StatusDisplay (connection state text, direct to display)
-// When an app is running, status display calls are suppressed.
-class DisplayDriver : public Resident::Driver, public Resident::StatusDisplay {
+// A StatusDisplay (which is a Driver): renders Lua screen.* via an off-screen
+// sprite and writes connection-state text directly to the display. Status
+// display calls are suppressed while an app is running.
+class DisplayDriver : public Resident::StatusDisplay {
 public:
   const char* name() const override { return "screen"; }
 
@@ -51,7 +50,7 @@ protected:
   M5Canvas _canvas{&M5.Display};
 
 private:
-  bool _initialized = false;
+  bool _spriteReady = false;
   bool _appRunning = false;
 
   int clear(lua_State* L);

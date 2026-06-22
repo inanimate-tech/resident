@@ -6,16 +6,13 @@
 #include <ResidentStatusLED.h>
 #include <Adafruit_NeoPixel.h>
 
-// Resident driver for the single onboard NeoPixel. Dual role:
-//   - Resident::Driver       → exposes the `led.*` Lua module
-//   - Resident::StatusLED    → Resident drives the pixel for connection
-//                              state (yellow=connecting, cyan=transports,
-//                              green=connected, orange=reconnecting,
-//                              red=failed) until a Lua app loads.
-// Once an app is running, `solidColor()` no-ops so the app fully owns
-// the pixel. The Adafruit_NeoPixel must already be `begin()`'d in
-// main.cpp before Resident::Device::setup() runs.
-class LEDDriver : public Resident::Driver, public Resident::StatusLED {
+// A StatusLED (which is a Driver): exposes the `led.*` Lua module and drives
+// the onboard NeoPixel for connection state (yellow=connecting,
+// cyan=transports, green=connected, orange=reconnecting, red=failed) until a
+// Lua app loads. solidColor() no-ops once an app is running so the app fully
+// owns the pixel. The Adafruit_NeoPixel must already be begin()'d in
+// main.cpp before Sandbox::setup() runs.
+class LEDDriver : public Resident::StatusLED {
 public:
   explicit LEDDriver(Adafruit_NeoPixel* pixel) : _pixel(pixel) {}
 

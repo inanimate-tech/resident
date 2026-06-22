@@ -36,3 +36,6 @@ examples/*/docs/superpowers/
 
 # Local pack output (pio pkg pack / compote component pack)
 dist/
+
+# Superpowers subagent-driven-development scratch (briefs, review packages, ledger)
+.superpowers/

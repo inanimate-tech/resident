@@ -14,7 +14,7 @@ struct PushButtonsConfig {
 // Also acts as the Resident::SystemButton (button 0 — the front button), so the
 // runtime can read it directly during the boot countdown (tap = load now, long
 // press = forget the saved app), independent of the app-facing button events.
-class PushButtonsDriver : public Resident::Driver, public Resident::SystemButton {
+class PushButtonsDriver : public Resident::SystemButton {
 public:
   explicit PushButtonsDriver(const PushButtonsConfig& config);
 
@@ -28,8 +28,8 @@ public:
 
   int pressCount(lua_State* L);
 
-  // Resident::SystemButton — level read of button 0. Self-debounced so it
-  // works during the boot countdown, when the Driver's update() isn't called.
+  // Resident::SystemButton — debounced held-level of button 0, maintained by
+  // update() (called every loop while this is the system button).
   bool pressed() override;
 
   uint16_t getTotalPressCount() const;
@@ -61,11 +61,6 @@ private:
   };
   LongPressConfig _longPress[MAX_BUTTONS];
 
-  // Independent debounce for the SystemButton level read (pressed()), since it
-  // is polled outside the update() cycle during the boot countdown.
-  bool _sysRawLast = false;
-  unsigned long _sysRawChangedAt = 0;
-  bool _sysStable = false;
 };
 
 #endif // PUSH_BUTTONS_DRIVER_H

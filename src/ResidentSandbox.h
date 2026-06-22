@@ -183,6 +183,15 @@ private:
     // Track whether the Lua state has been initialised, so setup() is idempotent.
     bool _initialized = false;
 
+    // Unified lifecycle set: extensions[] plus any role-slot object not
+    // already present, de-duped by pointer. Driven for begin() and update().
+    Extension* _lifecycle[Extensions::MAX + 3] = {};
+    uint8_t _lifecycleCount = 0;
+    void buildLifecycleSet();
+    void addLifecycle(Extension* e);
+    // True iff e is one of the assigned role-slot objects (a peripheral).
+    bool isPeripheral(Extension* e) const;
+
     // Telemetry
     TelemetryCallback _telemetryCb;
     String _generationId;
@@ -213,6 +222,10 @@ private:
     static constexpr unsigned long BOOT_COUNTDOWN_MS = 20000;
     void updateBootCountdown();
     void finishBootCountdown();
+    // Present the idle UI once the device is reachable (first connection, or
+    // standalone setup): identity screen + countdown if an app is persisted,
+    // else just the identity screen. No-op once an app is loaded/counting down.
+    void enterIdleScreen();
 
     // SystemButton gesture tracking during the countdown (Pending): a tap
     // loads the saved app, a long press forgets it. pressed() is a level read,

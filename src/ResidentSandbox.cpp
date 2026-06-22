@@ -131,6 +131,38 @@ int Sandbox::luaGlobalIntForTest(const char* name)
 }
 
 
+void Sandbox::addLifecycle(Extension* e)
+{
+  if (!e) return;
+  for (uint8_t i = 0; i < _lifecycleCount; i++) {
+    if (_lifecycle[i] == e) return;   // already present — de-dup
+  }
+  if (_lifecycleCount < (Extensions::MAX + 3)) {
+    _lifecycle[_lifecycleCount++] = e;
+  }
+}
+
+void Sandbox::buildLifecycleSet()
+{
+  _lifecycleCount = 0;
+  for (uint8_t i = 0; i < _config.extensions.count; i++) {
+    addLifecycle(_config.extensions.items[i]);
+  }
+  // Role slots are Driver subclasses, so they upcast to Extension*. Append any
+  // not already in extensions[] so an assigned-but-unlisted peripheral is
+  // still begun and updated.
+  addLifecycle(_config.statusDisplay);
+  addLifecycle(_config.statusLED);
+  addLifecycle(_config.systemButton);
+}
+
+bool Sandbox::isPeripheral(Extension* e) const
+{
+  return e == static_cast<Extension*>(_config.statusDisplay)
+      || e == static_cast<Extension*>(_config.statusLED)
+      || e == static_cast<Extension*>(_config.systemButton);
+}
+
 void Sandbox::initialize()
 {
   Serial.println("Initializing Resident::Sandbox");
@@ -159,10 +191,14 @@ void Sandbox::initialize()
 
   setupLuaEnvironment();
 
-  // Walk extensions in registration order: begin (idempotent), wire
-  // event sink if Driver, build Lua module table.
-  for (uint8_t i = 0; i < _config.extensions.count; i++) {
-    Extension* ext = _config.extensions.items[i];
+  // Build the de-duped lifecycle set (extensions[] + role slots).
+  buildLifecycleSet();
+
+  // Pass 1 — Lifecycle: wire event sink (so begin() can safely sendEvent()),
+  // then begin(). Covers all managed objects: declared extensions and any
+  // role-slot peripherals not also in extensions[].
+  for (uint8_t i = 0; i < _lifecycleCount; i++) {
+    Extension* ext = _lifecycle[i];
     Serial.printf("  Initializing extension: %s\n", ext->name());
 
     // Wire event sink first so a Driver's begin() can safely sendEvent().
@@ -172,9 +208,15 @@ void Sandbox::initialize()
     }
 
     Extension::beginExtension(*ext);
+  }
 
-    // Register Lua module: push fresh table, let extension populate it,
-    // setglobal under the extension's name.
+  // Pass 2 — Lua modules: register globals for declared extensions only.
+  // A role-slot peripheral that is NOT in extensions[] (e.g. a TFTStatusDisplay
+  // assigned only to cfg.statusDisplay) must NOT get a Lua global — it has no
+  // API surface to expose. A role object that also wants a Lua module must be
+  // listed in extensions[] explicitly.
+  for (uint8_t i = 0; i < _config.extensions.count; i++) {
+    Extension* ext = _config.extensions.items[i];
     lua_newtable(_lua);
     LuaModule m(_lua, ext);
     ext->registerModule(m);
@@ -266,10 +308,7 @@ void Sandbox::setup()
                   getDeviceType(), _deviceId.c_str());
   }
 
-  // 4. Status display starts up regardless of network.
-  if (_config.statusDisplay) _config.statusDisplay->begin();
-
-  // 5. Sandbox internals (Lua state, extensions). Always.
+  // 4. Sandbox internals (Lua state, extensions + role slots). Always.
   initialize();
 
   // Explicit override wins; otherwise use the platform default (NVS on
@@ -283,32 +322,20 @@ void Sandbox::setup()
   }
 #endif
 
-  // Arm the boot countdown if a previously-saved app exists.
+  // Load any persisted app source. It is not armed here — the identity screen
+  // and its countdown appear only once the device is ready to show them: on
+  // first connection (networked), or right below (standalone). A networked
+  // device that never connects stays on the connection-status screen.
   if (_config.persistApps && _store) {
     _pendingPersistedSource = _store->load();
-    if (!_pendingPersistedSource.isEmpty()) {
-      if (_config.statusDisplay) {
-        // The countdown's sole purpose is to show the device ID on the display.
-        // Only arm it when there is a display to show it on.
-        _runState = RunState::Pending;
-        _countdownStartMs = millis();
-        _lastCountdownSecondShown = -1;
-      } else {
-        // No display — nothing to show, no reason to stall. Restore immediately.
-        finishBootCountdown();
-      }
-    }
   }
 
-  // 6. Kick off Courier (WiFi + transports).
+  // 6. Kick off Courier (WiFi + transports). The idle screen is then shown on
+  // first connection. Standalone has no connection step, so enter it now.
   if (_courier.has_value()) {
     _courier->setup();
-  }
-
-  // Standalone (no network): no Connected event will arrive to paint the
-  // Ready identity screen, so paint it now when idle.
-  if (!_courier.has_value() && _runState == RunState::Ready) {
-    showReadyScreen();
+  } else {
+    enterIdleScreen();
   }
 }
 
@@ -385,7 +412,7 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
       }
       case S::WifiConnected:         showStatusText("WiFi connected"); break;
       case S::TransportsConnecting:  showStatusText("Connecting..."); break;
-      case S::Connected:             if (_runState == RunState::Ready) showIdentityScreen(); break;
+      case S::Connected:             enterIdleScreen(); break;
       case S::Reconnecting:          showStatusText("Reconnecting..."); break;
       case S::ConnectionFailed:      showStatusText("Connection failed"); break;
       default: break;
@@ -445,6 +472,28 @@ void Sandbox::showIdentityScreen(int countdownSecs)
   showStatusText(buf);
 }
 
+void Sandbox::enterIdleScreen()
+{
+  // Called when the device is ready to present its idle UI. With a persisted
+  // app: show the identity screen + 20s countdown (then load), or restore
+  // immediately when there's no display to count down on. With no persisted
+  // app: rest on the identity screen. No-op once an app is loaded or counting
+  // down (so a reconnect doesn't re-arm or repaint over a running app).
+  if (_runState != RunState::Ready) return;
+
+  if (_pendingPersistedSource.isEmpty()) {
+    showReadyScreen();
+    return;
+  }
+  if (_config.statusDisplay) {
+    _runState = RunState::Pending;
+    _countdownStartMs = millis();
+    _lastCountdownSecondShown = -1;
+  } else {
+    finishBootCountdown();   // no display — nothing to count down on; restore now
+  }
+}
+
 void Sandbox::showReadyScreen()
 {
   // The Ready identity screen is the resting display when no app is loaded.
@@ -458,29 +507,27 @@ void Sandbox::loop() {
   if (_courier.has_value()) {
     _courier->loop();
   }
-  if (_config.statusDisplay) _config.statusDisplay->update();
+  if (!_lua) return;
+
+  // Driver heartbeat — single de-duped walk, connectivity-independent.
+  // Peripherals (role-assigned) update every loop; other extensions only
+  // while an app is loaded (Running or Suspended).
+  for (uint8_t i = 0; i < _lifecycleCount; i++) {
+    Extension* e = _lifecycle[i];
+    if (isPeripheral(e) || isAppRunning()) {
+      e->update();
+    }
+  }
 
   if (_runState == RunState::Pending) {
     updateBootCountdown();
     return;  // app not loaded yet; skip the tick path
   }
 
-  if (!_lua) return;
-
-  // Standalone path always ticks; networked path gates on isConnected
-  // (matches today's Device::loop behavior).
-  bool shouldTick = !_courier.has_value() || isConnected();
-  if (!shouldTick) return;
-
-  // Drive every registered extension's update() at full main-loop rate
-  // — independent of whether an app is loaded. Drivers like button
-  // pollers depend on continuous polling for debounce and latency.
-  for (uint8_t i = 0; i < _config.extensions.count; i++) {
-    _config.extensions.items[i]->update();
-  }
-
-  // Lua tick + event dispatch only when an app is running and not suspended.
   if (_runState != RunState::Running) return;
+
+  // Networked apps tick only once connected (unchanged); standalone always.
+  if (_courier.has_value() && !isConnected()) return;
 
   unsigned long now = millis();
   unsigned long elapsed = now - _lastTickTime;
@@ -513,7 +560,9 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
     notifyAppRunning(false);
   }
 
-  // Reset extensions
+  // Reset extensions (declared extensions only, not slot-only peripherals).
+  // onAppReset() is an app-facing hook; slot-only peripherals are begun/updated
+  // via the lifecycle set but deliberately don't receive app lifecycle events.
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
     _config.extensions.items[i]->onAppReset();
   }
@@ -790,8 +839,7 @@ bool Sandbox::compileApp(const char* code)
   notifyAppRunning(true);
   _lastInitOk = callInit();
 
-  Serial.println("Resident::Sandbox: app compiled successfully");
-  return true;
+  return true;   // loadAppInternal logs + emits the app_compiled telemetry
 }
 
 bool Sandbox::callInit()
@@ -1038,6 +1086,11 @@ void Sandbox::driverEventHandler(void* ctx, const char* name,
 {
   Sandbox* self = (Sandbox*)ctx;
 
+  // Accept events only while an app is loaded (Running or Suspended). In
+  // Suspended they are queued and dispatched on resume (loop() gates dispatch
+  // on Running); in Ready/Pending there is no app, so drop them.
+  if (!self->isAppRunning()) return;
+
   // Count button events for ctx.trigger_count
   if (strcmp(name, "button") == 0) {
     self->_triggerCount++;
@@ -1076,6 +1129,9 @@ void Sandbox::driverEventHandler(void* ctx, const char* name,
 }
 
 void Sandbox::notifyAppRunning(bool running) {
+  // Declared extensions only — same intentional carve-out as onAppReset():
+  // slot-only peripherals are begun/updated via the lifecycle set but don't
+  // receive app-facing hooks (onAppRunning / onAppReset).
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
     Driver* driver = _config.extensions.items[i]->asDriver();
     if (driver) driver->onAppRunning(running);

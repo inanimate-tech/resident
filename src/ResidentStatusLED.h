@@ -3,13 +3,13 @@
 #define RESIDENT_STATUS_LED_H
 
 #include <cstdint>
+#include "ResidentDriver.h"
 
 namespace Resident {
 
-class StatusLED {
+class StatusLED : public Driver {
 public:
   virtual void solidColor(uint32_t color) = 0;
-  virtual ~StatusLED() = default;
 };
 
 } // namespace Resident

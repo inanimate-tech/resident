@@ -33,6 +33,7 @@ public:
 
 class SpyDisplay : public Resident::StatusDisplay {
 public:
+  const char* name() const override { return "spy-display"; }
   std::vector<std::string> texts;
   void displayText(const char* text) override { texts.push_back(text ? text : ""); }
   std::string last() const { return texts.empty() ? "" : texts.back(); }
@@ -40,6 +41,7 @@ public:
 
 class SpyButton : public Resident::SystemButton {
 public:
+  const char* name() const override { return "spy-button"; }
   bool down = false;
   bool pressed() override { return down; }
 };
@@ -302,6 +304,29 @@ void test_suspend_during_countdown_is_ignored(void) {
   TEST_ASSERT_TRUE(telemetryHas("app_restored"));
 }
 
+// Networked: the identity screen + countdown are armed on first connection, not
+// at setup. The stub Courier never reaches Connected, so the persisted app is
+// loaded into the pending buffer but the countdown is NOT armed and nothing is
+// painted — the device waits on the connection screen. (Standalone arms at
+// setup; see test_countdown_shows_deviceid_and_counts_down.)
+void test_networked_countdown_armed_on_connect_not_setup(void) {
+  store->save(GOOD_APP, strlen(GOOD_APP));
+  Resident::SandboxConfig cfg;
+  cfg.deviceType    = "native-test";
+  cfg.statusDisplay = display;
+  cfg.persistApps   = true;
+  cfg.persistentStore = store;
+  Courier::Config courier;
+  cfg.network = courier;                 // networked — stub never connects
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setup();
+
+  sandbox->loop();
+  sandbox->loop();
+  TEST_ASSERT_FALSE(sandbox->isAppRunning());            // not loaded at setup
+  TEST_ASSERT_EQUAL_INT(0, (int)display->texts.size());  // no countdown until connected
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_save_after_successful_load);
@@ -321,6 +346,7 @@ int main(int, char**) {
   RUN_TEST(test_clear_persisted_app);
   RUN_TEST(test_persist_no_display_skips_countdown);
   RUN_TEST(test_suspend_during_countdown_is_ignored);
+  RUN_TEST(test_networked_countdown_armed_on_connect_not_setup);
   UNITY_END();
   return 0;
 }

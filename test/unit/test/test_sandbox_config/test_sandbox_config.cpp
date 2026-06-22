@@ -1,4 +1,5 @@
 #include <unity.h>
+#include <type_traits>
 #include "ResidentSandboxConfig.h"
 #include "ResidentExtension.h"
 
@@ -9,10 +10,12 @@ public:
 };
 class StubStatusDisplay : public Resident::StatusDisplay {
 public:
+  const char* name() const override { return "stub-display"; }
   void displayText(const char* text) override { (void)text; }
 };
 class StubStatusLED : public Resident::StatusLED {
 public:
+  const char* name() const override { return "stub-led"; }
   void solidColor(uint32_t rgb) override { (void)rgb; }
 };
 }
@@ -69,11 +72,20 @@ void test_persistence_config_defaults(void) {
   TEST_ASSERT_NULL(cfg.persistentStore);              // default store selected by Sandbox
 }
 
+void test_roles_are_drivers(void) {
+  // The role interfaces must be Drivers (hence Extensions) so lifecycle is
+  // unified and a role pointer is an Extension pointer.
+  TEST_ASSERT_TRUE((std::is_base_of<Resident::Driver, Resident::StatusDisplay>::value));
+  TEST_ASSERT_TRUE((std::is_base_of<Resident::Driver, Resident::SystemButton>::value));
+  TEST_ASSERT_TRUE((std::is_base_of<Resident::Driver, Resident::StatusLED>::value));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_default_construction);
     RUN_TEST(test_assign_top_level_fields);
     RUN_TEST(test_network_optional_can_be_assigned);
     RUN_TEST(test_persistence_config_defaults);
+    RUN_TEST(test_roles_are_drivers);
     return UNITY_END();
 }
