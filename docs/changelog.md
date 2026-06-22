@@ -26,6 +26,11 @@
   implementation must now also implement `Driver::name()` (a pure virtual
   returning a `const char*` identifier).
 
+- **Idle-screen title.** `Sandbox::setIdleScreenTitle(const char*)` adds an
+  optional line at the top of the idle screen — shown in both the resting Ready
+  state and during the Pending boot countdown — above `Device ID` / `Type`.
+  Internal: `showIdentityScreen` renamed to `showIdleScreen`.
+
 - **Boot identity screen now waits for connectivity.** A networked device shows
   its connection status while connecting, then — once **connected** — the
   identity screen and (if an app is persisted) the 20-second countdown. A

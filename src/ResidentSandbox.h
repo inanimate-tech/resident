@@ -28,6 +28,11 @@ public:
 
     void setTelemetryCallback(TelemetryCallback cb) { _telemetryCb = cb; }
 
+    // Optional line shown at the TOP of the idle screen (Ready + Pending),
+    // above Device ID / Type. Empty by default. Device-supplied (e.g. a
+    // wake-word hint); resident never generates it.
+    void setIdleScreenTitle(const char* title) { _idleScreenTitle = title ? title : ""; }
+
     // Current generation ID (from last app/shader message)
     const String& generationId() const { return _generationId; }
 
@@ -174,7 +179,7 @@ private:
     void showStatusText(const char* text);
     // Paint the device-identity screen: "Device ID: <id>\nType: <t>", plus a
     // "\n\n<secs>s" line when countdownSecs >= 0 (the boot countdown).
-    void showIdentityScreen(int countdownSecs = -1);
+    void showIdleScreen(int countdownSecs = -1);
     // Paint the Ready identity screen when the device is idle and reachable
     // (connected, or standalone). No-op while connecting or app-owned.
     void showReadyScreen();
@@ -212,6 +217,8 @@ private:
     PersistentStore* _store = nullptr;
     bool _lastInitOk = false;   // set by compileApp via callInit()
     bool loadAppInternal(const char* luaCode, bool persistOnSuccess);
+
+    String _idleScreenTitle;   // optional top line on the idle screen (see setIdleScreenTitle)
 
     // Boot countdown data (active while _runState == RunState::Pending): show
     // the device ID for BOOT_COUNTDOWN_MS before auto-loading the persisted
