@@ -666,7 +666,7 @@ Calls `Sandbox::clearPersistedApp()`. The next boot will not restore any app. Eq
 
 The last app (or shader) that loads successfully — compiles **and** runs `init()` without error — is saved to flash (NVS) and auto-reloaded on the next boot.
 
-On boot, if a saved app exists, the device shows its identity and a 20-second countdown on the status display before loading it:
+Once the device is reachable — **connected**, or immediately in standalone mode — if a saved app exists the status display shows the device identity with a 20-second countdown before loading it (while connecting, the usual connection-status text shows instead). A networked device that never connects stays on the connection screen and does not auto-load.
 
 ```
 Device ID: <deviceId>

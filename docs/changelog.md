@@ -26,6 +26,13 @@
   implementation must now also implement `Driver::name()` (a pure virtual
   returning a `const char*` identifier).
 
+- **Boot identity screen now waits for connectivity.** A networked device shows
+  its connection status while connecting, then — once **connected** — the
+  identity screen and (if an app is persisted) the 20-second countdown. A
+  device that never connects stays on the connection screen and does not
+  auto-load. Standalone devices show the identity/countdown immediately at
+  setup, as before.
+
 ### Fixes
 
 - **Lua allocator falls back to internal RAM on boards without PSRAM** (e.g. ESP32-S3FN8 / M5Dial). Previously every Lua allocation went to `MALLOC_CAP_SPIRAM`, which returns NULL when no PSRAM exists — the Lua runtime had no usable heap and every app failed with "not enough memory". The capability is now resolved once on first use: SPIRAM when present, internal 8-bit RAM otherwise. Boards with PSRAM are unaffected.

@@ -322,32 +322,20 @@ void Sandbox::setup()
   }
 #endif
 
-  // Arm the boot countdown if a previously-saved app exists.
+  // Load any persisted app source. It is not armed here — the identity screen
+  // and its countdown appear only once the device is ready to show them: on
+  // first connection (networked), or right below (standalone). A networked
+  // device that never connects stays on the connection-status screen.
   if (_config.persistApps && _store) {
     _pendingPersistedSource = _store->load();
-    if (!_pendingPersistedSource.isEmpty()) {
-      if (_config.statusDisplay) {
-        // The countdown's sole purpose is to show the device ID on the display.
-        // Only arm it when there is a display to show it on.
-        _runState = RunState::Pending;
-        _countdownStartMs = millis();
-        _lastCountdownSecondShown = -1;
-      } else {
-        // No display — nothing to show, no reason to stall. Restore immediately.
-        finishBootCountdown();
-      }
-    }
   }
 
-  // 6. Kick off Courier (WiFi + transports).
+  // 6. Kick off Courier (WiFi + transports). The idle screen is then shown on
+  // first connection. Standalone has no connection step, so enter it now.
   if (_courier.has_value()) {
     _courier->setup();
-  }
-
-  // Standalone (no network): no Connected event will arrive to paint the
-  // Ready identity screen, so paint it now when idle.
-  if (!_courier.has_value() && _runState == RunState::Ready) {
-    showReadyScreen();
+  } else {
+    enterIdleScreen();
   }
 }
 
@@ -424,7 +412,7 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
       }
       case S::WifiConnected:         showStatusText("WiFi connected"); break;
       case S::TransportsConnecting:  showStatusText("Connecting..."); break;
-      case S::Connected:             if (_runState == RunState::Ready) showIdentityScreen(); break;
+      case S::Connected:             enterIdleScreen(); break;
       case S::Reconnecting:          showStatusText("Reconnecting..."); break;
       case S::ConnectionFailed:      showStatusText("Connection failed"); break;
       default: break;
@@ -482,6 +470,28 @@ void Sandbox::showIdentityScreen(int countdownSecs)
              _deviceId.c_str(), getDeviceType());
   }
   showStatusText(buf);
+}
+
+void Sandbox::enterIdleScreen()
+{
+  // Called when the device is ready to present its idle UI. With a persisted
+  // app: show the identity screen + 20s countdown (then load), or restore
+  // immediately when there's no display to count down on. With no persisted
+  // app: rest on the identity screen. No-op once an app is loaded or counting
+  // down (so a reconnect doesn't re-arm or repaint over a running app).
+  if (_runState != RunState::Ready) return;
+
+  if (_pendingPersistedSource.isEmpty()) {
+    showReadyScreen();
+    return;
+  }
+  if (_config.statusDisplay) {
+    _runState = RunState::Pending;
+    _countdownStartMs = millis();
+    _lastCountdownSecondShown = -1;
+  } else {
+    finishBootCountdown();   // no display — nothing to count down on; restore now
+  }
 }
 
 void Sandbox::showReadyScreen()
@@ -829,8 +839,7 @@ bool Sandbox::compileApp(const char* code)
   notifyAppRunning(true);
   _lastInitOk = callInit();
 
-  Serial.println("Resident::Sandbox: app compiled successfully");
-  return true;
+  return true;   // loadAppInternal logs + emits the app_compiled telemetry
 }
 
 bool Sandbox::callInit()

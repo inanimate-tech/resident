@@ -222,6 +222,10 @@ private:
     static constexpr unsigned long BOOT_COUNTDOWN_MS = 20000;
     void updateBootCountdown();
     void finishBootCountdown();
+    // Present the idle UI once the device is reachable (first connection, or
+    // standalone setup): identity screen + countdown if an app is persisted,
+    // else just the identity screen. No-op once an app is loaded/counting down.
+    void enterIdleScreen();
 
     // SystemButton gesture tracking during the countdown (Pending): a tap
     // loads the saved app, a long press forgets it. pressed() is a level read,
