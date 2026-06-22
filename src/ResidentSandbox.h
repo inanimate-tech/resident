@@ -177,8 +177,9 @@ private:
 
     // Status display helpers.
     void showStatusText(const char* text);
-    // Paint the device-identity screen: "Device ID: <id>\nType: <t>", plus a
-    // "\n\n<secs>s" line when countdownSecs >= 0 (the boot countdown).
+    // Paint the idle screen: an optional title line (setIdleScreenTitle) on top,
+    // then "Device ID: <id>\nType: <t>", plus a "\n<secs>s" line when
+    // countdownSecs >= 0 (the boot countdown).
     void showIdleScreen(int countdownSecs = -1);
     // Paint the Ready identity screen when the device is idle and reachable
     // (connected, or standalone). No-op while connecting or app-owned.
