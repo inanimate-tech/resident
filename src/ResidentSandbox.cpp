@@ -458,18 +458,15 @@ void Sandbox::showStatusText(const char* text)
   _config.statusDisplay->displayText(text);
 }
 
-void Sandbox::showIdentityScreen(int countdownSecs)
+void Sandbox::showIdleScreen(int countdownSecs)
 {
   if (!_config.statusDisplay) return;
-  char buf[96];
-  if (countdownSecs >= 0) {
-    snprintf(buf, sizeof(buf), "Device ID: %s\nType: %s\n\n%ds",
-             _deviceId.c_str(), getDeviceType(), countdownSecs);
-  } else {
-    snprintf(buf, sizeof(buf), "Device ID: %s\nType: %s",
-             _deviceId.c_str(), getDeviceType());
-  }
-  showStatusText(buf);
+  String s;
+  if (_idleScreenTitle.length() > 0) { s += _idleScreenTitle; s += '\n'; }
+  s += "Device ID: "; s += _deviceId;
+  s += "\nType: ";     s += getDeviceType();
+  if (countdownSecs >= 0) { s += '\n'; s += String(countdownSecs); s += 's'; }
+  showStatusText(s.c_str());
 }
 
 void Sandbox::enterIdleScreen()
@@ -500,7 +497,7 @@ void Sandbox::showReadyScreen()
   // Show it once the device is reachable (connected, or standalone); while
   // connecting, the connection-status text shows instead, and while an app
   // runs it owns the screen.
-  if (!_courier.has_value() || isConnected()) showIdentityScreen();
+  if (!_courier.has_value() || isConnected()) showIdleScreen();
 }
 
 void Sandbox::loop() {
@@ -613,7 +610,7 @@ void Sandbox::updateBootCountdown()
   int remaining = (int)((BOOT_COUNTDOWN_MS - elapsed + 999) / 1000);
   if (remaining != _lastCountdownSecondShown) {
     _lastCountdownSecondShown = remaining;
-    showIdentityScreen(remaining);
+    showIdleScreen(remaining);
   }
 }
 
@@ -667,6 +664,11 @@ void Sandbox::finishBootCountdown()
   bool ok = loadAppInternal(src.c_str(), /*persistOnSuccess=*/false);
   if (ok) {
     emitTelemetry("app_restored");
+    // Repaint the resting idle screen (clears the countdown). On devices whose
+    // status display IS the app screen this no-ops (the app owns it); on devices
+    // with a separate status display (e.g. a dedicated status LCD) it brings the
+    // idle screen back instead of leaving the last countdown frame stuck.
+    showReadyScreen();
     return;
   }
 
