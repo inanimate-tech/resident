@@ -135,13 +135,13 @@ void test_countdown_shows_deviceid_and_counts_down(void) {
   makeSandbox(true, false);                  // setup() arms the countdown
 
   sandbox->loop();                            // t=0 -> "20s"
-  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test\n\n20s",
+  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test\n20s",
                            display->last().c_str());
   TEST_ASSERT_FALSE(sandbox->isAppRunning()); // not loaded during countdown
 
   testMillis() = 5000;                        // 15s remaining
   sandbox->loop();
-  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test\n\n15s",
+  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test\n15s",
                            display->last().c_str());
 }
 
@@ -156,6 +156,11 @@ void test_countdown_autoloads_after_20s(void) {
   sandbox->loop();
   TEST_ASSERT_TRUE(sandbox->isAppRunning());
   TEST_ASSERT_TRUE(telemetryHas("app_restored"));
+  // The idle screen is repainted after the restore (clears the countdown), so a
+  // separate status display returns to the identity screen instead of the last
+  // countdown frame.
+  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test",
+                           display->last().c_str());
 }
 
 void test_button_tap_loads_app_now(void) {
