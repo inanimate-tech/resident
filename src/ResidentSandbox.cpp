@@ -664,6 +664,11 @@ void Sandbox::finishBootCountdown()
   bool ok = loadAppInternal(src.c_str(), /*persistOnSuccess=*/false);
   if (ok) {
     emitTelemetry("app_restored");
+    // Repaint the resting idle screen (clears the countdown). On devices whose
+    // status display IS the app screen this no-ops (the app owns it); on devices
+    // with a separate status display (e.g. a dedicated status LCD) it brings the
+    // idle screen back instead of leaving the last countdown frame stuck.
+    showReadyScreen();
     return;
   }
 

@@ -31,6 +31,11 @@
   state and during the Pending boot countdown — above `Device ID` / `Type`.
   Internal: `showIdentityScreen` renamed to `showIdleScreen`.
 
+- **Idle screen repainted after a persisted-app restore.** `finishBootCountdown`
+  now repaints the resting idle screen after the countdown loads the app, so
+  devices with a status display separate from the app screen no longer get stuck
+  on the last countdown frame (no-op where the app owns the screen).
+
 - **Boot identity screen now waits for connectivity.** A networked device shows
   its connection status while connecting, then — once **connected** — the
   identity screen and (if an app is persisted) the 20-second countdown. A
