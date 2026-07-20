@@ -561,6 +561,11 @@ void Sandbox::loadApp(const char* luaCode)
 
 bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
 {
+  // Reset the runtime hold detector: a reload (or a failed reload) must never
+  // leave stale hold state that would fire a spurious gesture on the next app.
+  _holdWasDown = false;
+  _holdFired = false;
+
   // An explicit load supersedes a pending boot-countdown restore.
   if (_runState == RunState::Pending) {
     _runState = RunState::Ready;
