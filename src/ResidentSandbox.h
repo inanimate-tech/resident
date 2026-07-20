@@ -12,6 +12,7 @@
 #include "ResidentDriver.h"
 #include "ResidentLuaModule.h"
 #include "ResidentSandboxConfig.h"
+#include "ResidentOverlay.h"
 
 namespace Resident {
 
@@ -86,6 +87,14 @@ public:
     void startMicStream();
     void stopMicStream();
     bool isMicStreaming() const { return _micStreaming; }
+
+    // Overlay support. Register an overlay bound to the display surface it
+    // draws on; toggle its desired state with requestOverlay. The arbiter draws
+    // the highest-priority active overlay each loop; if that overlay's surface
+    // is dual-role (appDrawsTo), the app is suspended while it shows.
+    void addOverlay(Overlay* o, SystemDisplay* surface);
+    void removeOverlay(Overlay* o);
+    void requestOverlay(Overlay* o, bool active);
 
     // Timezone — no-op on nullptr/empty. Success means ezTime resolved the
     // zone (either from its own cache or via one UDP lookup to
@@ -278,6 +287,19 @@ private:
     static constexpr int MIC_STREAM_MAX_SAMPLES = 512;
     int16_t _micBuf[MIC_STREAM_MAX_SAMPLES] = {};
     void updateMicStream();
+
+    // Overlay arbiter state.
+    static constexpr int MAX_OVERLAYS = 4;
+    struct OverlaySlot { Overlay* o; SystemDisplay* surface; bool requested; };
+    OverlaySlot _overlays[MAX_OVERLAYS] = {};
+    uint8_t _overlayCount = 0;
+    Overlay* _activeOverlay = nullptr;
+    bool _overlaySuspendedApp = false;
+    void updateOverlays();
+    // True iff e is a declared (app-facing) extension.
+    bool isAppExtension(Extension* e) const;
+    // True iff the app draws to surface (dual-role: system slot AND app ext).
+    bool appDrawsTo(SystemDisplay* surface) const;
 
     // Frame timing
     unsigned long _lastTickTime = 0;

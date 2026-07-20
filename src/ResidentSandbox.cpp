@@ -535,6 +535,7 @@ void Sandbox::loop() {
   }
 
   updateSystemButtonHold();
+  updateOverlays();
   updateMicStream();
 
   if (_runState == RunState::Pending) {
@@ -717,6 +718,80 @@ void Sandbox::updateMicStream()
   size_t len = (size_t)got * sizeof(int16_t);
   if (_micSink) _micSink(bytes, len);
   else if (_courier.has_value()) ws().sendBinary(bytes, len);
+}
+
+bool Sandbox::isAppExtension(Extension* e) const
+{
+  for (uint8_t i = 0; i < _config.extensions.count; i++) {
+    if (_config.extensions.items[i] == e) return true;
+  }
+  return false;
+}
+
+bool Sandbox::appDrawsTo(SystemDisplay* surface) const
+{
+  Extension* e = static_cast<Extension*>(surface);
+  return surface && isSystemExtension(e) && isAppExtension(e);
+}
+
+void Sandbox::addOverlay(Overlay* o, SystemDisplay* surface)
+{
+  if (!o || _overlayCount >= MAX_OVERLAYS) return;
+  _overlays[_overlayCount++] = {o, surface, false};
+}
+
+void Sandbox::removeOverlay(Overlay* o)
+{
+  for (uint8_t i = 0; i < _overlayCount; i++) {
+    if (_overlays[i].o == o) {
+      for (uint8_t j = i; j + 1 < _overlayCount; j++) _overlays[j] = _overlays[j + 1];
+      _overlayCount--;
+      if (_activeOverlay == o) _activeOverlay = nullptr;
+      return;
+    }
+  }
+}
+
+void Sandbox::requestOverlay(Overlay* o, bool active)
+{
+  for (uint8_t i = 0; i < _overlayCount; i++) {
+    if (_overlays[i].o == o) { _overlays[i].requested = active; return; }
+  }
+}
+
+void Sandbox::updateOverlays()
+{
+  // Winner = highest-priority requested overlay.
+  Overlay* winner = nullptr;
+  SystemDisplay* winnerSurface = nullptr;
+  bool have = false;
+  int best = 0;
+  for (uint8_t i = 0; i < _overlayCount; i++) {
+    if (!_overlays[i].requested) continue;
+    int p = _overlays[i].o->priority();
+    if (!have || p > best) {
+      have = true; best = p; winner = _overlays[i].o; winnerSurface = _overlays[i].surface;
+    }
+  }
+
+  if (winner != _activeOverlay) {
+    Overlay* prev = _activeOverlay;
+    if (prev) prev->onDeactivate();
+    _activeOverlay = winner;
+    if (winner) winner->onActivate();
+
+    bool wantSuspend = winner && appDrawsTo(winnerSurface);
+    if (wantSuspend && !_overlaySuspendedApp && _runState == RunState::Running) {
+      suspendApp();
+      _overlaySuspendedApp = true;
+    } else if (!wantSuspend && _overlaySuspendedApp) {
+      resumeApp();
+      _overlaySuspendedApp = false;
+      if (prev) prev->restore();
+    }
+  }
+
+  if (_activeOverlay) _activeOverlay->onDraw();
 }
 
 void Sandbox::finishBootCountdown()
