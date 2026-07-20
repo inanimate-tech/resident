@@ -33,12 +33,25 @@ PushButtonsDriver buttonDriver{buttonConfig};
 M5MicDriver micDriver;
 StickSystemButton frontButton{BUTTON_PINS[0]};
 
+// Forward declarations so ListeningOverlay::onDeactivate() can reach the
+// idle prompt and the sandbox's run state; both are defined further down.
+extern Resident::Sandbox sandbox;
+static void showIdlePrompt();
+
 // "Listening" overlay: drawn while the front button is held. Bound to the
 // dual-role display in setup(), so activating it suspends the app.
 class ListeningOverlay : public Resident::Overlay {
 public:
   int priority() const override { return 100; }
   void onDraw() override { displayDriver.displayText("Listening"); }
+
+  // The arbiter's restore() repaints the app on resume — but m5stick-voice
+  // never loads an app, so that path never fires. When there's no app to
+  // resume to, repaint the idle prompt ourselves so the screen doesn't stay
+  // stuck on "Listening" after release.
+  void onDeactivate() override {
+    if (!sandbox.isAppRunning()) showIdlePrompt();
+  }
 };
 static ListeningOverlay listening;
 

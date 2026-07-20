@@ -73,9 +73,10 @@ public:
     bool isAppSuspended() const;
 
     // Runtime hold gesture on the SystemButton role slot. cb(true) fires once
-    // when a hold crosses the threshold while an app is running; cb(false) on
-    // release. Independent of the boot-countdown gesture (which only runs
-    // before an app loads). Optional — unset means no hold handling.
+    // when a hold crosses the threshold; cb(false) on release. Fires whenever
+    // an app is loaded OR the device is idle — inert only during the boot
+    // countdown, so it never collides with the countdown's hold-to-forget
+    // gesture. Optional — unset means no hold handling.
     using SystemButtonHoldCallback = std::function<void(bool held)>;
     void onSystemButtonHold(SystemButtonHoldCallback cb) { _onHoldCb = std::move(cb); }
 

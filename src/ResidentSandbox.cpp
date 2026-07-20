@@ -682,7 +682,7 @@ bool Sandbox::handleCountdownButton()
 
 void Sandbox::updateSystemButtonHold()
 {
-  if (!_onHoldCb || !_config.systemButton || !isAppRunning()) return;
+  if (!_onHoldCb || !_config.systemButton || _runState == RunState::Pending) return;
   bool down = _config.systemButton->pressed();
 
   if (down && !_holdWasDown) {

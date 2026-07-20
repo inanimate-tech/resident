@@ -1,5 +1,7 @@
 // The runtime hold detector on the SystemButton role slot: fires enter at the
-// threshold and exit on release, only while an app is running.
+// threshold and exit on release. It runs whenever an app is loaded or the
+// device is idle (Ready) — it is inert only during the boot countdown
+// (RunState::Pending), where handleCountdownButton owns the button.
 #include <unity.h>
 #include <vector>
 #include "ResidentSandbox.cpp"
@@ -57,15 +59,33 @@ void test_hold_fires_enter_then_exit_while_app_running(void) {
   TEST_ASSERT_FALSE(holds[1]);           // exit
 }
 
-void test_no_hold_without_app(void) {
-  // No app loaded → detector is inert (avoids clashing with boot countdown).
+void test_hold_fires_in_ready_without_app(void) {
+  // No app loaded (device is Ready after setup()) → the hold gesture must
+  // still fire. m5stick-voice never loads a Lua app and stays in Ready, so
+  // the detector can only be useful there if it runs outside RunState::Running
+  // too. Only RunState::Pending (the boot countdown, which owns the button
+  // via handleCountdownButton) gates it off.
   btn->down = true;
-  loopAdvance(10);
-  loopAdvance(600);
-  btn->down = false;
-  loopAdvance(10);
+  loopAdvance(10);                       // press edge, below threshold
   TEST_ASSERT_EQUAL_INT(0, (int)holds.size());
+
+  loopAdvance(600);                      // now past 500ms threshold
+  TEST_ASSERT_EQUAL_INT(1, (int)holds.size());
+  TEST_ASSERT_TRUE(holds[0]);            // enter
+
+  btn->down = false;
+  loopAdvance(10);                       // release
+  TEST_ASSERT_EQUAL_INT(2, (int)holds.size());
+  TEST_ASSERT_FALSE(holds[1]);           // exit
 }
+
+// A dedicated test asserting the detector stays inert during RunState::Pending
+// (the boot countdown) is not included here: reaching Pending requires
+// arming the boot countdown via the real Courier-connection path (see "arm
+// boot countdown on first connection, not at setup"), which this file's
+// FakeButton/loopAdvance harness has no hook for without adding a fake
+// connection layer. The guard itself is a single, easily-audited condition
+// (`_runState == RunState::Pending`) in updateSystemButtonHold().
 
 void test_tap_below_threshold_does_not_fire(void) {
   sandbox->loadApp(APP);
@@ -87,13 +107,14 @@ void test_reload_while_held_does_not_leak_into_next_tap(void) {
   TEST_ASSERT_EQUAL_INT(0, (int)holds.size());
 
   // A reload lands while the button is still held (e.g. the source fails to
-  // compile). loadAppInternal() unloads the running app first, so
-  // isAppRunning() goes false for the remainder of this call.
+  // compile). loadAppInternal() resets the hold detector (_holdWasDown /
+  // _holdFired) unconditionally at the top of every load, successful or not,
+  // specifically so a reload can never leave stale hold state — this holds
+  // regardless of updateSystemButtonHold()'s own state guard.
   sandbox->loadApp(NO_CALLBACKS_APP);
 
-  // The physical release happens while no app is running. updateSystemButtonHold()
-  // guards on !isAppRunning() and returns immediately, so this release edge
-  // is never processed — the stale press state survives untouched.
+  // The physical release now lands on an already-reset detector: nothing
+  // fires either way.
   btn->down = false;
   loopAdvance(500);                      // pushes millis() well past 500ms
                                           // *since the stale press timestamp*
@@ -124,7 +145,7 @@ void test_reload_while_held_does_not_leak_into_next_tap(void) {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_hold_fires_enter_then_exit_while_app_running);
-  RUN_TEST(test_no_hold_without_app);
+  RUN_TEST(test_hold_fires_in_ready_without_app);
   RUN_TEST(test_tap_below_threshold_does_not_fire);
   RUN_TEST(test_reload_while_held_does_not_leak_into_next_tap);
   UNITY_END();
