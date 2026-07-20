@@ -746,7 +746,15 @@ void Sandbox::removeOverlay(Overlay* o)
     if (_overlays[i].o == o) {
       for (uint8_t j = i; j + 1 < _overlayCount; j++) _overlays[j] = _overlays[j + 1];
       _overlayCount--;
-      if (_activeOverlay == o) _activeOverlay = nullptr;
+      if (_activeOverlay == o) {
+        o->onDeactivate();
+        if (_overlaySuspendedApp) {
+          resumeApp();
+          _overlaySuspendedApp = false;
+          o->restore();
+        }
+        _activeOverlay = nullptr;
+      }
       return;
     }
   }

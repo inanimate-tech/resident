@@ -102,11 +102,52 @@ void test_dedicated_surface_does_not_suspend(void) {
   TEST_ASSERT_FALSE(sandbox->isAppSuspended());  // app keeps running
 }
 
+void test_remove_active_overlay_resumes_app(void) {
+  buildDualRole();
+  sandbox->loadApp(APP);
+  FakeOverlay ov(100);
+  sandbox->addOverlay(&ov, disp);
+
+  sandbox->requestOverlay(&ov, true);
+  runLoop(1);
+  TEST_ASSERT_TRUE(sandbox->isAppSuspended());
+
+  sandbox->removeOverlay(&ov);
+  TEST_ASSERT_FALSE(sandbox->isAppSuspended());
+  TEST_ASSERT_EQUAL_INT(1, ov.deactivates);
+  TEST_ASSERT_EQUAL_INT(1, ov.restores);
+
+  runLoop(1);
+  TEST_ASSERT_FALSE(sandbox->isAppSuspended());  // no relapse
+}
+
+void test_swap_between_dual_role_overlays_keeps_suspended_no_restore(void) {
+  buildDualRole();
+  sandbox->loadApp(APP);
+  FakeOverlay hi(100), lo(50);
+  sandbox->addOverlay(&hi, disp);
+  sandbox->addOverlay(&lo, disp);
+
+  sandbox->requestOverlay(&hi, true);
+  sandbox->requestOverlay(&lo, true);
+  runLoop(1);
+  TEST_ASSERT_TRUE(sandbox->isAppSuspended());
+
+  sandbox->requestOverlay(&hi, false);
+  runLoop(1);
+  TEST_ASSERT_EQUAL_INT(1, lo.activates);
+  TEST_ASSERT_EQUAL_INT(1, hi.deactivates);
+  TEST_ASSERT_TRUE(sandbox->isAppSuspended());   // handoff to lo, still suspended
+  TEST_ASSERT_EQUAL_INT(0, hi.restores);         // no restore during dual-role handoff
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_dual_role_overlay_suspends_and_restores);
   RUN_TEST(test_priority_arbitration);
   RUN_TEST(test_dedicated_surface_does_not_suspend);
+  RUN_TEST(test_remove_active_overlay_resumes_app);
+  RUN_TEST(test_swap_between_dual_role_overlays_keeps_suspended_no_restore);
   UNITY_END();
   return 0;
 }
