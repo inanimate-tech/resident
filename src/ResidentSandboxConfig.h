@@ -13,6 +13,7 @@
 #include "ResidentSystemLED.h"
 #include "ResidentSystemDisplay.h"
 #include "ResidentSystemButton.h"
+#include "ResidentSystemMic.h"
 #include "ResidentPersistentStore.h"
 
 namespace Resident {
@@ -55,6 +56,9 @@ struct SandboxConfig {
 
   // A button the runtime can poll directly (e.g. to skip the boot countdown).
   SystemButton* systemButton = nullptr;
+
+  // A microphone the runtime can stream while a mode is active.
+  SystemMic* systemMic = nullptr;
 
   // Deprecated: use systemDisplay / systemLED. Reconciled internally — the
   // new field wins; these are the fallback.

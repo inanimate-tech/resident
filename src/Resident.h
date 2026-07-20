@@ -12,5 +12,6 @@
 #include "ResidentStatusDisplay.h"
 #include "ResidentSystemLED.h"
 #include "ResidentSystemDisplay.h"
+#include "ResidentSystemMic.h"
 
 #endif // RESIDENT_H

@@ -60,6 +60,7 @@ public:
   void setEndpoint(const char* host, uint16_t port, const char* path) {
     (void)host; (void)port; (void)path;
   }
+  bool sendBinary(const uint8_t* data, size_t len) { (void)data; (void)len; return true; }
 };
 
 class Client {

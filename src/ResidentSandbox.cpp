@@ -154,13 +154,15 @@ void Sandbox::buildLifecycleSet()
   addLifecycle(systemDisplay());
   addLifecycle(systemLED());
   addLifecycle(_config.systemButton);
+  addLifecycle(_config.systemMic);
 }
 
 bool Sandbox::isSystemExtension(Extension* e) const
 {
   return e == static_cast<Extension*>(systemDisplay())
       || e == static_cast<Extension*>(systemLED())
-      || e == static_cast<Extension*>(_config.systemButton);
+      || e == static_cast<Extension*>(_config.systemButton)
+      || e == static_cast<Extension*>(_config.systemMic);
 }
 
 Resident::SystemDisplay* Sandbox::systemDisplay() const
@@ -533,6 +535,7 @@ void Sandbox::loop() {
   }
 
   updateSystemButtonHold();
+  updateMicStream();
 
   if (_runState == RunState::Pending) {
     updateBootCountdown();
@@ -697,6 +700,23 @@ void Sandbox::updateSystemButtonHold()
       _onHoldCb(false);
     }
   }
+}
+
+void Sandbox::startMicStream() { _micStreaming = true; }
+void Sandbox::stopMicStream()  { _micStreaming = false; }
+
+void Sandbox::updateMicStream()
+{
+  if (!_micStreaming || !_config.systemMic) return;
+  int want = _config.systemMic->frameSamples();
+  if (want > MIC_STREAM_MAX_SAMPLES) want = MIC_STREAM_MAX_SAMPLES;
+  if (want <= 0) return;
+  int got = _config.systemMic->read(_micBuf, want, 0);
+  if (got <= 0) return;
+  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(_micBuf);
+  size_t len = (size_t)got * sizeof(int16_t);
+  if (_micSink) _micSink(bytes, len);
+  else if (_courier.has_value()) ws().sendBinary(bytes, len);
 }
 
 void Sandbox::finishBootCountdown()

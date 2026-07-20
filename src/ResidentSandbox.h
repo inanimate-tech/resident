@@ -78,6 +78,15 @@ public:
     using SystemButtonHoldCallback = std::function<void(bool held)>;
     void onSystemButtonHold(SystemButtonHoldCallback cb) { _onHoldCb = std::move(cb); }
 
+    // Mic streaming pump. While streaming, each loop() drains systemMic and
+    // ships int16 frames to the sink (default: ws().sendBinary). No framing —
+    // control frames are a device concern. No-op if cfg.systemMic is unset.
+    using MicStreamSink = std::function<bool(const uint8_t* data, size_t len)>;
+    void setMicStreamSink(MicStreamSink sink) { _micSink = std::move(sink); }
+    void startMicStream();
+    void stopMicStream();
+    bool isMicStreaming() const { return _micStreaming; }
+
     // Timezone — no-op on nullptr/empty. Success means ezTime resolved the
     // zone (either from its own cache or via one UDP lookup to
     // timezoned.rop.nl). Failure logs and leaves hasTimezone() == false.
@@ -262,6 +271,13 @@ private:
     bool _holdFired = false;
     static constexpr unsigned long SYSTEM_BUTTON_HOLD_MS = 500;
     void updateSystemButtonHold();
+
+    // Mic streaming pump state.
+    bool _micStreaming = false;
+    MicStreamSink _micSink;
+    static constexpr int MIC_STREAM_MAX_SAMPLES = 512;
+    int16_t _micBuf[MIC_STREAM_MAX_SAMPLES] = {};
+    void updateMicStream();
 
     // Frame timing
     unsigned long _lastTickTime = 0;
