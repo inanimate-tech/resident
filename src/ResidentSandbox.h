@@ -71,6 +71,13 @@ public:
     void resumeApp();
     bool isAppSuspended() const;
 
+    // Runtime hold gesture on the SystemButton role slot. cb(true) fires once
+    // when a hold crosses the threshold while an app is running; cb(false) on
+    // release. Independent of the boot-countdown gesture (which only runs
+    // before an app loads). Optional — unset means no hold handling.
+    using SystemButtonHoldCallback = std::function<void(bool held)>;
+    void onSystemButtonHold(SystemButtonHoldCallback cb) { _onHoldCb = std::move(cb); }
+
     // Timezone — no-op on nullptr/empty. Success means ezTime resolved the
     // zone (either from its own cache or via one UDP lookup to
     // timezoned.rop.nl). Failure logs and leaves hasTimezone() == false.
@@ -247,6 +254,14 @@ private:
     static constexpr unsigned long SYSTEM_BUTTON_LONG_PRESS_MS = 1000;
     // Returns true when a gesture ended the countdown (loaded or forgot).
     bool handleCountdownButton();
+
+    // Runtime hold detector (distinct state from the countdown gesture).
+    SystemButtonHoldCallback _onHoldCb;
+    bool _holdWasDown = false;
+    unsigned long _holdDownSince = 0;
+    bool _holdFired = false;
+    static constexpr unsigned long SYSTEM_BUTTON_HOLD_MS = 500;
+    void updateSystemButtonHold();
 
     // Frame timing
     unsigned long _lastTickTime = 0;

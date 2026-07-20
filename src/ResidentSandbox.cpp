@@ -532,6 +532,8 @@ void Sandbox::loop() {
     }
   }
 
+  updateSystemButtonHold();
+
   if (_runState == RunState::Pending) {
     updateBootCountdown();
     return;  // app not loaded yet; skip the tick path
@@ -667,6 +669,29 @@ bool Sandbox::handleCountdownButton()
     }
   }
   return false;
+}
+
+void Sandbox::updateSystemButtonHold()
+{
+  if (!_onHoldCb || !_config.systemButton || !isAppRunning()) return;
+  bool down = _config.systemButton->pressed();
+
+  if (down && !_holdWasDown) {
+    _holdWasDown = true;
+    _holdDownSince = millis();
+    _holdFired = false;
+  } else if (down && _holdWasDown) {
+    if (!_holdFired && millis() - _holdDownSince >= SYSTEM_BUTTON_HOLD_MS) {
+      _holdFired = true;
+      _onHoldCb(true);
+    }
+  } else if (!down && _holdWasDown) {
+    _holdWasDown = false;
+    if (_holdFired) {
+      _holdFired = false;
+      _onHoldCb(false);
+    }
+  }
 }
 
 void Sandbox::finishBootCountdown()
