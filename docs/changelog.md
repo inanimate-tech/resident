@@ -51,6 +51,10 @@
   (`statusDisplay`, `statusLED`) still work but are `[[deprecated]]` — switch
   assignments to `systemDisplay` / `systemLED`.
 
+- m5stick-voice migrated onto the new core primitives (system-button hold,
+  overlay arbiter, SystemMic streaming pump); its hand-rolled push-to-talk
+  orchestration (onHold + audio ring + telemetry) is removed.
+
 ### Fixes
 
 - **Lua allocator falls back to internal RAM on boards without PSRAM** (e.g. ESP32-S3FN8 / M5Dial). Previously every Lua allocation went to `MALLOC_CAP_SPIRAM`, which returns NULL when no PSRAM exists — the Lua runtime had no usable heap and every app failed with "not enough memory". The capability is now resolved once on first use: SPIRAM when present, internal 8-bit RAM otherwise. Boards with PSRAM are unaffected.
