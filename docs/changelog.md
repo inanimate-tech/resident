@@ -43,6 +43,14 @@
   auto-load. Standalone devices show the identity/countdown immediately at
   setup, as before.
 
+- **`status*` role slots renamed to `system*`.** `SandboxConfig::statusDisplay`
+  / `statusLED` are renamed to `systemDisplay` / `systemLED`, matching
+  `systemButton`. The `StatusDisplay` / `StatusLED` classes remain as plain
+  (non-deprecated) aliases for `SystemDisplay` / `SystemLED` so existing driver
+  subclasses keep compiling unchanged. **Migration:** the old config fields
+  (`statusDisplay`, `statusLED`) still work but are `[[deprecated]]` — switch
+  assignments to `systemDisplay` / `systemLED`.
+
 ### Fixes
 
 - **Lua allocator falls back to internal RAM on boards without PSRAM** (e.g. ESP32-S3FN8 / M5Dial). Previously every Lua allocation went to `MALLOC_CAP_SPIRAM`, which returns NULL when no PSRAM exists — the Lua runtime had no usable heap and every app failed with "not enough memory". The capability is now resolved once on first use: SPIRAM when present, internal 8-bit RAM otherwise. Boards with PSRAM are unaffected.

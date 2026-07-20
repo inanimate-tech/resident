@@ -195,8 +195,11 @@ private:
     uint8_t _lifecycleCount = 0;
     void buildLifecycleSet();
     void addLifecycle(Extension* e);
-    // True iff e is one of the assigned role-slot objects (a peripheral).
-    bool isPeripheral(Extension* e) const;
+    // True iff e is one of the assigned system role-slot objects.
+    bool isSystemExtension(Extension* e) const;
+    // Deprecated-field reconciliation: new field wins, old is the fallback.
+    SystemDisplay* systemDisplay() const;
+    SystemLED* systemLED() const;
 
     // Telemetry
     TelemetryCallback _telemetryCb;

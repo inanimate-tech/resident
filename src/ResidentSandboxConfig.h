@@ -10,6 +10,8 @@
 #include "ResidentExtensions.h"
 #include "ResidentStatusLED.h"
 #include "ResidentStatusDisplay.h"
+#include "ResidentSystemLED.h"
+#include "ResidentSystemDisplay.h"
 #include "ResidentSystemButton.h"
 #include "ResidentPersistentStore.h"
 
@@ -32,15 +34,21 @@ struct SandboxConfig {
   TelemetryCallback telemetry = nullptr;
   const char* timezone = nullptr;
 
-  // Status indicators are properties of the *device*, not the network —
-  // top-level so a future standalone use case can drive them too. Resident's
-  // internal handlers update them on connection state changes when network
-  // is configured.
-  StatusDisplay* statusDisplay = nullptr;
-  StatusLED* statusLED = nullptr;
+  // System-managed indicators (role slots) are properties of the *device*,
+  // not the network — top-level so a future standalone use case can drive
+  // them too. Resident's internal handlers update them on connection state
+  // changes when network is configured. Renamed from statusDisplay/
+  // statusLED; the old names remain as deprecated aliases below.
+  SystemDisplay* systemDisplay = nullptr;
+  SystemLED* systemLED = nullptr;
 
   // A button the runtime can poll directly (e.g. to skip the boot countdown).
   SystemButton* systemButton = nullptr;
+
+  // Deprecated: use systemDisplay / systemLED. Reconciled internally — the
+  // new field wins; these are the fallback.
+  [[deprecated("use systemDisplay")]] SystemDisplay* statusDisplay = nullptr;
+  [[deprecated("use systemLED")]] SystemLED* statusLED = nullptr;
 
   // App persistence. When persistApps is true (default), the last app that
   // loads successfully is saved and auto-reloaded on the next boot. Leave

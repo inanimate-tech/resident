@@ -29,7 +29,7 @@ Resident::SandboxConfig makeConfig() {
     Resident::SandboxConfig cfg;
     cfg.deviceType    = "stick";
     cfg.extensions    = {&displayDriver, &imuDriver, &buzzerDriver, &buttonDriver};
-    cfg.statusDisplay = &displayDriver;
+    cfg.systemDisplay = &displayDriver;
 
     Courier::Config courier;
     courier.host = RESIDENT_HOST;

@@ -151,16 +151,32 @@ void Sandbox::buildLifecycleSet()
   // Role slots are Driver subclasses, so they upcast to Extension*. Append any
   // not already in extensions[] so an assigned-but-unlisted peripheral is
   // still begun and updated.
-  addLifecycle(_config.statusDisplay);
-  addLifecycle(_config.statusLED);
+  addLifecycle(systemDisplay());
+  addLifecycle(systemLED());
   addLifecycle(_config.systemButton);
 }
 
-bool Sandbox::isPeripheral(Extension* e) const
+bool Sandbox::isSystemExtension(Extension* e) const
 {
-  return e == static_cast<Extension*>(_config.statusDisplay)
-      || e == static_cast<Extension*>(_config.statusLED)
+  return e == static_cast<Extension*>(systemDisplay())
+      || e == static_cast<Extension*>(systemLED())
       || e == static_cast<Extension*>(_config.systemButton);
+}
+
+Resident::SystemDisplay* Sandbox::systemDisplay() const
+{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  return _config.systemDisplay ? _config.systemDisplay : _config.statusDisplay;
+#pragma GCC diagnostic pop
+}
+
+Resident::SystemLED* Sandbox::systemLED() const
+{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  return _config.systemLED ? _config.systemLED : _config.statusLED;
+#pragma GCC diagnostic pop
 }
 
 void Sandbox::initialize()
@@ -211,8 +227,8 @@ void Sandbox::initialize()
   }
 
   // Pass 2 — Lua modules: register globals for declared extensions only.
-  // A role-slot peripheral that is NOT in extensions[] (e.g. a TFTStatusDisplay
-  // assigned only to cfg.statusDisplay) must NOT get a Lua global — it has no
+  // A role-slot peripheral that is NOT in extensions[] (e.g. a TFTSystemDisplay
+  // assigned only to cfg.systemDisplay) must NOT get a Lua global — it has no
   // API surface to expose. A role object that also wants a Lua module must be
   // listed in extensions[] explicitly.
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
@@ -400,7 +416,7 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
   using S = Courier::State;
 
   // Resident's internal status-text handling. Runs unconditionally if a
-  // statusDisplay is configured. User's onConnectionChange callback runs
+  // systemDisplay is configured. User's onConnectionChange callback runs
   // after, in addition (does not replace).
   if (_runState != RunState::Pending) {
     switch (state) {
@@ -419,15 +435,15 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
     }
   }
 
-  if (_config.statusLED) {
+  if (systemLED()) {
     switch (state) {
       case S::WifiConnecting:
-      case S::WifiConfiguring:       _config.statusLED->solidColor(0xFFFF00); break;
+      case S::WifiConfiguring:       systemLED()->solidColor(0xFFFF00); break;
       case S::WifiConnected:
-      case S::TransportsConnecting:  _config.statusLED->solidColor(0x00FFFF); break;
-      case S::Connected:             _config.statusLED->solidColor(0x00FF00); break;
-      case S::Reconnecting:          _config.statusLED->solidColor(0xFF8800); break;
-      case S::ConnectionFailed:      _config.statusLED->solidColor(0xFF0000); break;
+      case S::TransportsConnecting:  systemLED()->solidColor(0x00FFFF); break;
+      case S::Connected:             systemLED()->solidColor(0x00FF00); break;
+      case S::Reconnecting:          systemLED()->solidColor(0xFF8800); break;
+      case S::ConnectionFailed:      systemLED()->solidColor(0xFF0000); break;
       default: break;
     }
   }
@@ -452,15 +468,15 @@ void Sandbox::onCourierTransportsWillConnect() {
 
 void Sandbox::showStatusText(const char* text)
 {
-  if (!_config.statusDisplay) return;
+  if (!systemDisplay()) return;
   if (_lastStatusText == text) return;
   _lastStatusText = text;
-  _config.statusDisplay->displayText(text);
+  systemDisplay()->displayText(text);
 }
 
 void Sandbox::showIdleScreen(int countdownSecs)
 {
-  if (!_config.statusDisplay) return;
+  if (!systemDisplay()) return;
   String s;
   if (_idleScreenTitle.length() > 0) { s += _idleScreenTitle; s += '\n'; }
   s += "Device ID: "; s += _deviceId;
@@ -482,7 +498,7 @@ void Sandbox::enterIdleScreen()
     showReadyScreen();
     return;
   }
-  if (_config.statusDisplay) {
+  if (systemDisplay()) {
     _runState = RunState::Pending;
     _countdownStartMs = millis();
     _lastCountdownSecondShown = -1;
@@ -511,7 +527,7 @@ void Sandbox::loop() {
   // while an app is loaded (Running or Suspended).
   for (uint8_t i = 0; i < _lifecycleCount; i++) {
     Extension* e = _lifecycle[i];
-    if (isPeripheral(e) || isAppRunning()) {
+    if (isSystemExtension(e) || isAppRunning()) {
       e->update();
     }
   }

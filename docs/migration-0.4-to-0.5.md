@@ -4,6 +4,8 @@
 
 If your project doesn't use Resident's network-attached features at all (you only ever instantiated `Resident::Sandbox` standalone, never `Resident::Device`), the only change you need is the `cfg.network` field shape — see "Standalone-only projects" at the end.
 
+> **Note (post-0.5.0):** `cfg.statusDisplay` / `cfg.statusLED` referenced below have since been renamed to `cfg.systemDisplay` / `cfg.systemLED` (matching `cfg.systemButton`); the old field names still work but are deprecated. Similarly, `Resident::StatusDisplay` / `Resident::StatusLED` are now plain aliases for `Resident::SystemDisplay` / `Resident::SystemLED`. See the changelog for details.
+
 ## Header includes
 
 | Old | New |
