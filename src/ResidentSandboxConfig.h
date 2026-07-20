@@ -21,6 +21,17 @@ using ShaderFields = std::map<String, String>;
 using ShaderTemplateFn = String (*)(const ShaderFields& fields);
 using TelemetryCallback = std::function<void(const char* json)>;
 
+// The struct as a whole must be wrapped (not just the deprecated fields
+// below): Sandbox::configure() copies SandboxConfig by value, and the
+// compiler-generated copy constructor/assignment operator for a struct
+// containing [[deprecated]] members is itself implicitly deprecated. That
+// makes -Wdeprecated-declarations fire on every `Sandbox(cfg)` construction,
+// even ones that never touch statusDisplay/statusLED. Suppressing only the
+// field declarations does not prevent this; the whole struct definition
+// must be in the pragma region so the implicit special members are
+// synthesized without triggering the warning.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 struct SandboxConfig {
   // Identifies the physical board (used for AP name and protocol path
   // defaults). Stays at top-level — it labels the device, not the network.
@@ -62,6 +73,7 @@ struct SandboxConfig {
   // Absence ⇒ standalone runtime, no WiFi pulled in.
   std::optional<Courier::Config> network;
 };
+#pragma GCC diagnostic pop
 
 } // namespace Resident
 
