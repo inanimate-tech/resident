@@ -43,7 +43,8 @@ void loop()  { sandbox.loop(); }
 | `systemLED` | `SystemLED*` | `nullptr` | Optional LED indicator; Resident's internal handler calls `solidColor()` automatically on connection state changes |
 | `network` | `std::optional<Courier::Config>` | unset | Networking opt-in. Set ⇒ Sandbox constructs an internal `Courier::Client`, drives WiFi / transports, fires connection callbacks. Unset ⇒ standalone runtime, no WiFi pulled in. |
 | `persistApps` | `bool` | `true` | Save the last successfully-loaded app to flash and restore it on boot. Set to `false` to disable for a build. |
-| `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown. Implement `Resident::SystemButton` and pass a pointer here. |
+| `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
+| `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). Implement `Resident::SystemMic` and pass a pointer here. |
 | `persistentStore` | `Resident::PersistentStore*` | `nullptr` | Override the backing store for persistence. `nullptr` uses NVS on device; inject a fake in tests. |
 | `statusDisplay` | `SystemDisplay*` | `nullptr` | **Deprecated** — use `systemDisplay`. Kept as a fallback; a compile-time warning nudges migration. |
 | `statusLED` | `SystemLED*` | `nullptr` | **Deprecated** — use `systemLED`. Kept as a fallback; a compile-time warning nudges migration. |
@@ -180,6 +181,14 @@ sandbox.isAppRunning();                // true when an app is compiled and activ
 sandbox.suspendApp();                  // pause the running app's tick without unloading it
 sandbox.resumeApp();                   // resume a suspended app
 sandbox.isAppSuspended();              // true between suspendApp() and resumeApp()
+sandbox.onSystemButtonHold(cb);        // cb(true) on hold (past threshold), cb(false) on release
+sandbox.addOverlay(&ov, &surface);     // register an overlay bound to a display surface
+sandbox.requestOverlay(&ov, show);     // request show/hide; the arbiter draws the highest-priority one
+sandbox.removeOverlay(&ov);            // deregister (tears the overlay down, resumes app if it suspended)
+sandbox.startMicStream();              // stream systemMic frames (default sink: ws().sendBinary)
+sandbox.stopMicStream();               // stop streaming
+sandbox.isMicStreaming();              // true while streaming
+sandbox.setMicStreamSink(fn);          // override the binary frame sink
 sandbox.generationId();                // const String& — ID of the last loaded app/shader
 sandbox.setTelemetryCallback(cb);      // wire telemetry JSON to your transport
 sandbox.clearPersistedApp();           // wipe the saved app from the persistent store
@@ -190,6 +199,10 @@ sandbox.clearPersistedApp();           // wipe the saved app from the persistent
 `loadShader` requires `SandboxConfig::shaderTemplate` to be set; it converts the `ShaderFields` map to Lua source, then calls `loadApp`.
 
 `suspendApp` pauses the Lua tick (`on_tick` and event dispatch) without unloading the app — Courier and extension `update()` keep running. While suspended, drivers receive `onAppRunning(false)` so the status display is freed for direct text (e.g. a "Listening" overlay via `SystemDisplay::displayText()`); `resumeApp` reverses this with `onAppRunning(true)`. Both are no-ops when no app is loaded, and repeated calls don't re-notify. `isAppRunning()` stays `true` while suspended — suspension is a separate axis queried via `isAppSuspended()`. Events arriving while suspended are queued, not dropped (though a long suspend can overflow the 8-slot ring, losing the oldest), and `loadApp` always clears suspension.
+
+`onSystemButtonHold(cb)` turns the `systemButton` role slot into a runtime hold gesture: `cb(true)` fires once when the button is held past the threshold (~500 ms), `cb(false)` on release. It is inert only during the boot countdown (where a hold forgets the persisted app), so it also fires in `Ready` with no app loaded. Combined with an [Overlay](#residentoverlay) and the [SystemMic](#residentsystemmic) streaming pump it composes into push-to-talk with no per-device boilerplate — see the `m5stick-voice` example.
+
+`addOverlay` / `requestOverlay` / `removeOverlay` and `startMicStream` / `stopMicStream` / `isMicStreaming` / `setMicStreamSink` are covered under [Resident::Overlay](#residentoverlay) and [Resident::SystemMic](#residentsystemmic).
 
 `setTimezone` is a no-op on `nullptr` or empty input. Success means ezTime resolved the zone (either from its own cache or via one UDP lookup to `timezoned.rop.nl`); failure logs and leaves `hasTimezone() == false`. Affects `ctx.localtime_h`, `ctx.localtime_m`, `time.hour()`, `time.minute()`, and `time.second()` in Lua.
 
@@ -347,21 +360,21 @@ This matters because `LuaModule::method<>` casts the stored `Extension*` pointer
 ### Driver lifecycle and update cadence
 
 Every object Resident manages — sandbox extensions and the device-role
-peripherals (system display, system button, system LED) — is a `Driver`
+peripherals (system display, system button, system LED, system mic) — is a `Driver`
 (hence an `Extension`). `begin()` runs once for each at setup. `update()`
 runs on a single de-duplicated list every loop:
 
 - **Role peripherals** (whatever you assign to `config.systemDisplay` /
-  `systemLED` / `systemButton`) update **every loop, always** — so the status
-  screen and system button work before any app exists and across a brief
-  reconnect.
+  `systemLED` / `systemButton` / `systemMic`) update **every loop, always** — so
+  the status screen and system button work before any app exists and across a
+  brief reconnect.
 - **Other extensions** update **only while an app is loaded** (running or
   suspended).
 - **Connectivity gates neither** `update()`. (The Lua `on_tick` still waits
   for the first connection on networked boards.)
 
 A driver fills a device role by implementing the role interface (`SystemDisplay`
-/ `SystemButton` / `SystemLED`, each a `Driver` subclass) — that's the
+/ `SystemButton` / `SystemLED` / `SystemMic`, each a `Driver` subclass) — that's the
 *capability*. Whether it's *used* in that role is the per-device config slot,
 so the same driver is reusable across boards. An object fills at most one role.
 (`StatusDisplay` / `StatusLED` remain as deprecated aliases for `SystemDisplay`
@@ -489,6 +502,77 @@ public:
 | `solidColor(uint32_t color)` | *(pure virtual)* | Set the LED to a packed `0xRRGGBB` color — called by Resident's internal handler on connection state changes |
 
 Resident's internal handler calls `solidColor` automatically as the connection state changes (yellow during WiFi setup, cyan while transports connect, green when connected, orange while reconnecting, red on failure). `SystemLED` is a `Driver` subclass and therefore inherits the standard `Driver` lifecycle: `begin()` is called once during `Sandbox::setup()` and `update()` is called every loop (both default to no-ops). Override `begin()` to initialize LED hardware there rather than in the constructor.
+
+---
+
+## Resident::SystemMic
+
+Interface for a microphone the runtime can stream. Implement it in a driver and pass a pointer via `SandboxConfig::systemMic`. Captures 16-bit signed mono PCM; `sampleRate()` is the single source of truth for the wire format.
+
+```cpp
+class MyMic : public Resident::SystemMic {
+public:
+    void begin() override { /* init capture hardware */ }
+    int read(int16_t* buf, int maxSamples, int timeoutMs) override {
+        return capture(buf, maxSamples);   // samples written; 0 on timeout / no data
+    }
+    uint32_t sampleRate() const override { return 16000; }
+    int frameSamples() const override { return 512; }   // natural read granularity
+};
+```
+
+| Method | Default | Description |
+|--------|---------|-------------|
+| `read(int16_t* buf, int maxSamples, int timeoutMs)` | *(pure virtual)* | Fill up to `maxSamples` 16-bit mono samples; return the count written (0 on timeout) |
+| `sampleRate()` | *(pure virtual)* | Capture rate in Hz (e.g. `16000`) |
+| `frameSamples()` | *(pure virtual)* | Natural read chunk size |
+| `begin()` / `update()` | no-op | Standard `Driver` lifecycle |
+
+`SystemMic` is a `Driver` role slot alongside `SystemDisplay` / `SystemLED` / `SystemButton`. The **streaming pump** ships its frames over the WebSocket:
+
+```cpp
+sandbox.startMicStream();      // each loop(): drain systemMic, send raw int16 frames
+sandbox.stopMicStream();
+sandbox.isMicStreaming();      // true while streaming
+sandbox.setMicStreamSink(fn);  // bool(const uint8_t* data, size_t len) — default: ws().sendBinary
+```
+
+While streaming, each `Sandbox::loop()` reads up to `frameSamples()` (capped at an internal 512-sample buffer) and forwards the bytes to the sink — the default sink is `ws().sendBinary`. The pump adds **no framing or control frames**: any envelope (e.g. a `{"type":"..."}` start/stop text frame, or a format handshake) is a device concern, sent by your code around `startMicStream()` / `stopMicStream()`. Streaming is independent of app state — it continues while the app is suspended, and is a no-op when `cfg.systemMic` is unset.
+
+---
+
+## Resident::Overlay
+
+An overlay temporarily takes over a display to show transient UI (a "Listening" prompt, a recording animation) on top of — or instead of — the running app.
+
+```cpp
+class ListeningOverlay : public Resident::Overlay {
+public:
+    int  priority() const override { return 100; }   // higher wins arbitration
+    void onDraw() override { display.displayText("Listening"); }
+    // onActivate() / onDeactivate() / restore() are optional (default no-op)
+};
+```
+
+| Method | Default | Description |
+|--------|---------|-------------|
+| `priority()` | *(pure virtual)* | Higher-priority overlays win when several are requested at once |
+| `onActivate()` | no-op | Called when this overlay becomes the winner |
+| `onDraw()` | no-op | Called every `loop()` while this overlay is the winner |
+| `onDeactivate()` | no-op | Called when this overlay stops being the winner |
+| `restore()` | no-op | Repaint the app's last frame — called on resume after a surface-sharing overlay hides |
+
+Register and drive overlays from the Sandbox:
+
+```cpp
+sandbox.addOverlay(&overlay, &systemDisplay);  // bind to the display it draws on
+sandbox.requestOverlay(&overlay, true);        // request show; false to hide
+sandbox.removeOverlay(&overlay);               // deregister
+```
+
+Each `loop()` the arbiter draws the highest-`priority()` *requested* overlay. **App suspension is derived, not declared:** the app is suspended while the winning overlay's bound surface is *dual-role* — the same display is both an app-facing extension (in `cfg.extensions[]`) **and** a `system*` role slot. On such a shared surface the app must be stopped from drawing over the overlay, so the arbiter calls `suspendApp()` while it shows and `resumeApp()` + the overlay's `restore()` when it hides. If the overlay draws on a **dedicated** system display (role-only, not the app's screen), the app is never suspended — it keeps running on its own screen. The arbiter only resumes an app it suspended itself.
+
+Core ships the overlay *mechanism* and no concrete overlays; the running app is not overlaid by any of Resident's own status screens (those show only when no app owns the display).
 
 ---
 

@@ -31,7 +31,7 @@ MyButtonDriver button{...};   // however your driver takes config
 Resident::SandboxConfig makeConfig() {
     Resident::SandboxConfig cfg;
     cfg.deviceType    = "demo";
-    cfg.statusDisplay = &display;
+    cfg.systemDisplay = &display;
     cfg.extensions    = {&display, &button};
 
     // Courier::Config has a constructor with default args, so designated
@@ -197,7 +197,7 @@ And in `idf_component.yml`:
 ```yaml
 dependencies:
   inanimate/resident:
-    version: "^0.1.0"
+    version: "^0.6.0"
 ```
 
 ## License
