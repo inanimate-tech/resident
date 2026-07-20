@@ -1,4 +1,4 @@
-version: "0.5.1-dev"
+version: "0.6.0-dev"
 description: "Sandbox with hardware IO and hot reload for ESP32 devices"
 url: "https://github.com/inanimate-tech/resident"
 
@@ -44,5 +44,4 @@ files:
     - "docs/publishing.md"
     - "docs/changelog.md"
     - "docs/start-building.md"
-    - "docs/migration-0.4-to-0.5.md"
     - ".gitignore"

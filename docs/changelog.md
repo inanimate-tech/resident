@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.1-dev (77afc9a)
+## v0.6.0-dev
 
 ### New features
 
@@ -43,6 +43,23 @@
   auto-load. Standalone devices show the identity/countdown immediately at
   setup, as before.
 
+- **Push-to-talk primitives (core).** Three device-agnostic building blocks,
+  composable into hold-to-talk and voice-overlay experiences:
+  - `Sandbox::onSystemButtonHold(cb)` — a runtime hold gesture on the
+    `systemButton` role slot. `cb(true)` fires once past the threshold,
+    `cb(false)` on release, whenever the device is not in the boot countdown
+    (including `Ready` with no app loaded).
+  - `SystemMic` role slot (`SandboxConfig::systemMic`) + an inline streaming
+    pump: `startMicStream()` / `stopMicStream()` / `setMicStreamSink()` drain
+    the mic each `loop()` and ship raw 16-bit mono PCM frames (default sink
+    `ws().sendBinary`). No framing — control frames are a device concern.
+  - **Overlay arbiter.** `Resident::Overlay` +
+    `addOverlay(overlay, surface)` / `removeOverlay` / `requestOverlay`. The
+    highest-priority requested overlay draws each `loop()`; the app is
+    suspended while it shows **iff** its bound surface is dual-role (present in
+    both `extensions[]` and a `system*` role slot) — so suspend is derived
+    per-device, not declared on the overlay.
+
 - **`status*` role slots renamed to `system*`.** `SandboxConfig::statusDisplay`
   / `statusLED` are renamed to `systemDisplay` / `systemLED`, matching
   `systemButton`. The `StatusDisplay` / `StatusLED` classes remain as plain
@@ -50,10 +67,6 @@
   subclasses keep compiling unchanged. **Migration:** the old config fields
   (`statusDisplay`, `statusLED`) still work but are `[[deprecated]]` — switch
   assignments to `systemDisplay` / `systemLED`.
-
-- **`onSystemButtonHold` gate widened.** The hold callback now fires whenever
-  the device is not in the boot countdown — including `Ready` with no app
-  loaded — rather than requiring a running app.
 
 - m5stick-voice migrated onto the new core primitives (system-button hold,
   overlay arbiter, SystemMic streaming pump); its hand-rolled push-to-talk
