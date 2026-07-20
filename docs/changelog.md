@@ -51,6 +51,10 @@
   (`statusDisplay`, `statusLED`) still work but are `[[deprecated]]` — switch
   assignments to `systemDisplay` / `systemLED`.
 
+- **`onSystemButtonHold` gate widened.** The hold callback now fires whenever
+  the device is not in the boot countdown — including `Ready` with no app
+  loaded — rather than requiring a running app.
+
 - m5stick-voice migrated onto the new core primitives (system-button hold,
   overlay arbiter, SystemMic streaming pump); its hand-rolled push-to-talk
   orchestration (onHold + audio ring + telemetry) is removed.

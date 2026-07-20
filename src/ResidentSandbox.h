@@ -74,9 +74,13 @@ public:
 
     // Runtime hold gesture on the SystemButton role slot. cb(true) fires once
     // when a hold crosses the threshold; cb(false) on release. Fires whenever
-    // an app is loaded OR the device is idle — inert only during the boot
-    // countdown, so it never collides with the countdown's hold-to-forget
-    // gesture. Optional — unset means no hold handling.
+    // an app is loaded OR the device is idle — inert during the boot countdown
+    // (RunState::Pending), where handleCountdownButton owns the button, so the
+    // two never process the same press within a single tick. Note: on a device
+    // that BOTH persists apps AND wires this to the same button, holding
+    // through the countdown's forget-gesture and continuing past the hold
+    // threshold can fire a hold enter without an intervening release; no
+    // shipped example combines these. Optional — unset means no hold handling.
     using SystemButtonHoldCallback = std::function<void(bool held)>;
     void onSystemButtonHold(SystemButtonHoldCallback cb) { _onHoldCb = std::move(cb); }
 
