@@ -1,17 +1,11 @@
-// src/ResidentStatusLED.h
+// src/ResidentStatusLED.h — deprecated forwarder. Use ResidentSystemLED.h.
 #ifndef RESIDENT_STATUS_LED_H
 #define RESIDENT_STATUS_LED_H
 
-#include <cstdint>
-#include "ResidentDriver.h"
+#include "ResidentSystemLED.h"
 
 namespace Resident {
-
-class StatusLED : public Driver {
-public:
-  virtual void solidColor(uint32_t color) = 0;
-};
-
-} // namespace Resident
+using StatusLED = SystemLED;  // Deprecated: renamed to SystemLED.
+}
 
 #endif // RESIDENT_STATUS_LED_H

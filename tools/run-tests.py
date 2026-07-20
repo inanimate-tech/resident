@@ -66,13 +66,22 @@ def unit_tests() -> None:
     click.echo(click.style("✓ Unit tests passed", fg="green"))
 
 
-PLATFORMIO_EXAMPLES = [
+
+# Each entry is either a bare Path (build with `pio run`'s default envs) or a
+# (Path, env) pair to pin a specific PlatformIO environment via `-e`.
+# m5stick-voice defines two board envs (m5stick, m5sticks3) and its
+# platformio.ini only default_envs=m5stick, so both are listed explicitly
+# here to build-gate the whole board matrix (see the push-to-talk /
+# app-less hold-detector fix — this build was never gated before).
+PLATFORMIO_EXAMPLES: list[Path | tuple[Path, str]] = [
     ROOT / "examples" / "m5stick-demo" / "device",
     ROOT / "examples" / "adafruit-esp32-s2-feather" / "device",
     ROOT / "examples" / "adafruit-esp32-s2-feather" / "device-minimal-resident",
     # device-no-resident doesn't use Resident; included as a smoke test that
     # the hardware bring-up baseline still builds.
     ROOT / "examples" / "adafruit-esp32-s2-feather" / "device-no-resident",
+    (ROOT / "examples" / "m5stick-voice" / "device", "m5stick"),
+    (ROOT / "examples" / "m5stick-voice" / "device", "m5sticks3"),
 ]
 
 
@@ -80,14 +89,16 @@ PLATFORMIO_EXAMPLES = [
 def build_verification() -> None:
     """Build-verify every PlatformIO example."""
     click.echo(click.style("Build Verification", fg="white", bold=True))
-    failed: list[Path] = []
-    for project in PLATFORMIO_EXAMPLES:
-        label = f"pio run ({project.parent.name}/{project.name})"
-        if not run_cmd(["pio", "run"], cwd=project, label=label):
-            failed.append(project)
+    failed: list[str] = []
+    for entry in PLATFORMIO_EXAMPLES:
+        project, env = entry if isinstance(entry, tuple) else (entry, None)
+        cmd = ["pio", "run"] + (["-e", env] if env else [])
+        suffix = f" -e {env}" if env else ""
+        label = f"pio run ({project.parent.name}/{project.name}{suffix})"
+        if not run_cmd(cmd, cwd=project, label=label):
+            failed.append(f"{project.relative_to(ROOT)}{suffix}")
     if failed:
-        rels = ", ".join(str(p.relative_to(ROOT)) for p in failed)
-        click.echo(click.style(f"✗ Build failed for: {rels}", fg="red"))
+        click.echo(click.style(f"✗ Build failed for: {', '.join(failed)}", fg="red"))
         sys.exit(1)
     click.echo(click.style("✓ All builds passed", fg="green"))
 

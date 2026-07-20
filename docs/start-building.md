@@ -57,8 +57,8 @@ The bring-up `setup()` code stays — peripheral init still happens before Resid
 
 - Add the in-tree Resident library to `lib_deps` (`symlink://<path-to-resident-root>`) along with its runtime deps: Courier (git URL), `tzapu/WiFiManager`, `bblanchon/ArduinoJson`, `ropg/ezTime`, `fischer-simon/Esp32Lua`.
 - Add a custom `partitions.csv` — Resident's stack pushes the binary toward 1.2 MB; the default 4 MB layout's `app0` slice (~1.4 MB) leaves no head-room. The Feather example uses 2.5 MB app + 1.4 MB SPIFFS.
-- Implement a `Resident::StatusDisplay` subclass that paints connection-state text (`"WiFi"`, `"Connecting"`, `"Connected"`, then the device ID) on whatever output the board has — a TFT, an OLED, a NeoPixel, or just plain serial. Resident's internal handler calls `displayText()` on every connection state transition automatically, no wiring required.
-- Build a `Resident::SandboxConfig`: set `deviceType`, point `statusDisplay` at the subclass, leave `extensions` empty for this step. Assign `cfg.network` from a `Courier::Config` populated via direct field assignment (`courier.host = "resident.inanimate.tech"; cfg.network = courier;` — designated initializers don't compile under strict ESP-IDF builds).
+- Implement a `Resident::SystemDisplay` subclass that paints connection-state text (`"WiFi"`, `"Connecting"`, `"Connected"`, then the device ID) on whatever output the board has — a TFT, an OLED, a NeoPixel, or just plain serial. Resident's internal handler calls `displayText()` on every connection state transition automatically, no wiring required.
+- Build a `Resident::SandboxConfig`: set `deviceType`, point `systemDisplay` at the subclass, leave `extensions` empty for this step. Assign `cfg.network` from a `Courier::Config` populated via direct field assignment (`courier.host = "resident.inanimate.tech"; cfg.network = courier;` — designated initializers don't compile under strict ESP-IDF builds).
 - Construct a global `Resident::Sandbox sandbox{makeConfig()}`.
 - Register `sandbox.onTransportsWillConnect([]() { sandbox.ws().setEndpoint(host, 443, "/devices/" + sandbox.getDeviceId()); })` to override the default `/agents/<type>-agent/<id>` path with the canonical `/devices/<id>` path used by `resident.inanimate.tech`.
 - `setup()` calls `sandbox.setup()` after the hardware init block; `loop()` calls `sandbox.loop()`.
@@ -94,7 +94,7 @@ A driver is a class that inherits `Resident::Driver` and implements:
 - `registerModule(LuaModule&)` chaining `.method<Class, &Class::cMethod>("lua_name")` calls. Each C++ method takes `lua_State*` and returns the number of Lua return values, pushing them with `lua_pushnumber` / `lua_pushinteger` / `lua_pushboolean`.
 - Optionally: `begin()` for one-shot hardware init that happens inside `sandbox.setup()`; `onAppReset()` to clear per-app state (canvas, LED off) when a new app loads; `onAppRunning(bool)` to track sandbox state.
 
-A driver can dual-inherit `Resident::StatusDisplay` or `Resident::StatusLED` — that's how the Feather's `DisplayDriver` and `LEDDriver` both serve as boot-time status indicators *and* as Lua-accessible modules. The handoff is automatic: once a Lua app loads, the driver gates its `displayText` / `solidColor` calls on `_appRunning` so Lua owns the hardware.
+A driver can dual-inherit `Resident::SystemDisplay` or `Resident::SystemLED` — that's how the Feather's `DisplayDriver` and `LEDDriver` both serve as boot-time status indicators *and* as Lua-accessible modules. The handoff is automatic: once a Lua app loads, the driver gates its `displayText` / `solidColor` calls on `_appRunning` so Lua owns the hardware.
 
 For each driver in `device/lib/drivers/`:
 
@@ -106,8 +106,8 @@ For each driver in `device/lib/drivers/`:
 
 The Feather exposes three drivers — see [`device/lib/drivers/src/`](../examples/adafruit-esp32-s2-feather/device/lib/drivers/src/):
 
-- **`DisplayDriver`** wraps `Adafruit_ST7789`. Allocates a `GFXcanvas16` framebuffer in `begin()`, exposes `screen.{clear, text, fill_rect, rect, line, triangle, fill_triangle, pixel, flip, set_brightness, width, height}`. `flip()` pushes the canvas to the TFT in a single SPI transfer via `drawRGBBitmap` — double-buffering is essential for anything resembling a game loop, drawing primitives straight to the TFT one-at-a-time is too slow. Backlight brightness is on a LEDC PWM channel. Dual-inherits `Resident::StatusDisplay`.
-- **`LEDDriver`** wraps `Adafruit_NeoPixel`. Exposes `led.{set, set_brightness, off}`. Dual-inherits `Resident::StatusLED` — Resident drives the pixel yellow/cyan/green/orange/red through connection states until an app loads, then `onAppRunning(true)` flips a flag and `solidColor()` becomes a no-op so the app fully owns the pixel.
+- **`DisplayDriver`** wraps `Adafruit_ST7789`. Allocates a `GFXcanvas16` framebuffer in `begin()`, exposes `screen.{clear, text, fill_rect, rect, line, triangle, fill_triangle, pixel, flip, set_brightness, width, height}`. `flip()` pushes the canvas to the TFT in a single SPI transfer via `drawRGBBitmap` — double-buffering is essential for anything resembling a game loop, drawing primitives straight to the TFT one-at-a-time is too slow. Backlight brightness is on a LEDC PWM channel. Dual-inherits `Resident::SystemDisplay`.
+- **`LEDDriver`** wraps `Adafruit_NeoPixel`. Exposes `led.{set, set_brightness, off}`. Dual-inherits `Resident::SystemLED` — Resident drives the pixel yellow/cyan/green/orange/red through connection states until an app loads, then `onAppRunning(true)` flips a flag and `solidColor()` becomes a no-op so the app fully owns the pixel.
 - **`BatteryDriver`** wraps `Adafruit_LC709203F`. Exposes `battery.{voltage, percent, present}`. Returns zeros when no LiPo is connected (the chip is powered by VBAT, invisible on I2C without it).
 
 ### Decisions to make

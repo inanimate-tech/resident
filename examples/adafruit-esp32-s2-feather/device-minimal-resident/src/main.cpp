@@ -54,7 +54,7 @@ static TFTStatusDisplay tftStatus;
 static Resident::SandboxConfig makeConfig() {
   Resident::SandboxConfig cfg;
   cfg.deviceType    = "feather-tft";
-  cfg.statusDisplay = &tftStatus;
+  cfg.systemDisplay = &tftStatus;
   // No Lua hardware modules yet — apps get only the sandbox-generic surface
   // (log, time, kv, math, shader globals). Next steps: expose screen.* (TFT),
   // led.* (NeoPixel), battery.* (LC709203).

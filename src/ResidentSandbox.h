@@ -12,6 +12,7 @@
 #include "ResidentDriver.h"
 #include "ResidentLuaModule.h"
 #include "ResidentSandboxConfig.h"
+#include "ResidentOverlay.h"
 
 namespace Resident {
 
@@ -70,6 +71,35 @@ public:
     void suspendApp();
     void resumeApp();
     bool isAppSuspended() const;
+
+    // Runtime hold gesture on the SystemButton role slot. cb(true) fires once
+    // when a hold crosses the threshold; cb(false) on release. Fires whenever
+    // an app is loaded OR the device is idle — inert during the boot countdown
+    // (RunState::Pending), where handleCountdownButton owns the button, so the
+    // two never process the same press within a single tick. Note: on a device
+    // that BOTH persists apps AND wires this to the same button, holding
+    // through the countdown's forget-gesture and continuing past the hold
+    // threshold can fire a hold enter without an intervening release; no
+    // shipped example combines these. Optional — unset means no hold handling.
+    using SystemButtonHoldCallback = std::function<void(bool held)>;
+    void onSystemButtonHold(SystemButtonHoldCallback cb) { _onHoldCb = std::move(cb); }
+
+    // Mic streaming pump. While streaming, each loop() drains systemMic and
+    // ships int16 frames to the sink (default: ws().sendBinary). No framing —
+    // control frames are a device concern. No-op if cfg.systemMic is unset.
+    using MicStreamSink = std::function<bool(const uint8_t* data, size_t len)>;
+    void setMicStreamSink(MicStreamSink sink) { _micSink = std::move(sink); }
+    void startMicStream();
+    void stopMicStream();
+    bool isMicStreaming() const { return _micStreaming; }
+
+    // Overlay support. Register an overlay bound to the display surface it
+    // draws on; toggle its desired state with requestOverlay. The arbiter draws
+    // the highest-priority active overlay each loop; if that overlay's surface
+    // is dual-role (appDrawsTo), the app is suspended while it shows.
+    void addOverlay(Overlay* o, SystemDisplay* surface);
+    void removeOverlay(Overlay* o);
+    void requestOverlay(Overlay* o, bool active);
 
     // Timezone — no-op on nullptr/empty. Success means ezTime resolved the
     // zone (either from its own cache or via one UDP lookup to
@@ -191,12 +221,18 @@ private:
 
     // Unified lifecycle set: extensions[] plus any role-slot object not
     // already present, de-duped by pointer. Driven for begin() and update().
-    Extension* _lifecycle[Extensions::MAX + 3] = {};
+    // Sized for extensions[] (MAX) plus the four role slots (display, LED,
+    // button, mic) that buildLifecycleSet() may append when each is a
+    // distinct object not already in extensions[].
+    Extension* _lifecycle[Extensions::MAX + 4] = {};
     uint8_t _lifecycleCount = 0;
     void buildLifecycleSet();
     void addLifecycle(Extension* e);
-    // True iff e is one of the assigned role-slot objects (a peripheral).
-    bool isPeripheral(Extension* e) const;
+    // True iff e is one of the assigned system role-slot objects.
+    bool isSystemExtension(Extension* e) const;
+    // Deprecated-field reconciliation: new field wins, old is the fallback.
+    SystemDisplay* systemDisplay() const;
+    SystemLED* systemLED() const;
 
     // Telemetry
     TelemetryCallback _telemetryCb;
@@ -244,6 +280,42 @@ private:
     static constexpr unsigned long SYSTEM_BUTTON_LONG_PRESS_MS = 1000;
     // Returns true when a gesture ended the countdown (loaded or forgot).
     bool handleCountdownButton();
+
+    // Runtime hold detector (distinct state from the countdown gesture).
+    SystemButtonHoldCallback _onHoldCb;
+    bool _holdWasDown = false;
+    unsigned long _holdDownSince = 0;
+    bool _holdFired = false;
+    static constexpr unsigned long SYSTEM_BUTTON_HOLD_MS = 500;
+    void updateSystemButtonHold();
+
+    // Mic streaming pump state.
+    bool _micStreaming = false;
+    MicStreamSink _micSink;
+    static constexpr int MIC_STREAM_MAX_SAMPLES = 512;
+    int16_t _micBuf[MIC_STREAM_MAX_SAMPLES] = {};
+    void updateMicStream();
+
+    // Overlay arbiter state.
+    static constexpr int MAX_OVERLAYS = 4;
+    struct OverlaySlot { Overlay* o; SystemDisplay* surface; bool requested; };
+    OverlaySlot _overlays[MAX_OVERLAYS] = {};
+    uint8_t _overlayCount = 0;
+    // Known limitations (fine for current single-overlay-per-device use;
+    // revisit for the Hawthorn port which loads apps under overlays):
+    // (1) loadApp() while an overlay is active does not reconcile these — a
+    //     new app can tick under a held overlay until release.
+    // (2) the arbiter assumes it is the first suspender: if device code
+    //     calls suspendApp() before an overlay activates, the arbiter's
+    //     resume on deactivate will resume an app the device wanted
+    //     suspended.
+    Overlay* _activeOverlay = nullptr;
+    bool _overlaySuspendedApp = false;
+    void updateOverlays();
+    // True iff e is a declared (app-facing) extension.
+    bool isAppExtension(Extension* e) const;
+    // True iff the app draws to surface (dual-role: system slot AND app ext).
+    bool appDrawsTo(SystemDisplay* surface) const;
 
     // Frame timing
     unsigned long _lastTickTime = 0;

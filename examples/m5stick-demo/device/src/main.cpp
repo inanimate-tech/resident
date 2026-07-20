@@ -33,7 +33,7 @@ Resident::SandboxConfig makeConfig() {
     Resident::SandboxConfig cfg;
     cfg.deviceType    = "stick";
     cfg.extensions    = {&displayDriver, &imuDriver, &buzzerDriver, &buttonDriver};
-    cfg.statusDisplay = &displayDriver;
+    cfg.systemDisplay = &displayDriver;
     cfg.systemButton  = &buttonDriver;   // front button: tap = load, hold = forget
 
     // Courier::Config has a constructor with default args, so designated

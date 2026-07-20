@@ -32,8 +32,8 @@ static Resident::SandboxConfig makeConfig() {
   // dual-inherits as the StatusLED so the NeoPixel reflects connection
   // state (yellow→cyan→green) until an app takes over.
   cfg.extensions    = {&displayDriver, &ledDriver, &batteryDriver, &buttonDriver};
-  cfg.statusDisplay = &displayDriver;
-  cfg.statusLED     = &ledDriver;
+  cfg.systemDisplay = &displayDriver;
+  cfg.systemLED     = &ledDriver;
 
   // Courier::Config has a constructor with default args, so designated
   // initializers (.host = ...) don't compile under strict ESP-IDF builds.

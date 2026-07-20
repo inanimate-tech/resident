@@ -137,7 +137,7 @@ void Sandbox::addLifecycle(Extension* e)
   for (uint8_t i = 0; i < _lifecycleCount; i++) {
     if (_lifecycle[i] == e) return;   // already present — de-dup
   }
-  if (_lifecycleCount < (Extensions::MAX + 3)) {
+  if (_lifecycleCount < (Extensions::MAX + 4)) {
     _lifecycle[_lifecycleCount++] = e;
   }
 }
@@ -151,16 +151,34 @@ void Sandbox::buildLifecycleSet()
   // Role slots are Driver subclasses, so they upcast to Extension*. Append any
   // not already in extensions[] so an assigned-but-unlisted peripheral is
   // still begun and updated.
-  addLifecycle(_config.statusDisplay);
-  addLifecycle(_config.statusLED);
+  addLifecycle(systemDisplay());
+  addLifecycle(systemLED());
   addLifecycle(_config.systemButton);
+  addLifecycle(_config.systemMic);
 }
 
-bool Sandbox::isPeripheral(Extension* e) const
+bool Sandbox::isSystemExtension(Extension* e) const
 {
-  return e == static_cast<Extension*>(_config.statusDisplay)
-      || e == static_cast<Extension*>(_config.statusLED)
-      || e == static_cast<Extension*>(_config.systemButton);
+  return e == static_cast<Extension*>(systemDisplay())
+      || e == static_cast<Extension*>(systemLED())
+      || e == static_cast<Extension*>(_config.systemButton)
+      || e == static_cast<Extension*>(_config.systemMic);
+}
+
+Resident::SystemDisplay* Sandbox::systemDisplay() const
+{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  return _config.systemDisplay ? _config.systemDisplay : _config.statusDisplay;
+#pragma GCC diagnostic pop
+}
+
+Resident::SystemLED* Sandbox::systemLED() const
+{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  return _config.systemLED ? _config.systemLED : _config.statusLED;
+#pragma GCC diagnostic pop
 }
 
 void Sandbox::initialize()
@@ -211,8 +229,8 @@ void Sandbox::initialize()
   }
 
   // Pass 2 — Lua modules: register globals for declared extensions only.
-  // A role-slot peripheral that is NOT in extensions[] (e.g. a TFTStatusDisplay
-  // assigned only to cfg.statusDisplay) must NOT get a Lua global — it has no
+  // A role-slot peripheral that is NOT in extensions[] (e.g. a TFTSystemDisplay
+  // assigned only to cfg.systemDisplay) must NOT get a Lua global — it has no
   // API surface to expose. A role object that also wants a Lua module must be
   // listed in extensions[] explicitly.
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
@@ -400,7 +418,7 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
   using S = Courier::State;
 
   // Resident's internal status-text handling. Runs unconditionally if a
-  // statusDisplay is configured. User's onConnectionChange callback runs
+  // systemDisplay is configured. User's onConnectionChange callback runs
   // after, in addition (does not replace).
   if (_runState != RunState::Pending) {
     switch (state) {
@@ -419,15 +437,15 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
     }
   }
 
-  if (_config.statusLED) {
+  if (systemLED()) {
     switch (state) {
       case S::WifiConnecting:
-      case S::WifiConfiguring:       _config.statusLED->solidColor(0xFFFF00); break;
+      case S::WifiConfiguring:       systemLED()->solidColor(0xFFFF00); break;
       case S::WifiConnected:
-      case S::TransportsConnecting:  _config.statusLED->solidColor(0x00FFFF); break;
-      case S::Connected:             _config.statusLED->solidColor(0x00FF00); break;
-      case S::Reconnecting:          _config.statusLED->solidColor(0xFF8800); break;
-      case S::ConnectionFailed:      _config.statusLED->solidColor(0xFF0000); break;
+      case S::TransportsConnecting:  systemLED()->solidColor(0x00FFFF); break;
+      case S::Connected:             systemLED()->solidColor(0x00FF00); break;
+      case S::Reconnecting:          systemLED()->solidColor(0xFF8800); break;
+      case S::ConnectionFailed:      systemLED()->solidColor(0xFF0000); break;
       default: break;
     }
   }
@@ -452,15 +470,15 @@ void Sandbox::onCourierTransportsWillConnect() {
 
 void Sandbox::showStatusText(const char* text)
 {
-  if (!_config.statusDisplay) return;
+  if (!systemDisplay()) return;
   if (_lastStatusText == text) return;
   _lastStatusText = text;
-  _config.statusDisplay->displayText(text);
+  systemDisplay()->displayText(text);
 }
 
 void Sandbox::showIdleScreen(int countdownSecs)
 {
-  if (!_config.statusDisplay) return;
+  if (!systemDisplay()) return;
   String s;
   if (_idleScreenTitle.length() > 0) { s += _idleScreenTitle; s += '\n'; }
   s += "Device ID: "; s += _deviceId;
@@ -482,7 +500,7 @@ void Sandbox::enterIdleScreen()
     showReadyScreen();
     return;
   }
-  if (_config.statusDisplay) {
+  if (systemDisplay()) {
     _runState = RunState::Pending;
     _countdownStartMs = millis();
     _lastCountdownSecondShown = -1;
@@ -511,10 +529,14 @@ void Sandbox::loop() {
   // while an app is loaded (Running or Suspended).
   for (uint8_t i = 0; i < _lifecycleCount; i++) {
     Extension* e = _lifecycle[i];
-    if (isPeripheral(e) || isAppRunning()) {
+    if (isSystemExtension(e) || isAppRunning()) {
       e->update();
     }
   }
+
+  updateSystemButtonHold();
+  updateOverlays();
+  updateMicStream();
 
   if (_runState == RunState::Pending) {
     updateBootCountdown();
@@ -543,6 +565,11 @@ void Sandbox::loadApp(const char* luaCode)
 
 bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
 {
+  // Reset the runtime hold detector: a reload (or a failed reload) must never
+  // leave stale hold state that would fire a spurious gesture on the next app.
+  _holdWasDown = false;
+  _holdFired = false;
+
   // An explicit load supersedes a pending boot-countdown restore.
   if (_runState == RunState::Pending) {
     _runState = RunState::Ready;
@@ -651,6 +678,128 @@ bool Sandbox::handleCountdownButton()
     }
   }
   return false;
+}
+
+void Sandbox::updateSystemButtonHold()
+{
+  if (!_onHoldCb || !_config.systemButton || _runState == RunState::Pending) return;
+  bool down = _config.systemButton->pressed();
+
+  if (down && !_holdWasDown) {
+    _holdWasDown = true;
+    _holdDownSince = millis();
+    _holdFired = false;
+  } else if (down && _holdWasDown) {
+    if (!_holdFired && millis() - _holdDownSince >= SYSTEM_BUTTON_HOLD_MS) {
+      _holdFired = true;
+      _onHoldCb(true);
+    }
+  } else if (!down && _holdWasDown) {
+    _holdWasDown = false;
+    if (_holdFired) {
+      _holdFired = false;
+      _onHoldCb(false);
+    }
+  }
+}
+
+void Sandbox::startMicStream() { _micStreaming = true; }
+void Sandbox::stopMicStream()  { _micStreaming = false; }
+
+void Sandbox::updateMicStream()
+{
+  if (!_micStreaming || !_config.systemMic) return;
+  int want = _config.systemMic->frameSamples();
+  if (want > MIC_STREAM_MAX_SAMPLES) want = MIC_STREAM_MAX_SAMPLES;
+  if (want <= 0) return;
+  int got = _config.systemMic->read(_micBuf, want, 0);
+  if (got <= 0) return;
+  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(_micBuf);
+  size_t len = (size_t)got * sizeof(int16_t);
+  if (_micSink) _micSink(bytes, len);
+  else if (_courier.has_value()) ws().sendBinary(bytes, len);
+}
+
+bool Sandbox::isAppExtension(Extension* e) const
+{
+  for (uint8_t i = 0; i < _config.extensions.count; i++) {
+    if (_config.extensions.items[i] == e) return true;
+  }
+  return false;
+}
+
+bool Sandbox::appDrawsTo(SystemDisplay* surface) const
+{
+  Extension* e = static_cast<Extension*>(surface);
+  return surface && isSystemExtension(e) && isAppExtension(e);
+}
+
+void Sandbox::addOverlay(Overlay* o, SystemDisplay* surface)
+{
+  if (!o || _overlayCount >= MAX_OVERLAYS) return;
+  _overlays[_overlayCount++] = {o, surface, false};
+}
+
+void Sandbox::removeOverlay(Overlay* o)
+{
+  for (uint8_t i = 0; i < _overlayCount; i++) {
+    if (_overlays[i].o == o) {
+      for (uint8_t j = i; j + 1 < _overlayCount; j++) _overlays[j] = _overlays[j + 1];
+      _overlayCount--;
+      if (_activeOverlay == o) {
+        o->onDeactivate();
+        if (_overlaySuspendedApp) {
+          resumeApp();
+          _overlaySuspendedApp = false;
+          o->restore();
+        }
+        _activeOverlay = nullptr;
+      }
+      return;
+    }
+  }
+}
+
+void Sandbox::requestOverlay(Overlay* o, bool active)
+{
+  for (uint8_t i = 0; i < _overlayCount; i++) {
+    if (_overlays[i].o == o) { _overlays[i].requested = active; return; }
+  }
+}
+
+void Sandbox::updateOverlays()
+{
+  // Winner = highest-priority requested overlay.
+  Overlay* winner = nullptr;
+  SystemDisplay* winnerSurface = nullptr;
+  bool have = false;
+  int best = 0;
+  for (uint8_t i = 0; i < _overlayCount; i++) {
+    if (!_overlays[i].requested) continue;
+    int p = _overlays[i].o->priority();
+    if (!have || p > best) {
+      have = true; best = p; winner = _overlays[i].o; winnerSurface = _overlays[i].surface;
+    }
+  }
+
+  if (winner != _activeOverlay) {
+    Overlay* prev = _activeOverlay;
+    if (prev) prev->onDeactivate();
+    _activeOverlay = winner;
+    if (winner) winner->onActivate();
+
+    bool wantSuspend = winner && appDrawsTo(winnerSurface);
+    if (wantSuspend && !_overlaySuspendedApp && _runState == RunState::Running) {
+      suspendApp();
+      _overlaySuspendedApp = true;
+    } else if (!wantSuspend && _overlaySuspendedApp) {
+      resumeApp();
+      _overlaySuspendedApp = false;
+      if (prev) prev->restore();
+    }
+  }
+
+  if (_activeOverlay) _activeOverlay->onDraw();
 }
 
 void Sandbox::finishBootCountdown()

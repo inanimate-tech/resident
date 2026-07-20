@@ -39,12 +39,15 @@ void loop()  { sandbox.loop(); }
 | `shaderTemplate` | `ShaderTemplateFn` | `nullptr` | Function that converts shader fields into Lua source (see [Message Protocol](#message-protocol)) |
 | `telemetry` | `TelemetryCallback` | `nullptr` | Called with outgoing telemetry JSON strings (also settable later via `sandbox.setTelemetryCallback`) |
 | `timezone` | `const char*` | `nullptr` | IANA timezone string applied at construction (e.g. `"Europe/London"`); also settable later via `sandbox.setTimezone` |
-| `statusDisplay` | `StatusDisplay*` | `nullptr` | Optional text display; Resident's internal handler calls `displayText()` automatically on connection state changes |
-| `statusLED` | `StatusLED*` | `nullptr` | Optional LED indicator; Resident's internal handler calls `solidColor()` automatically on connection state changes |
+| `systemDisplay` | `SystemDisplay*` | `nullptr` | Optional text display; Resident's internal handler calls `displayText()` automatically on connection state changes |
+| `systemLED` | `SystemLED*` | `nullptr` | Optional LED indicator; Resident's internal handler calls `solidColor()` automatically on connection state changes |
 | `network` | `std::optional<Courier::Config>` | unset | Networking opt-in. Set ⇒ Sandbox constructs an internal `Courier::Client`, drives WiFi / transports, fires connection callbacks. Unset ⇒ standalone runtime, no WiFi pulled in. |
 | `persistApps` | `bool` | `true` | Save the last successfully-loaded app to flash and restore it on boot. Set to `false` to disable for a build. |
-| `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown. Implement `Resident::SystemButton` and pass a pointer here. |
+| `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
+| `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). Implement `Resident::SystemMic` and pass a pointer here. |
 | `persistentStore` | `Resident::PersistentStore*` | `nullptr` | Override the backing store for persistence. `nullptr` uses NVS on device; inject a fake in tests. |
+| `statusDisplay` | `SystemDisplay*` | `nullptr` | **Deprecated** — use `systemDisplay`. Kept as a fallback; a compile-time warning nudges migration. |
+| `statusLED` | `SystemLED*` | `nullptr` | **Deprecated** — use `systemLED`. Kept as a fallback; a compile-time warning nudges migration. |
 
 The `extensions` field is filled with a brace-list of `Extension*` pointers in registration order:
 
@@ -103,14 +106,14 @@ sandbox.loop();    // call from Arduino loop()
    1. The user-registered `onConfigureNetwork(cb)` fires (if any), receiving the `Courier::Client&`. Use this to configure transports, register additional transports, or set TLS certificates.
    2. Resident's internal Courier hooks are wired (status-display / status-LED updates, reserved-type message routing).
    3. WiFiManager AP name is set to `"Resident <DeviceType> <id-suffix>"`.
-   4. The sandbox initialises: Lua state is created, then Resident builds a de-duplicated lifecycle list of all managed objects — the `extensions[]` entries plus any role-slot peripherals (`statusDisplay`, `statusLED`, `systemButton`). Each object in that list receives `begin()` and `registerModule()` exactly once (idempotent), in registration order. Globals are registered.
+   4. The sandbox initialises: Lua state is created, then Resident builds a de-duplicated lifecycle list of all managed objects — the `extensions[]` entries plus any role-slot peripherals (`systemDisplay`, `systemLED`, `systemButton`). Each object in that list receives `begin()` and `registerModule()` exactly once (idempotent), in registration order. Globals are registered.
    5. `Courier::Client::setup()` runs, which kicks WiFi and transports. During this:
-      - `onCourierConnectionChange` fires for each state transition (`WifiConnecting` → `WifiConnected` → `TransportsConnecting` → `Connected`, etc.). Internal handler updates `statusDisplay`/`statusLED`, then the user's `onConnectionChange(cb)` callback fires.
+      - `onCourierConnectionChange` fires for each state transition (`WifiConnecting` → `WifiConnected` → `TransportsConnecting` → `Connected`, etc.). Internal handler updates `systemDisplay`/`systemLED`, then the user's `onConnectionChange(cb)` callback fires.
       - `onCourierTransportsWillConnect` fires once before transports begin. Internal handler sets the default `/agents/<type>-agent/<id>` WS path, then the user's `onTransportsWillConnect(cb)` callback fires (override the path here).
       - `onCourierConnected` fires when fully connected. The user's `onConnected(cb)` callback runs.
 3. **`loop()`** — in order:
    1. `Courier::Client::loop()` drives the network state machine and reads transports.
-   2. **Driver heartbeat:** the de-duplicated lifecycle list is walked once and `update()` is called on each object. Role peripherals (`statusDisplay`, `statusLED`, `systemButton`) update every loop regardless of app state or connectivity. All other extensions update only while an app is loaded (running or suspended). Connectivity does not gate either cadence.
+   2. **Driver heartbeat:** the de-duplicated lifecycle list is walked once and `update()` is called on each object. Role peripherals (`systemDisplay`, `systemLED`, `systemButton`) update every loop regardless of app state or connectivity. All other extensions update only while an app is loaded (running or suspended). Connectivity does not gate either cadence.
    3. If a persisted app is waiting to load, the boot countdown runs (and the function returns early).
    4. The Lua `on_tick(ctx, dt_ms)` callback fires at 10 FPS (100 ms interval) — only while an app is Running, and (when networked) only once connected. Standalone always ticks unconditionally.
    5. Up to one pending event is delivered to `on_event(ctx, event)`.
@@ -147,7 +150,7 @@ sandbox.onMessage([](const char* transport, const char* type, JsonDocument& doc)
 });
 
 sandbox.onConnectionChange([](Courier::State state) {
-    // fires on every state transition; statusDisplay/statusLED are already updated
+    // fires on every state transition; systemDisplay/systemLED are already updated
 });
 
 sandbox.onConnected([]() {
@@ -163,7 +166,7 @@ sandbox.onConnected([]() {
 |----------|-----------|-------|
 | `onTransportsWillConnect` | `void()` | Once, after Resident sets the default WS path and before transports start. Override the path here. |
 | `onMessage` | `void(const char* transport, const char* type, JsonDocument&)` | For **non-reserved** message types only. Reserved types (`app`, `shader`, `app_event`) are routed internally — no super-call is needed. |
-| `onConnectionChange` | `void(Courier::State)` | On every state transition. Resident's internal handler updates `statusDisplay`/`statusLED` first; your callback runs alongside (does not replace). |
+| `onConnectionChange` | `void(Courier::State)` | On every state transition. Resident's internal handler updates `systemDisplay`/`systemLED` first; your callback runs alongside (does not replace). |
 | `onConnected` | `void()` | When fully connected. Often used to load a bootstrap app — guard with a function-local `static bool loaded` to avoid re-firing on reconnect. |
 
 ### Sandbox controls
@@ -178,6 +181,14 @@ sandbox.isAppRunning();                // true when an app is compiled and activ
 sandbox.suspendApp();                  // pause the running app's tick without unloading it
 sandbox.resumeApp();                   // resume a suspended app
 sandbox.isAppSuspended();              // true between suspendApp() and resumeApp()
+sandbox.onSystemButtonHold(cb);        // cb(true) on hold (past threshold), cb(false) on release
+sandbox.addOverlay(&ov, &surface);     // register an overlay bound to a display surface
+sandbox.requestOverlay(&ov, show);     // request show/hide; the arbiter draws the highest-priority one
+sandbox.removeOverlay(&ov);            // deregister (tears the overlay down, resumes app if it suspended)
+sandbox.startMicStream();              // stream systemMic frames (default sink: ws().sendBinary)
+sandbox.stopMicStream();               // stop streaming
+sandbox.isMicStreaming();              // true while streaming
+sandbox.setMicStreamSink(fn);          // override the binary frame sink
 sandbox.generationId();                // const String& — ID of the last loaded app/shader
 sandbox.setTelemetryCallback(cb);      // wire telemetry JSON to your transport
 sandbox.clearPersistedApp();           // wipe the saved app from the persistent store
@@ -187,7 +198,11 @@ sandbox.clearPersistedApp();           // wipe the saved app from the persistent
 
 `loadShader` requires `SandboxConfig::shaderTemplate` to be set; it converts the `ShaderFields` map to Lua source, then calls `loadApp`.
 
-`suspendApp` pauses the Lua tick (`on_tick` and event dispatch) without unloading the app — Courier and extension `update()` keep running. While suspended, drivers receive `onAppRunning(false)` so the status display is freed for direct text (e.g. a "Listening" overlay via `StatusDisplay::displayText()`); `resumeApp` reverses this with `onAppRunning(true)`. Both are no-ops when no app is loaded, and repeated calls don't re-notify. `isAppRunning()` stays `true` while suspended — suspension is a separate axis queried via `isAppSuspended()`. Events arriving while suspended are queued, not dropped (though a long suspend can overflow the 8-slot ring, losing the oldest), and `loadApp` always clears suspension.
+`suspendApp` pauses the Lua tick (`on_tick` and event dispatch) without unloading the app — Courier and extension `update()` keep running. While suspended, drivers receive `onAppRunning(false)` so the status display is freed for direct text (e.g. a "Listening" overlay via `SystemDisplay::displayText()`); `resumeApp` reverses this with `onAppRunning(true)`. Both are no-ops when no app is loaded, and repeated calls don't re-notify. `isAppRunning()` stays `true` while suspended — suspension is a separate axis queried via `isAppSuspended()`. Events arriving while suspended are queued, not dropped (though a long suspend can overflow the 8-slot ring, losing the oldest), and `loadApp` always clears suspension.
+
+`onSystemButtonHold(cb)` turns the `systemButton` role slot into a runtime hold gesture: `cb(true)` fires once when the button is held past the threshold (~500 ms), `cb(false)` on release. It is inert only during the boot countdown (where a hold forgets the persisted app), so it also fires in `Ready` with no app loaded. Combined with an [Overlay](#residentoverlay) and the [SystemMic](#residentsystemmic) streaming pump it composes into push-to-talk with no per-device boilerplate — see the `m5stick-voice` example.
+
+`addOverlay` / `requestOverlay` / `removeOverlay` and `startMicStream` / `stopMicStream` / `isMicStreaming` / `setMicStreamSink` are covered under [Resident::Overlay](#residentoverlay) and [Resident::SystemMic](#residentsystemmic).
 
 `setTimezone` is a no-op on `nullptr` or empty input. Success means ezTime resolved the zone (either from its own cache or via one UDP lookup to `timezoned.rop.nl`); failure logs and leaves `hasTimezone() == false`. Affects `ctx.localtime_h`, `ctx.localtime_m`, `time.hour()`, `time.minute()`, and `time.second()` in Lua.
 
@@ -325,14 +340,14 @@ struct EventField {
 
 ### Inheritance ordering rule
 
-When a Driver also implements another interface (e.g. `StatusDisplay`), `Driver` must be the **leftmost** base class:
+When a Driver also implements another interface (e.g. `SystemDisplay`), `Driver` must be the **leftmost** base class:
 
 ```cpp
 // OK — Driver (and therefore Extension) is leftmost
-class MyDriver : public Resident::Driver, public Resident::StatusDisplay { ... };
+class MyDriver : public Resident::Driver, public Resident::SystemDisplay { ... };
 
-// BROKEN — StatusDisplay is leftmost; the LuaModule trampoline cast will be wrong
-class MyDriver : public Resident::StatusDisplay, public Resident::Driver { ... };
+// BROKEN — SystemDisplay is leftmost; the LuaModule trampoline cast will be wrong
+class MyDriver : public Resident::SystemDisplay, public Resident::Driver { ... };
 ```
 
 This matters because `LuaModule::method<>` casts the stored `Extension*` pointer directly to the `Class*` type. The cast is valid only when `Extension` is the leftmost base — i.e. when `static_cast<Class*>(extensionPtr)` produces the same address. See [Resident::LuaModule](#residentluamodule) for details.
@@ -345,23 +360,25 @@ This matters because `LuaModule::method<>` casts the stored `Extension*` pointer
 ### Driver lifecycle and update cadence
 
 Every object Resident manages — sandbox extensions and the device-role
-peripherals (status display, system button, status LED) — is a `Driver`
+peripherals (system display, system button, system LED, system mic) — is a `Driver`
 (hence an `Extension`). `begin()` runs once for each at setup. `update()`
 runs on a single de-duplicated list every loop:
 
-- **Role peripherals** (whatever you assign to `config.statusDisplay` /
-  `statusLED` / `systemButton`) update **every loop, always** — so the status
-  screen and system button work before any app exists and across a brief
-  reconnect.
+- **Role peripherals** (whatever you assign to `config.systemDisplay` /
+  `systemLED` / `systemButton` / `systemMic`) update **every loop, always** — so
+  the status screen and system button work before any app exists and across a
+  brief reconnect.
 - **Other extensions** update **only while an app is loaded** (running or
   suspended).
 - **Connectivity gates neither** `update()`. (The Lua `on_tick` still waits
   for the first connection on networked boards.)
 
-A driver fills a device role by implementing the role interface (`StatusDisplay`
-/ `SystemButton` / `StatusLED`, each a `Driver` subclass) — that's the
+A driver fills a device role by implementing the role interface (`SystemDisplay`
+/ `SystemButton` / `SystemLED` / `SystemMic`, each a `Driver` subclass) — that's the
 *capability*. Whether it's *used* in that role is the per-device config slot,
 so the same driver is reusable across boards. An object fills at most one role.
+(`StatusDisplay` / `StatusLED` remain as deprecated aliases for `SystemDisplay`
+/ `SystemLED`.)
 
 Driver events (`sendEvent`) are delivered to the app only while an app is
 loaded; emitted with no app loaded, they are dropped.
@@ -441,12 +458,12 @@ The user owns the extension instances (typically global or static variables). Th
 
 ---
 
-## Resident::StatusDisplay
+## Resident::SystemDisplay
 
-Interface for connection-state text output. Implement it in a display driver and pass a pointer via `SandboxConfig::statusDisplay`.
+Interface for connection-state text output. Implement it in a display driver and pass a pointer via `SandboxConfig::systemDisplay`. (Renamed from `StatusDisplay`, which remains as a deprecated plain alias — existing subclasses compile unchanged, but `SandboxConfig::statusDisplay` itself is deprecated in favor of `systemDisplay`.)
 
 ```cpp
-class MyDisplay : public Resident::StatusDisplay {
+class MyDisplay : public Resident::SystemDisplay {
 public:
     void begin() override { /* init display hardware */ }
     void update() override { /* optional per-loop update */ }
@@ -462,16 +479,16 @@ public:
 | `begin()` | no-op | Called once during `Sandbox::setup()` |
 | `update()` | no-op | Called every `Sandbox::loop()` |
 
-A Driver can implement `StatusDisplay` as a second interface for dual-use hardware (display + driver). Follow the [inheritance ordering rule](#inheritance-ordering-rule) — `Driver` must come first.
+A Driver can implement `SystemDisplay` as a second interface for dual-use hardware (display + driver). Follow the [inheritance ordering rule](#inheritance-ordering-rule) — `Driver` must come first.
 
 ---
 
-## Resident::StatusLED
+## Resident::SystemLED
 
-Interface for a simple LED indicator driven by connection state.
+Interface for a simple LED indicator driven by connection state. (Renamed from `StatusLED`, which remains as a deprecated plain alias — existing subclasses compile unchanged, but `SandboxConfig::statusLED` itself is deprecated in favor of `systemLED`.)
 
 ```cpp
-class MyLED : public Resident::StatusLED {
+class MyLED : public Resident::SystemLED {
 public:
     void solidColor(uint32_t color) override {
         neopixel.setPixelColor(0, color);
@@ -484,7 +501,78 @@ public:
 |--------|---------|-------------|
 | `solidColor(uint32_t color)` | *(pure virtual)* | Set the LED to a packed `0xRRGGBB` color — called by Resident's internal handler on connection state changes |
 
-Resident's internal handler calls `solidColor` automatically as the connection state changes (yellow during WiFi setup, cyan while transports connect, green when connected, orange while reconnecting, red on failure). `StatusLED` is a `Driver` subclass and therefore inherits the standard `Driver` lifecycle: `begin()` is called once during `Sandbox::setup()` and `update()` is called every loop (both default to no-ops). Override `begin()` to initialize LED hardware there rather than in the constructor.
+Resident's internal handler calls `solidColor` automatically as the connection state changes (yellow during WiFi setup, cyan while transports connect, green when connected, orange while reconnecting, red on failure). `SystemLED` is a `Driver` subclass and therefore inherits the standard `Driver` lifecycle: `begin()` is called once during `Sandbox::setup()` and `update()` is called every loop (both default to no-ops). Override `begin()` to initialize LED hardware there rather than in the constructor.
+
+---
+
+## Resident::SystemMic
+
+Interface for a microphone the runtime can stream. Implement it in a driver and pass a pointer via `SandboxConfig::systemMic`. Captures 16-bit signed mono PCM; `sampleRate()` is the single source of truth for the wire format.
+
+```cpp
+class MyMic : public Resident::SystemMic {
+public:
+    void begin() override { /* init capture hardware */ }
+    int read(int16_t* buf, int maxSamples, int timeoutMs) override {
+        return capture(buf, maxSamples);   // samples written; 0 on timeout / no data
+    }
+    uint32_t sampleRate() const override { return 16000; }
+    int frameSamples() const override { return 512; }   // natural read granularity
+};
+```
+
+| Method | Default | Description |
+|--------|---------|-------------|
+| `read(int16_t* buf, int maxSamples, int timeoutMs)` | *(pure virtual)* | Fill up to `maxSamples` 16-bit mono samples; return the count written (0 on timeout) |
+| `sampleRate()` | *(pure virtual)* | Capture rate in Hz (e.g. `16000`) |
+| `frameSamples()` | *(pure virtual)* | Natural read chunk size |
+| `begin()` / `update()` | no-op | Standard `Driver` lifecycle |
+
+`SystemMic` is a `Driver` role slot alongside `SystemDisplay` / `SystemLED` / `SystemButton`. The **streaming pump** ships its frames over the WebSocket:
+
+```cpp
+sandbox.startMicStream();      // each loop(): drain systemMic, send raw int16 frames
+sandbox.stopMicStream();
+sandbox.isMicStreaming();      // true while streaming
+sandbox.setMicStreamSink(fn);  // bool(const uint8_t* data, size_t len) — default: ws().sendBinary
+```
+
+While streaming, each `Sandbox::loop()` reads up to `frameSamples()` (capped at an internal 512-sample buffer) and forwards the bytes to the sink — the default sink is `ws().sendBinary`. The pump adds **no framing or control frames**: any envelope (e.g. a `{"type":"..."}` start/stop text frame, or a format handshake) is a device concern, sent by your code around `startMicStream()` / `stopMicStream()`. Streaming is independent of app state — it continues while the app is suspended, and is a no-op when `cfg.systemMic` is unset.
+
+---
+
+## Resident::Overlay
+
+An overlay temporarily takes over a display to show transient UI (a "Listening" prompt, a recording animation) on top of — or instead of — the running app.
+
+```cpp
+class ListeningOverlay : public Resident::Overlay {
+public:
+    int  priority() const override { return 100; }   // higher wins arbitration
+    void onDraw() override { display.displayText("Listening"); }
+    // onActivate() / onDeactivate() / restore() are optional (default no-op)
+};
+```
+
+| Method | Default | Description |
+|--------|---------|-------------|
+| `priority()` | *(pure virtual)* | Higher-priority overlays win when several are requested at once |
+| `onActivate()` | no-op | Called when this overlay becomes the winner |
+| `onDraw()` | no-op | Called every `loop()` while this overlay is the winner |
+| `onDeactivate()` | no-op | Called when this overlay stops being the winner |
+| `restore()` | no-op | Repaint the app's last frame — called on resume after a surface-sharing overlay hides |
+
+Register and drive overlays from the Sandbox:
+
+```cpp
+sandbox.addOverlay(&overlay, &systemDisplay);  // bind to the display it draws on
+sandbox.requestOverlay(&overlay, true);        // request show; false to hide
+sandbox.removeOverlay(&overlay);               // deregister
+```
+
+Each `loop()` the arbiter draws the highest-`priority()` *requested* overlay. **App suspension is derived, not declared:** the app is suspended while the winning overlay's bound surface is *dual-role* — the same display is both an app-facing extension (in `cfg.extensions[]`) **and** a `system*` role slot. On such a shared surface the app must be stopped from drawing over the overlay, so the arbiter calls `suspendApp()` while it shows and `resumeApp()` + the overlay's `restore()` when it hides. If the overlay draws on a **dedicated** system display (role-only, not the app's screen), the app is never suspended — it keeps running on its own screen. The arbiter only resumes an app it suspended itself.
+
+Core ships the overlay *mechanism* and no concrete overlays; the running app is not overlaid by any of Resident's own status screens (those show only when no app owns the display).
 
 ---
 
@@ -797,7 +885,7 @@ function on_event(ctx, event)
 end
 ```
 
-If the driver also implements `StatusDisplay`, declare `Driver` first — see [Inheritance ordering rule](#inheritance-ordering-rule).
+If the driver also implements `SystemDisplay`, declare `Driver` first — see [Inheritance ordering rule](#inheritance-ordering-rule).
 
 ---
 

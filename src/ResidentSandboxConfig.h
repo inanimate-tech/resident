@@ -10,7 +10,10 @@
 #include "ResidentExtensions.h"
 #include "ResidentStatusLED.h"
 #include "ResidentStatusDisplay.h"
+#include "ResidentSystemLED.h"
+#include "ResidentSystemDisplay.h"
 #include "ResidentSystemButton.h"
+#include "ResidentSystemMic.h"
 #include "ResidentPersistentStore.h"
 
 namespace Resident {
@@ -19,6 +22,17 @@ using ShaderFields = std::map<String, String>;
 using ShaderTemplateFn = String (*)(const ShaderFields& fields);
 using TelemetryCallback = std::function<void(const char* json)>;
 
+// The struct as a whole must be wrapped (not just the deprecated fields
+// below): Sandbox::configure() copies SandboxConfig by value, and the
+// compiler-generated copy constructor/assignment operator for a struct
+// containing [[deprecated]] members is itself implicitly deprecated. That
+// makes -Wdeprecated-declarations fire on every `Sandbox(cfg)` construction,
+// even ones that never touch statusDisplay/statusLED. Suppressing only the
+// field declarations does not prevent this; the whole struct definition
+// must be in the pragma region so the implicit special members are
+// synthesized without triggering the warning.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 struct SandboxConfig {
   // Identifies the physical board (used for AP name and protocol path
   // defaults). Stays at top-level — it labels the device, not the network.
@@ -32,15 +46,24 @@ struct SandboxConfig {
   TelemetryCallback telemetry = nullptr;
   const char* timezone = nullptr;
 
-  // Status indicators are properties of the *device*, not the network —
-  // top-level so a future standalone use case can drive them too. Resident's
-  // internal handlers update them on connection state changes when network
-  // is configured.
-  StatusDisplay* statusDisplay = nullptr;
-  StatusLED* statusLED = nullptr;
+  // System-managed indicators (role slots) are properties of the *device*,
+  // not the network — top-level so a future standalone use case can drive
+  // them too. Resident's internal handlers update them on connection state
+  // changes when network is configured. Renamed from statusDisplay/
+  // statusLED; the old names remain as deprecated aliases below.
+  SystemDisplay* systemDisplay = nullptr;
+  SystemLED* systemLED = nullptr;
 
   // A button the runtime can poll directly (e.g. to skip the boot countdown).
   SystemButton* systemButton = nullptr;
+
+  // A microphone the runtime can stream while a mode is active.
+  SystemMic* systemMic = nullptr;
+
+  // Deprecated: use systemDisplay / systemLED. Reconciled internally — the
+  // new field wins; these are the fallback.
+  [[deprecated("use systemDisplay")]] SystemDisplay* statusDisplay = nullptr;
+  [[deprecated("use systemLED")]] SystemLED* statusLED = nullptr;
 
   // App persistence. When persistApps is true (default), the last app that
   // loads successfully is saved and auto-reloaded on the next boot. Leave
@@ -54,6 +77,7 @@ struct SandboxConfig {
   // Absence ⇒ standalone runtime, no WiFi pulled in.
   std::optional<Courier::Config> network;
 };
+#pragma GCC diagnostic pop
 
 } // namespace Resident
 

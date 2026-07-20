@@ -16,8 +16,7 @@ surface (display, buttons, sensors, etc.). Pairs with
   Arduino / Courier / ezTime headers under `test/unit/include/`.
 - `tools/` — `run-tests.py` (test runner), `agent-plugin/` (the Resident
   Claude Code plugin and its skills).
-- `docs/` — `start-building.md`, `api.md`, `changelog.md`,
-  `migration-0.4-to-0.5.md`.
+- `docs/` — `start-building.md`, `api.md`, `changelog.md`.
 
 ## Common commands
 
@@ -40,7 +39,7 @@ The runner self-installs its Python deps via `uv` (PEP 723 inline metadata).
 
 - **Public API** lives under the `Resident::` namespace, declared in headers
   under `src/`. The current API is centred on `Resident::Sandbox` (renamed
-  from `Resident::Device` in 0.5 — see `docs/migration-0.4-to-0.5.md`).
+  from `Resident::Device` in 0.5).
 - **Examples are independent PlatformIO projects.** Each has its own
   `platformio.ini` and uses `lib_deps = symlink://../../..` to pull in this
   library from the repo root. They should build standalone.
