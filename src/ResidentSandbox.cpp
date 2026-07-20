@@ -137,7 +137,7 @@ void Sandbox::addLifecycle(Extension* e)
   for (uint8_t i = 0; i < _lifecycleCount; i++) {
     if (_lifecycle[i] == e) return;   // already present — de-dup
   }
-  if (_lifecycleCount < (Extensions::MAX + 3)) {
+  if (_lifecycleCount < (Extensions::MAX + 4)) {
     _lifecycle[_lifecycleCount++] = e;
   }
 }

@@ -221,7 +221,10 @@ private:
 
     // Unified lifecycle set: extensions[] plus any role-slot object not
     // already present, de-duped by pointer. Driven for begin() and update().
-    Extension* _lifecycle[Extensions::MAX + 3] = {};
+    // Sized for extensions[] (MAX) plus the four role slots (display, LED,
+    // button, mic) that buildLifecycleSet() may append when each is a
+    // distinct object not already in extensions[].
+    Extension* _lifecycle[Extensions::MAX + 4] = {};
     uint8_t _lifecycleCount = 0;
     void buildLifecycleSet();
     void addLifecycle(Extension* e);
@@ -298,6 +301,14 @@ private:
     struct OverlaySlot { Overlay* o; SystemDisplay* surface; bool requested; };
     OverlaySlot _overlays[MAX_OVERLAYS] = {};
     uint8_t _overlayCount = 0;
+    // Known limitations (fine for current single-overlay-per-device use;
+    // revisit for the Hawthorn port which loads apps under overlays):
+    // (1) loadApp() while an overlay is active does not reconcile these — a
+    //     new app can tick under a held overlay until release.
+    // (2) the arbiter assumes it is the first suspender: if device code
+    //     calls suspendApp() before an overlay activates, the arbiter's
+    //     resume on deactivate will resume an app the device wanted
+    //     suspended.
     Overlay* _activeOverlay = nullptr;
     bool _overlaySuspendedApp = false;
     void updateOverlays();

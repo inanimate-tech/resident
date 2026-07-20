@@ -38,6 +38,28 @@ public:
   void displayText(const char*) override {}
 };
 
+// A dedicated SystemLED spy usable as the systemLED slot. Counts begin().
+class SpyLED : public Resident::SystemLED {
+public:
+  int beginCount = 0, updateCount = 0;
+  const char* name() const override { return "spy-led"; }
+  void begin() override { beginCount++; }
+  void update() override { updateCount++; }
+  void solidColor(uint32_t) override {}
+};
+
+// A dedicated SystemMic spy usable as the systemMic slot. Counts begin().
+class SpyMic : public Resident::SystemMic {
+public:
+  int beginCount = 0, updateCount = 0;
+  const char* name() const override { return "spy-mic"; }
+  void begin() override { beginCount++; }
+  void update() override { updateCount++; }
+  int read(int16_t*, int, int) override { return 0; }
+  uint32_t sampleRate() const override { return 16000; }
+  int frameSamples() const override { return 256; }
+};
+
 SpyButton* button = nullptr;
 SpyDriver* driver = nullptr;
 SpyDisplay* display = nullptr;
@@ -191,6 +213,61 @@ void test_driver_event_dropped_until_app_loaded(void) {
   delete spy;
 }
 
+// A plain filler Driver with a settable name, used to pad cfg.extensions[]
+// up to Extensions::MAX with distinct objects.
+class FillerExt : public Resident::Driver {
+public:
+  int beginCount = 0;
+  String _name;
+  explicit FillerExt(const char* n) : _name(n) {}
+  const char* name() const override { return _name.c_str(); }
+  void begin() override { beginCount++; }
+};
+
+// Regression for the lifecycle-array sizing bug: with cfg.extensions[] full
+// (Extensions::MAX distinct objects) and all four role slots (display, LED,
+// button, mic) assigned to distinct objects NOT also in extensions[], the
+// unified lifecycle set needs Extensions::MAX + 4 slots. Before that fix the
+// array (and its capacity guard) topped out at MAX + 3, so the fourth
+// role-slot append (systemMic) was silently dropped by addLifecycle()'s
+// capacity check — the mic never received begin() and hardware was never
+// initialised, with no error reported.
+void test_dedicated_mic_begun_when_extensions_full(void) {
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+
+  std::vector<FillerExt*> fillers;
+  for (int i = 0; i < Resident::Extensions::MAX; i++) {
+    char namebuf[16];
+    snprintf(namebuf, sizeof(namebuf), "filler-%d", i);
+    FillerExt* f = new FillerExt(namebuf);
+    fillers.push_back(f);
+    cfg.extensions.items[cfg.extensions.count++] = f;
+  }
+
+  SpyDisplay* dedicatedDisplay = new SpyDisplay();
+  SpyLED* dedicatedLED = new SpyLED();
+  SpyButton* dedicatedButton = new SpyButton();
+  SpyMic* dedicatedMic = new SpyMic();
+
+  // Each role slot is a distinct object, not present in cfg.extensions[].
+  cfg.systemDisplay = dedicatedDisplay;
+  cfg.systemLED = dedicatedLED;
+  cfg.systemButton = dedicatedButton;
+  cfg.systemMic = dedicatedMic;
+
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setup();
+
+  TEST_ASSERT_EQUAL_INT(1, dedicatedMic->beginCount);
+
+  delete dedicatedDisplay;
+  delete dedicatedLED;
+  delete dedicatedButton;
+  delete dedicatedMic;
+  for (auto* f : fillers) delete f;
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_begin_once_when_in_both_list_and_slot);
@@ -200,6 +277,7 @@ int main(int, char**) {
   RUN_TEST(test_slot_only_display_no_lua_global);
   RUN_TEST(test_extension_driver_has_lua_global);
   RUN_TEST(test_driver_event_dropped_until_app_loaded);
+  RUN_TEST(test_dedicated_mic_begun_when_extensions_full);
   UNITY_END();
   return 0;
 }
