@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.6.1
+
+### Dependencies
+
+- **Courier `^0.5.0` on both registries.** Now that Courier 0.5.0 is published to the PlatformIO registry (previously only 0.4.2 was available there), `library.json` pins `inanimate/courier` to `^0.5.0` instead of tracking `main` via a git URL. Both the PlatformIO and ESP Component manifests now resolve Courier from their respective registries, so resident is fully version-pinned and safe to depend on from a registry.
+
+---
+
 ## v0.6.0
 
 ### New features
