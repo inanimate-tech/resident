@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.6.2-dev
+## v0.6.2-dev (0dcfd11)
 
 ### Breaking changes
 
