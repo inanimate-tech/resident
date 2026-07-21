@@ -25,31 +25,33 @@ static constexpr uint8_t BUTTON_PINS[] = {37, 39};
 #endif
 static constexpr PushButtonsConfig buttonConfig = {.numButtons = 2, .pins = BUTTON_PINS};
 
-DisplayDriver displayDriver;
 IMUDriver imuDriver;
 BuzzerDriver buzzerDriver{255};
 PushButtonsDriver buttonDriver{buttonConfig};
 M5MicDriver micDriver;
 
-// Forward declarations so ListeningOverlay::onDeactivate() can reach the
+// Forward declarations so VoiceDisplay::restoreContent() can reach the
 // idle prompt and the sandbox's run state; both are defined further down.
 extern Resident::Sandbox sandbox;
 static void showIdlePrompt();
 
-// "Listening" overlay: drawn while the front button is held. Bound to the
-// dual-role display in setup(), so activating it suspends the app.
-class ListeningOverlay : public Resident::Overlay {
+// The display's restoreContent() repaints what's underneath once the last
+// overlay claim on it releases. A resumed app repaints itself on its next
+// tick; on this example (no app loaded) that means the idle prompt.
+class VoiceDisplay : public DisplayDriver {
 public:
-  int priority() const override { return 100; }
-  void onDraw() override { displayDriver.displayText("Listening"); }
-
-  // The arbiter's restore() repaints the app on resume — but m5stick-voice
-  // never loads an app, so that path never fires. When there's no app to
-  // resume to, repaint the idle prompt ourselves so the screen doesn't stay
-  // stuck on "Listening" after release.
-  void onDeactivate() override {
+  void restoreContent() override {
     if (!sandbox.isAppRunning()) showIdlePrompt();
   }
+};
+VoiceDisplay displayDriver;
+
+// "Listening" overlay: a claim on the dual-role display while the front
+// button is held — the app (if any) is suspended for the duration. Static
+// text, so painting once in onAcquire is enough; no onDraw needed.
+class ListeningOverlay : public Resident::Overlay {
+public:
+  void onAcquire() override { displayDriver.displayText("Listening"); }
 };
 static ListeningOverlay listening;
 
@@ -97,7 +99,7 @@ void setup() {
         showIdlePrompt();
     });
 
-    sandbox.addOverlay(&listening, &displayDriver);
+    sandbox.addOverlay(&listening, &displayDriver, /*priority=*/100);
 
     // Push-to-talk: hold the front button → overlay + stream; release → stop.
     sandbox.onSystemButtonHold([](bool held) {

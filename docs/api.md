@@ -162,6 +162,34 @@ sandbox.onConnected([]() {
 });
 ```
 
+### Message interposition
+
+Three tools for platform wrappers that need to sit in front of the sandbox's message routing without re-implementing it:
+
+```cpp
+// Pre-routing filter (single-slot). Runs before app-load deferral, reserved-
+// type routing (app/shader/app_event/forget), and the user onMessage
+// callback. Return true to continue routing; false to consume the message.
+sandbox.onMessageFilter([](const char* transport, const char* type, JsonDocument& doc) {
+    if (strcmp(type, "my_platform_thing") == 0) { handleIt(doc); return false; }
+    if (isDuplicate(doc["nonce"] | "")) return false;
+    return true;
+});
+
+// Defer app/shader loads during a memory/CPU-sensitive window (e.g. voice
+// recording — a Lua compile would stall the audio path). Stash is last-one-
+// wins; clearing applies it immediately. Other message types flow normally.
+sandbox.deferAppLoads(true);
+// ... later ...
+sandbox.deferAppLoads(false);          // applies any stashed app/shader now
+sandbox.hasDeferredAppLoad();          // pending stash?
+
+// Route a message through the pipeline (filter → deferral → routing → user
+// callback) as if it arrived from a transport — for wrappers with their own
+// receive path, and for native tests.
+sandbox.injectMessage("mqtt", "app", doc);
+```
+
 | Callback | Signature | Fires |
 |----------|-----------|-------|
 | `onTransportsWillConnect` | `void()` | Once, after Resident sets the default WS path and before transports start. Override the path here. |
@@ -182,9 +210,9 @@ sandbox.suspendApp();                  // pause the running app's tick without u
 sandbox.resumeApp();                   // resume a suspended app
 sandbox.isAppSuspended();              // true between suspendApp() and resumeApp()
 sandbox.onSystemButtonHold(cb);        // cb(true) on hold (past threshold), cb(false) on release
-sandbox.addOverlay(&ov, &surface);     // register an overlay bound to a display surface
-sandbox.requestOverlay(&ov, show);     // request show/hide; the arbiter draws the highest-priority one
-sandbox.removeOverlay(&ov);            // deregister (tears the overlay down, resumes app if it suspended)
+sandbox.addOverlay(&ov, &surface, prio); // register a claim on a display surface, with priority
+sandbox.requestOverlay(&ov, show);       // request show/hide; per-surface arbitration picks winners
+sandbox.removeOverlay(&ov);              // deregister (tears the overlay down, resumes app if it suspended)
 sandbox.startMicStream();              // stream systemMic frames (default sink: ws().sendBinary)
 sandbox.stopMicStream();               // stop streaming
 sandbox.isMicStreaming();              // true while streaming
@@ -375,7 +403,9 @@ runs on a single de-duplicated list every loop:
 
 A driver fills a device role by implementing the role interface (`SystemDisplay`
 / `SystemButton` / `SystemLED` / `SystemMic`, each a `Driver` subclass) — that's the
-*capability*. Whether it's *used* in that role is the per-device config slot,
+*capability*. `SystemDisplay` additionally has an optional `restoreContent()`
+(default no-op): repaint the surface's underlying content after the last
+[Overlay](#residentoverlay) claiming it releases. Whether it's *used* in that role is the per-device config slot,
 so the same driver is reusable across boards. An object fills at most one role.
 (`StatusDisplay` / `StatusLED` remain as deprecated aliases for `SystemDisplay`
 / `SystemLED`.)
@@ -543,34 +573,35 @@ While streaming, each `Sandbox::loop()` reads up to `frameSamples()` (capped at 
 
 ## Resident::Overlay
 
-An overlay temporarily takes over a display to show transient UI (a "Listening" prompt, a recording animation) on top of — or instead of — the running app.
+An overlay is a transient **claim on a display surface** — a "Listening" prompt, a recording animation — shown on top of, or instead of, whatever the surface normally displays.
 
 ```cpp
 class ListeningOverlay : public Resident::Overlay {
 public:
-    int  priority() const override { return 100; }   // higher wins arbitration
-    void onDraw() override { display.displayText("Listening"); }
-    // onActivate() / onDeactivate() / restore() are optional (default no-op)
+    void onAcquire() override { display.displayText("Listening"); }
+    // onDraw(dt) / onRelease() are optional too (default no-op)
 };
 ```
 
 | Method | Default | Description |
 |--------|---------|-------------|
-| `priority()` | *(pure virtual)* | Higher-priority overlays win when several are requested at once |
-| `onActivate()` | no-op | Called when this overlay becomes the winner |
-| `onDraw()` | no-op | Called every `loop()` while this overlay is the winner |
-| `onDeactivate()` | no-op | Called when this overlay stops being the winner |
-| `restore()` | no-op | Repaint the app's last frame — called on resume after a surface-sharing overlay hides |
+| `onAcquire()` | no-op | You now own the surface; paint the first frame here for immediate response |
+| `onDraw(dtMs)` | no-op | Animation heartbeat while owning, paced on the app-tick cadence (~10 FPS) — the overlay takes over the suspended app's tick slot. Event-driven repaints outside `onDraw` are fine too |
+| `onRelease()` | no-op | You no longer own the surface — wind down internal state only; the arbiter handles app resume and surface restore |
 
 Register and drive overlays from the Sandbox:
 
 ```cpp
-sandbox.addOverlay(&overlay, &systemDisplay);  // bind to the display it draws on
-sandbox.requestOverlay(&overlay, true);        // request show; false to hide
-sandbox.removeOverlay(&overlay);               // deregister
+sandbox.addOverlay(&overlay, &systemDisplay, 100);  // claim on a surface, with priority
+sandbox.requestOverlay(&overlay, true);             // request show; false to hide
+sandbox.removeOverlay(&overlay);                    // deregister
 ```
 
-Each `loop()` the arbiter draws the highest-`priority()` *requested* overlay. **App suspension is derived, not declared:** the app is suspended while the winning overlay's bound surface is *dual-role* — the same display is both an app-facing extension (in `cfg.extensions[]`) **and** a `system*` role slot. On such a shared surface the app must be stopped from drawing over the overlay, so the arbiter calls `suspendApp()` while it shows and `resumeApp()` + the overlay's `restore()` when it hides. If the overlay draws on a **dedicated** system display (role-only, not the app's screen), the app is never suspended — it keeps running on its own screen. The arbiter only resumes an app it suspended itself.
+**Arbitration is per surface.** Overlays bound to the same surface contend by priority (highest wins; ties go to the earlier registration); overlays on different surfaces are independent and can all show at once. A `nullptr` surface means a **dedicated surface**: the overlay contends with nothing, never suspends the app, and no restore is issued for it — right for a display that exists only to show this overlay.
+
+**App suspension is derived, not declared:** the app is suspended while any winning claim's surface is *dual-role* — the same display is both an app-facing extension (in `cfg.extensions[]`) **and** a `system*` role slot. On such a shared surface the app must be stopped from drawing over the overlay, so the arbiter calls `suspendApp()` while the claim is held and `resumeApp()` when it ends. An app pushed while a dual-role claim is held loads suspended rather than ticking beneath the overlay. The arbiter only resumes an app it suspended itself — a device-initiated `suspendApp()` survives overlay churn.
+
+**Surface restore belongs to the surface.** When a surface's last claim releases, the arbiter calls `SystemDisplay::restoreContent()` on it — repaint the underlying content (last app frame, idle screen, prior status text) there. Overlays never restore; a handoff to another overlay on the same surface issues no restore.
 
 Core ships the overlay *mechanism* and no concrete overlays; the running app is not overlaid by any of Resident's own status screens (those show only when no app owns the display).
 
