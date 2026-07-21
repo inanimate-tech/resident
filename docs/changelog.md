@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.6.0-dev
+## v0.6.0
 
 ### New features
 
@@ -75,6 +75,10 @@
 ### Fixes
 
 - **Lua allocator falls back to internal RAM on boards without PSRAM** (e.g. ESP32-S3FN8 / M5Dial). Previously every Lua allocation went to `MALLOC_CAP_SPIRAM`, which returns NULL when no PSRAM exists — the Lua runtime had no usable heap and every app failed with "not enough memory". The capability is now resolved once on first use: SPIRAM when present, internal 8-bit RAM otherwise. Boards with PSRAM are unaffected.
+
+### Dependencies
+
+- **Courier 0.5.0.** The ESP Component Registry manifests now require `^0.5.0`, which brings NTP-first time sync (with a hardened HTTPS-Date fallback) and larger receivable payloads on no-PSRAM boards — directly benefiting pushed app code. The PlatformIO manifest continues to track Courier's `main` via git URL until 0.5.0 lands on the PlatformIO registry (currently 0.4.2).
 
 ---
 

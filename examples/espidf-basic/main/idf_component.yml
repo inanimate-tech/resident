@@ -12,9 +12,9 @@ dependencies:
   espressif/arduino-esp32:
     version: "^3.0.0"
 
-  # Courier 0.4.1+ for per-transport setEndpoint() + Client::reconnect().
+  # Courier 0.5.0+ (NTP-first time sync, per-transport setEndpoint()).
   inanimate/courier:
-    version: "^0.4.1"
+    version: "^0.5.0"
 
   bblanchon/arduinojson:
     version: "^7.0.0"
