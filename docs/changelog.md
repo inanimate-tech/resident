@@ -1,6 +1,12 @@
 # Changelog
 
-## v0.6.2-dev (0dcfd11)
+## v0.6.2
+
+### Dependencies
+
+- **Courier `^0.5.1` on both registries** (was `^0.5.0`). 0.5.1 enables the
+  IDF certificate bundle by default on the WS and MQTT transports; the surface
+  Resident itself relies on is unchanged since 0.5.0.
 
 ### Breaking changes
 
