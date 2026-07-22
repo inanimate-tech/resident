@@ -3,6 +3,7 @@
 #include <ezTime.h>
 #include <math.h>
 #include <cassert>
+#include <cstdlib>
 #include "chipstring.h"
 #include "ResidentNvsStore.h"   // device-only; no-op on native
 
@@ -83,6 +84,10 @@ void Sandbox::configure(const SandboxConfig& config) {
 
 Sandbox::~Sandbox()
 {
+  if (_deferredLoadJson) {
+    free(_deferredLoadJson);
+    _deferredLoadJson = nullptr;
+  }
   if (_lua) {
     if (_initFuncRef != LUA_NOREF)
       luaL_unref(_lua, LUA_REGISTRYINDEX, _initFuncRef);
@@ -373,8 +378,65 @@ void Sandbox::wireInternalCourierHooks()
   });
 }
 
+void Sandbox::injectMessage(const char* transportName, const char* type,
+                            JsonDocument& doc)
+{
+  onCourierMessage(transportName, type, doc);
+}
+
+void Sandbox::deferAppLoads(bool defer)
+{
+  _deferLoads = defer;
+  if (defer || !_deferredLoadJson) return;
+
+  // Apply the stashed load now. Hand ownership to a local first: loadApp /
+  // loadShader may allocate heavily, and re-entrant stashing must see a
+  // clean slot.
+  char* payload = _deferredLoadJson;
+  _deferredLoadJson = nullptr;
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, payload);
+  free(payload);
+  if (err) {
+    Serial.println("Resident::Sandbox: deferred load unparseable; dropped");
+    return;
+  }
+  const char* type = doc["type"] | "";
+  // Route directly, skipping the filter (already applied at receipt) and the
+  // deferral guard (_deferLoads is now false).
+  dispatchMessage("", type, doc);
+}
+
 void Sandbox::onCourierMessage(const char* transportName,
                                 const char* type, JsonDocument& doc)
+{
+  // Platform filter runs before everything; false = consumed.
+  if (_messageFilter && !_messageFilter(transportName, type, doc)) return;
+
+  // App-load deferral: stash (last one wins) instead of loading.
+  if (_deferLoads &&
+      (strcmp(type, "app") == 0 || strcmp(type, "shader") == 0)) {
+    size_t need = measureJson(doc) + 1;
+    char* stash = (char*)malloc(need);
+    if (!stash) {
+      Serial.println("Resident::Sandbox: deferred load alloc failed; dropped");
+      return;
+    }
+    serializeJson(doc, stash, need);
+    if (_deferredLoadJson) free(_deferredLoadJson);
+    _deferredLoadJson = stash;
+    return;
+  }
+
+  dispatchMessage(transportName, type, doc);
+}
+
+// Reserved-type routing + user callback. Entered from onCourierMessage (after
+// the filter and deferral guards) and, for an applied stash, directly from
+// deferAppLoads — a stashed load already passed the filter at receipt, so
+// re-running it would let a dedup/self-echo filter drop the message.
+void Sandbox::dispatchMessage(const char* transportName,
+                              const char* type, JsonDocument& doc)
 {
   // Reserved types — Resident handles internally; user callback never sees these.
   if (strcmp(type, "app") == 0) {
@@ -578,9 +640,11 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
 
   // Stop any currently-loaded app (Running or Suspended) before loading the
   // new one. A freshly loaded app starts Running, never Suspended — compileApp
-  // sets that below.
+  // sets that below. Any arbiter-held suspension died with the old app; the
+  // post-load reconcile re-suspends the new app if a claim is still held.
   if (isAppRunning()) {
     _runState = RunState::Ready;
+    _overlaySuspendedApp = false;
     notifyAppRunning(false);
   }
 
@@ -604,6 +668,10 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   }
 
   bool loadedOk = compiled && _lastInitOk;
+
+  // An app loaded while a dual-role overlay claim is held starts suspended
+  // rather than ticking (and drawing) beneath the overlay.
+  if (loadedOk) reconcileOverlaySuspension();
 
   // Persist only an app we know loaded cleanly, and never re-persist a restore.
   if (persistOnSuccess && loadedOk && _config.persistApps && _store) {
@@ -734,29 +802,38 @@ bool Sandbox::appDrawsTo(SystemDisplay* surface) const
   return surface && isSystemExtension(e) && isAppExtension(e);
 }
 
-void Sandbox::addOverlay(Overlay* o, SystemDisplay* surface)
+void Sandbox::addOverlay(Overlay* o, SystemDisplay* surface, int priority)
 {
   if (!o || _overlayCount >= MAX_OVERLAYS) return;
-  _overlays[_overlayCount++] = {o, surface, false};
+  _overlays[_overlayCount++] = {o, surface, priority, false, false};
 }
 
 void Sandbox::removeOverlay(Overlay* o)
 {
   for (uint8_t i = 0; i < _overlayCount; i++) {
-    if (_overlays[i].o == o) {
-      for (uint8_t j = i; j + 1 < _overlayCount; j++) _overlays[j] = _overlays[j + 1];
-      _overlayCount--;
-      if (_activeOverlay == o) {
-        o->onDeactivate();
-        if (_overlaySuspendedApp) {
-          resumeApp();
-          _overlaySuspendedApp = false;
-          o->restore();
+    if (_overlays[i].o != o) continue;
+    bool wasWinning = _overlays[i].winning;
+    SystemDisplay* surface = _overlays[i].surface;
+    if (wasWinning) o->onRelease();
+    for (uint8_t j = i; j + 1 < _overlayCount; j++) _overlays[j] = _overlays[j + 1];
+    _overlayCount--;
+    if (wasWinning) {
+      // Promote any successor on this surface and reconcile suspension in
+      // one arbitration pass; restore the surface only if no successor
+      // claimed it (updateOverlays can't see the removed slot's release).
+      updateOverlays();
+      if (surface) {
+        bool stillClaimed = false;
+        for (uint8_t j = 0; j < _overlayCount; j++) {
+          if (_overlays[j].winning && _overlays[j].surface == surface) {
+            stillClaimed = true;
+            break;
+          }
         }
-        _activeOverlay = nullptr;
+        if (!stillClaimed) surface->restoreContent();
       }
-      return;
     }
+    return;
   }
 }
 
@@ -767,39 +844,102 @@ void Sandbox::requestOverlay(Overlay* o, bool active)
   }
 }
 
+// Suspend the app iff any winning claim sits on a dual-role surface. Only a
+// suspension the arbiter itself performed is ever resumed here, so a
+// device-initiated suspendApp() survives overlay churn untouched.
+void Sandbox::reconcileOverlaySuspension()
+{
+  bool wantSuspend = false;
+  for (uint8_t i = 0; i < _overlayCount; i++) {
+    if (_overlays[i].winning && appDrawsTo(_overlays[i].surface)) {
+      wantSuspend = true;
+      break;
+    }
+  }
+  if (wantSuspend && !_overlaySuspendedApp && _runState == RunState::Running) {
+    suspendApp();
+    _overlaySuspendedApp = true;
+  } else if (!wantSuspend && _overlaySuspendedApp) {
+    _overlaySuspendedApp = false;
+    resumeApp();
+  }
+}
+
 void Sandbox::updateOverlays()
 {
-  // Winner = highest-priority requested overlay.
-  Overlay* winner = nullptr;
-  SystemDisplay* winnerSurface = nullptr;
-  bool have = false;
-  int best = 0;
+  // Phase 1: per-surface winners. A slot wins iff requested and no other
+  // requested slot on the SAME (non-null) surface outranks it — higher
+  // priority, or equal priority registered earlier. A null surface is
+  // dedicated: the slot contends with nothing and wins whenever requested.
+  bool newWinning[MAX_OVERLAYS];
   for (uint8_t i = 0; i < _overlayCount; i++) {
-    if (!_overlays[i].requested) continue;
-    int p = _overlays[i].o->priority();
-    if (!have || p > best) {
-      have = true; best = p; winner = _overlays[i].o; winnerSurface = _overlays[i].surface;
+    OverlaySlot& s = _overlays[i];
+    bool win = s.requested;
+    if (win && s.surface) {
+      for (uint8_t j = 0; j < _overlayCount; j++) {
+        if (j == i) continue;
+        OverlaySlot& t = _overlays[j];
+        if (!t.requested || t.surface != s.surface) continue;
+        if (t.priority > s.priority ||
+            (t.priority == s.priority && j < i)) {
+          win = false;
+          break;
+        }
+      }
+    }
+    newWinning[i] = win;
+  }
+
+  // Phase 2: releases before acquires, remembering which non-null surfaces
+  // lost their winner (at most one winner per surface, so no dedup needed).
+  SystemDisplay* releasedSurfaces[MAX_OVERLAYS];
+  uint8_t releasedCount = 0;
+  for (uint8_t i = 0; i < _overlayCount; i++) {
+    if (_overlays[i].winning && !newWinning[i]) {
+      _overlays[i].winning = false;
+      _overlays[i].o->onRelease();
+      if (_overlays[i].surface) {
+        releasedSurfaces[releasedCount++] = _overlays[i].surface;
+      }
     }
   }
 
-  if (winner != _activeOverlay) {
-    Overlay* prev = _activeOverlay;
-    if (prev) prev->onDeactivate();
-    _activeOverlay = winner;
-    if (winner) winner->onActivate();
-
-    bool wantSuspend = winner && appDrawsTo(winnerSurface);
-    if (wantSuspend && !_overlaySuspendedApp && _runState == RunState::Running) {
-      suspendApp();
-      _overlaySuspendedApp = true;
-    } else if (!wantSuspend && _overlaySuspendedApp) {
-      resumeApp();
-      _overlaySuspendedApp = false;
-      if (prev) prev->restore();
+  // Phase 3: acquires.
+  for (uint8_t i = 0; i < _overlayCount; i++) {
+    if (!_overlays[i].winning && newWinning[i]) {
+      _overlays[i].winning = true;
+      _overlays[i].o->onAcquire();
     }
   }
 
-  if (_activeOverlay) _activeOverlay->onDraw();
+  // Phase 4: app suspension tracks the winning set.
+  reconcileOverlaySuspension();
+
+  // Phase 5: a surface whose last claim just released repaints its
+  // underlying content — after the resume above (so the app is live again),
+  // and never on a handoff (the surface still has a winner then).
+  for (uint8_t r = 0; r < releasedCount; r++) {
+    bool stillClaimed = false;
+    for (uint8_t i = 0; i < _overlayCount; i++) {
+      if (_overlays[i].winning && _overlays[i].surface == releasedSurfaces[r]) {
+        stillClaimed = true;
+        break;
+      }
+    }
+    if (!stillClaimed) releasedSurfaces[r]->restoreContent();
+  }
+
+  // Phase 6: winning overlays draw on the app-tick cadence — the overlay
+  // takes over the (suspended) app's tick slot. onAcquire already painted
+  // the first frame; event-driven repaints outside onDraw remain fine.
+  unsigned long now = millis();
+  unsigned long elapsed = now - _lastOverlayDrawTime;
+  if (elapsed >= TICK_INTERVAL) {
+    _lastOverlayDrawTime = now;
+    for (uint8_t i = 0; i < _overlayCount; i++) {
+      if (_overlays[i].winning) _overlays[i].o->onDraw(elapsed);
+    }
+  }
 }
 
 void Sandbox::finishBootCountdown()

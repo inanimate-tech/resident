@@ -66,11 +66,11 @@ Push-to-talk is built entirely on Resident's core primitives, wired up in
 - **Hold detection** — `PushButtonsDriver` doubles as the `SystemButton` role;
   the sandbox derives the hold/release gesture from it and calls back with
   `held`.
-- **"Listening" overlay** — while held, `requestOverlay` activates a small
-  `Overlay` that draws "Listening" over the dual-role display. Because the
-  display is dual-role, activating the overlay suspends the app (there is no
-  app here, so this just takes over the idle screen) and repaints the idle
-  prompt on release.
+- **"Listening" overlay** — while held, `requestOverlay` raises a claim on
+  the dual-role display and the overlay paints "Listening" in `onAcquire`.
+  Because the display is dual-role, the claim suspends the app (there is no
+  app here, so this just takes over the idle screen). On release the arbiter
+  calls the display's `restoreContent()`, which repaints the idle prompt.
 - **Mic streaming pump** — `startMicStream()` / `stopMicStream()` drive the
   sandbox's built-in pump, which drains `SystemMic` each `loop()` and ships
   16 kHz int16 PCM frames straight to the WebSocket.

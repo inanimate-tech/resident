@@ -4,16 +4,34 @@
 
 namespace Resident {
 
-// A transient takeover of a display. The arbiter draws the highest-priority
-// requested overlay; whether it suspends the app is derived from the surface
-// it is bound to (see Sandbox::addOverlay / appDrawsTo), not declared here.
+// An overlay is a transient CLAIM on a display surface — a voice-recording
+// ring, an agent-status line — registered with Sandbox::addOverlay(overlay,
+// surface, priority) and toggled with Sandbox::requestOverlay.
+//
+// The arbiter resolves claims PER SURFACE: overlays bound to the same
+// surface contend by priority (highest wins; ties go to the earlier
+// registration), while overlays on different surfaces are independent. A
+// null surface means a dedicated surface — the overlay contends with
+// nothing, never suspends the app, and no restore is issued for it.
+//
+// While a claim is held on a surface the app also draws to (dual-role:
+// present in both extensions[] and a system* role slot), the app is
+// suspended; it resumes when the claim ends. When a surface's last claim
+// releases, the arbiter calls SystemDisplay::restoreContent() on the
+// surface — overlays never repaint what's underneath themselves.
 class Overlay {
 public:
-  virtual int  priority() const = 0;   // higher wins
-  virtual void onActivate()   {}       // became the winner
-  virtual void onDraw()       {}       // each loop while winning
-  virtual void onDeactivate() {}       // stopped winning
-  virtual void restore()      {}       // repaint the app's last frame
+  // You now own the surface. Paint the first frame here for immediate
+  // response; subsequent frames arrive via onDraw.
+  virtual void onAcquire()   {}
+  // Animation heartbeat while owning, paced on the sandbox app-tick cadence
+  // (the overlay effectively takes over the suspended app's tick slot).
+  // Event-driven repaints outside this callback are fine too.
+  virtual void onDraw(unsigned long dtMs) { (void)dtMs; }
+  // You no longer own the surface (a higher-priority claim took over, or
+  // the request was withdrawn). Wind down internal state only — the arbiter
+  // handles app resume and surface restore.
+  virtual void onRelease()   {}
   virtual ~Overlay() = default;
 };
 

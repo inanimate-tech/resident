@@ -1,4 +1,4 @@
-version: "0.6.1"
+version: "0.6.2"
 description: "Sandbox with hardware IO and hot reload for ESP32 devices"
 url: "https://github.com/inanimate-tech/resident"
 
@@ -7,12 +7,14 @@ dependencies:
     version: ">=5.0.0"
   espressif/arduino-esp32:
     version: "^3.0.0"
-  # Courier 0.5.0: NTP-first time sync (robust HTTPS-Date fallback), larger
-  # receivable payloads on no-PSRAM boards, and per-transport endpoint state
-  # (Resident sets the WS endpoint via _ws.setEndpoint() inside
-  # onTransportsWillConnect(), which requires that surface).
+  # Courier: the surface Resident relies on landed in 0.5.0 — NTP-first time
+  # sync (robust HTTPS-Date fallback), larger receivable payloads on no-PSRAM
+  # boards, and per-transport endpoint state (Resident sets the WS endpoint via
+  # _ws.setEndpoint() inside onTransportsWillConnect(), which requires that
+  # surface). Pinned to ^0.5.1, which additionally enables the IDF certificate
+  # bundle by default on the WS and MQTT transports.
   inanimate/courier:
-    version: "^0.5.0"
+    version: "^0.5.1"
   bblanchon/arduinojson:
     version: "^7.0.0"
   # Esp32Lua is not on the ESP component registry. Consumers must provide it

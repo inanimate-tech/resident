@@ -1,5 +1,73 @@
 # Changelog
 
+## v0.6.2
+
+### Dependencies
+
+- **Courier `^0.5.1` on both registries** (was `^0.5.0`). 0.5.1 enables the
+  IDF certificate bundle by default on the WS and MQTT transports; the surface
+  Resident itself relies on is unchanged since 0.5.0.
+
+### Breaking changes
+
+- **Overlay arbitration is now per surface, and the Overlay interface is
+  reshaped.** Driven by the first multi-overlay consumer (Hawthorn devices
+  with a voice overlay and an agent-status overlay, sometimes on different
+  screens):
+  - **Per-surface winners.** Overlays bound to the same surface contend by
+    priority (ties: earlier registration); overlays on different surfaces are
+    independent and can all show at once. Previously one global winner was
+    drawn regardless of surface. A `nullptr` surface is now defined: a
+    dedicated surface — contends with nothing, never suspends the app, no
+    restore issued.
+  - **`priority()` is no longer a virtual** — pass it to
+    `addOverlay(overlay, surface, priority)` instead.
+  - **`onActivate()` / `onDeactivate()` → `onAcquire()` / `onRelease()`** —
+    an overlay is a *claim* on a surface; the names now say so.
+  - **`Overlay::restore()` is gone; surfaces restore themselves.** New
+    `SystemDisplay::restoreContent()` (default no-op) is called by the
+    arbiter when a surface's last claim releases — uniformly, whether or not
+    the app was suspended (previously restore only fired on the app-resume
+    path, so non-suspending surfaces never restored). A handoff to another
+    overlay on the same surface issues no restore.
+  - **`onDraw(unsigned long dtMs)` is paced on the app-tick cadence**
+    (10 FPS) instead of every `loop()` — the overlay takes over the
+    suspended app's tick slot, and consumers no longer need hand-rolled
+    draw throttling. `onAcquire` is the immediate first paint.
+
+### New features
+
+- **`Sandbox::onMessageFilter(cb)`** — single-slot pre-routing filter. Runs
+  before app-load deferral, reserved-type routing (`app`/`shader`/
+  `app_event`/`forget`), and the user `onMessage` callback; return `false`
+  to consume the message. Platform wrappers (e.g. Hawthorn's
+  HawthornRoomDevice) use this for dedup, self-echo filtering, and
+  platform-only message types — previously they had to overwrite the
+  sandbox's Courier `onMessage` hook and re-implement reserved-type routing
+  by hand, which silently drifted as routing grew (the wrapper's copy
+  predated `forget`, so `forget` was dead on those devices).
+- **`Sandbox::deferAppLoads(bool)`** — while set, incoming `app`/`shader`
+  messages are stashed (last one wins, heap-serialized at measured size)
+  instead of loaded; clearing applies the stashed load immediately. For
+  memory/CPU-sensitive windows like voice recording, where a Lua compile
+  would stall the audio path. `hasDeferredAppLoad()` reports a pending
+  stash.
+- **`Sandbox::injectMessage(transportName, type, doc)`** — route a message
+  through the sandbox exactly as if it arrived from a transport (filter →
+  deferral → reserved-type routing → user callback). For wrappers with
+  their own receive path, and for native tests.
+
+### Fixes
+
+- **An app pushed while a dual-role overlay claim is held now loads
+  suspended** instead of ticking (and drawing) beneath the overlay, and the
+  arbiter's suspension bookkeeping is reset when the previous app is stopped
+  (previously a stale flag could leave the new app un-suspended).
+- **A device-initiated `suspendApp()` now survives an overlay cycle**: the
+  arbiter only resumes a suspension it performed itself.
+
+---
+
 ## v0.6.1
 
 ### Dependencies

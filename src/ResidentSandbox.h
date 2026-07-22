@@ -93,11 +93,15 @@ public:
     void stopMicStream();
     bool isMicStreaming() const { return _micStreaming; }
 
-    // Overlay support. Register an overlay bound to the display surface it
-    // draws on; toggle its desired state with requestOverlay. The arbiter draws
-    // the highest-priority active overlay each loop; if that overlay's surface
-    // is dual-role (appDrawsTo), the app is suspended while it shows.
-    void addOverlay(Overlay* o, SystemDisplay* surface);
+    // Overlay support. Register an overlay as a claim on the display surface
+    // it draws to (nullptr = a dedicated surface: never contends, never
+    // suspends the app); toggle its desired state with requestOverlay. The
+    // arbiter resolves claims PER SURFACE — the highest-priority requested
+    // overlay on each surface wins (ties: earlier registration) and receives
+    // onAcquire / tick-paced onDraw / onRelease. While any winning overlay's
+    // surface is dual-role (appDrawsTo), the app is suspended. When a
+    // surface's last claim releases, the arbiter calls its restoreContent().
+    void addOverlay(Overlay* o, SystemDisplay* surface, int priority);
     void removeOverlay(Overlay* o);
     void requestOverlay(Overlay* o, bool active);
 
@@ -140,6 +144,33 @@ public:
     void onConnected(ConnectedCallback cb) {
       _onConnected = std::move(cb);
     }
+
+    // ── Message interposition ──
+    // Pre-routing filter (single-slot). Runs before app-load deferral,
+    // reserved-type routing (app/shader/app_event/forget), and the user
+    // onMessage callback. Return true to continue normal routing; return
+    // false to consume the message (nothing further runs). Platform wrappers
+    // use this for dedup, self-echo filtering, and platform-only message
+    // types — without re-implementing the sandbox's routing.
+    using MessageFilter = std::function<bool(const char* transportName,
+                                              const char* type,
+                                              JsonDocument& doc)>;
+    void onMessageFilter(MessageFilter cb) { _messageFilter = std::move(cb); }
+
+    // Defer app/shader loads (e.g. during a voice recording, when a Lua
+    // compile would stall the audio path). While set, incoming app/shader
+    // messages are stashed — last one wins — instead of loaded; clearing
+    // applies the stashed load immediately, routing it straight to loading
+    // without re-running the filter (it already passed at receipt, so a dedup
+    // filter won't drop it a second time). Other types flow normally.
+    void deferAppLoads(bool defer);
+    bool hasDeferredAppLoad() const { return _deferredLoadJson != nullptr; }
+
+    // Route a message through the sandbox exactly as if it arrived from a
+    // transport (filter → deferral → reserved-type routing → user callback).
+    // For wrappers with their own receive path, and for native tests.
+    void injectMessage(const char* transportName, const char* type,
+                       JsonDocument& doc);
 
     // ── Identity / status accessors ──
     const String& getDeviceId() const { return _deviceId; }
@@ -195,12 +226,24 @@ private:
     MessageCallback               _onMessage;
     ConnectionChangeCallback      _onConnectionChange;
     ConnectedCallback             _onConnected;
+    MessageFilter                 _messageFilter;
+
+    // Deferred app/shader load: a heap-owned serialized copy of the last
+    // stashed message (nullptr = none). Raw malloc, not String, so the stash
+    // costs one allocation during the memory-sensitive window that deferral
+    // exists for. Freed on apply, overwrite, and destruction.
+    bool  _deferLoads = false;
+    char* _deferredLoadJson = nullptr;
 
     // Internal Courier hook handlers (drive status indicators + reserved-type
     // routing, then delegate to user callbacks).
     void wireInternalCourierHooks();
     void onCourierMessage(const char* transportName, const char* type,
                           JsonDocument& doc);
+    // Reserved-type routing + user callback, below the filter/deferral guards.
+    // Called directly when an applied stash must bypass a re-filter.
+    void dispatchMessage(const char* transportName, const char* type,
+                         JsonDocument& doc);
     void onCourierConnectionChange(Courier::State state);
     void onCourierConnected();
     void onCourierTransportsWillConnect();
@@ -296,22 +339,27 @@ private:
     int16_t _micBuf[MIC_STREAM_MAX_SAMPLES] = {};
     void updateMicStream();
 
-    // Overlay arbiter state.
+    // Overlay arbiter state. Winners are tracked per slot (per-surface
+    // arbitration — see updateOverlays); _overlaySuspendedApp marks a
+    // suspension the ARBITER performed, so a device-initiated suspendApp()
+    // is never resumed by an overlay releasing.
     static constexpr int MAX_OVERLAYS = 4;
-    struct OverlaySlot { Overlay* o; SystemDisplay* surface; bool requested; };
+    struct OverlaySlot {
+        Overlay* o;
+        SystemDisplay* surface;   // nullptr = dedicated surface
+        int priority;
+        bool requested;
+        bool winning;
+    };
     OverlaySlot _overlays[MAX_OVERLAYS] = {};
     uint8_t _overlayCount = 0;
-    // Known limitations (fine for current single-overlay-per-device use;
-    // revisit for the Hawthorn port which loads apps under overlays):
-    // (1) loadApp() while an overlay is active does not reconcile these — a
-    //     new app can tick under a held overlay until release.
-    // (2) the arbiter assumes it is the first suspender: if device code
-    //     calls suspendApp() before an overlay activates, the arbiter's
-    //     resume on deactivate will resume an app the device wanted
-    //     suspended.
-    Overlay* _activeOverlay = nullptr;
     bool _overlaySuspendedApp = false;
+    unsigned long _lastOverlayDrawTime = 0;
     void updateOverlays();
+    // Suspend/resume the app to match the current winning claims. Called
+    // from the arbiter and from loadAppInternal (an app loaded under a held
+    // dual-role overlay starts suspended rather than ticking beneath it).
+    void reconcileOverlaySuspension();
     // True iff e is a declared (app-facing) extension.
     bool isAppExtension(Extension* e) const;
     // True iff the app draws to surface (dual-role: system slot AND app ext).
