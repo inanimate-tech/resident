@@ -160,7 +160,9 @@ public:
     // Defer app/shader loads (e.g. during a voice recording, when a Lua
     // compile would stall the audio path). While set, incoming app/shader
     // messages are stashed — last one wins — instead of loaded; clearing
-    // applies the stashed load immediately. Other types flow normally.
+    // applies the stashed load immediately, routing it straight to loading
+    // without re-running the filter (it already passed at receipt, so a dedup
+    // filter won't drop it a second time). Other types flow normally.
     void deferAppLoads(bool defer);
     bool hasDeferredAppLoad() const { return _deferredLoadJson != nullptr; }
 
@@ -238,6 +240,10 @@ private:
     void wireInternalCourierHooks();
     void onCourierMessage(const char* transportName, const char* type,
                           JsonDocument& doc);
+    // Reserved-type routing + user callback, below the filter/deferral guards.
+    // Called directly when an applied stash must bypass a re-filter.
+    void dispatchMessage(const char* transportName, const char* type,
+                         JsonDocument& doc);
     void onCourierConnectionChange(Courier::State state);
     void onCourierConnected();
     void onCourierTransportsWillConnect();

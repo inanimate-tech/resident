@@ -179,6 +179,8 @@ sandbox.onMessageFilter([](const char* transport, const char* type, JsonDocument
 // Defer app/shader loads during a memory/CPU-sensitive window (e.g. voice
 // recording — a Lua compile would stall the audio path). Stash is last-one-
 // wins; clearing applies it immediately. Other message types flow normally.
+// The applied stash routes straight to loading — the filter already ran at
+// receipt, so a dedup filter like the one above won't drop it a second time.
 sandbox.deferAppLoads(true);
 // ... later ...
 sandbox.deferAppLoads(false);          // applies any stashed app/shader now

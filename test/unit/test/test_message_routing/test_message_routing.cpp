@@ -133,6 +133,28 @@ void test_clearing_empty_defer_is_noop(void) {
   TEST_ASSERT_FALSE(sandbox->hasDeferredAppLoad());
 }
 
+void test_deferred_apply_does_not_refilter(void) {
+  // The filter accepted the message once, at receipt. Applying the stash must
+  // route it straight through — re-running the filter would let a dedup /
+  // self-echo filter drop the message on its second sight, and the deferred
+  // app would silently never load.
+  build();
+  static int appFilterCalls = 0;
+  appFilterCalls = 0;
+  sandbox->onMessageFilter([](const char*, const char* type, JsonDocument&) {
+    if (strcmp(type, "app") != 0) return true;
+    return ++appFilterCalls == 1;          // dedup: only the first app passes
+  });
+  sandbox->deferAppLoads(true);
+  injectApp(APP_A);                        // filtered once (passes), then stashed
+  TEST_ASSERT_TRUE(sandbox->hasDeferredAppLoad());
+
+  sandbox->deferAppLoads(false);           // apply must not re-run the filter
+  TEST_ASSERT_TRUE(sandbox->isAppRunning());
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("flagA"));
+  TEST_ASSERT_EQUAL_INT(1, appFilterCalls);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_inject_routes_reserved_types);
@@ -144,6 +166,7 @@ int main(int, char**) {
   RUN_TEST(test_defer_does_not_touch_other_types);
   RUN_TEST(test_filter_runs_before_deferral);
   RUN_TEST(test_clearing_empty_defer_is_noop);
+  RUN_TEST(test_deferred_apply_does_not_refilter);
   UNITY_END();
   return 0;
 }

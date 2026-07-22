@@ -402,7 +402,9 @@ void Sandbox::deferAppLoads(bool defer)
     return;
   }
   const char* type = doc["type"] | "";
-  onCourierMessage("", type, doc);
+  // Route directly, skipping the filter (already applied at receipt) and the
+  // deferral guard (_deferLoads is now false).
+  dispatchMessage("", type, doc);
 }
 
 void Sandbox::onCourierMessage(const char* transportName,
@@ -426,6 +428,16 @@ void Sandbox::onCourierMessage(const char* transportName,
     return;
   }
 
+  dispatchMessage(transportName, type, doc);
+}
+
+// Reserved-type routing + user callback. Entered from onCourierMessage (after
+// the filter and deferral guards) and, for an applied stash, directly from
+// deferAppLoads — a stashed load already passed the filter at receipt, so
+// re-running it would let a dedup/self-echo filter drop the message.
+void Sandbox::dispatchMessage(const char* transportName,
+                              const char* type, JsonDocument& doc)
+{
   // Reserved types — Resident handles internally; user callback never sees these.
   if (strcmp(type, "app") == 0) {
     const char* code = doc["code"];
