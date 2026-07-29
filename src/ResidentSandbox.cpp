@@ -43,6 +43,7 @@ static const char* REGISTRY_KEY = "ResidentSandbox_instance";
 
 Sandbox::Sandbox() {
   memset(_events, 0, sizeof(_events));
+  _eventsModule.bind(this);
 }
 
 Sandbox::Sandbox(const SandboxConfig& config) : Sandbox() {
@@ -50,7 +51,22 @@ Sandbox::Sandbox(const SandboxConfig& config) : Sandbox() {
   _deviceId = ::getDeviceId();
 
   if (_config.network.has_value()) {
-    _courier.emplace(*_config.network);
+    // Courier 0.6+ delivers Client::onMessage from the default transport's
+    // lane only ("receive parallels send" — see Courier::Client::dispatchJSON).
+    // The sandbox's channel router receives exclusively through that
+    // callback, so a networked Sandbox always needs a default lane or its
+    // entire inbound path is dead. Mirror Courier's own auto-WS heuristic
+    // (auto-registers WebSocketTransport as "ws" when host is set and
+    // defaultTransport is unset/"ws"): default to "ws" here too when the
+    // caller left it null/empty and set a host. A literal has static storage
+    // duration, so storing it in the const char* is safe. Callers who
+    // explicitly set a different defaultTransport (e.g. "mqtt") keep it.
+    Courier::Config& net = *_config.network;
+    bool wsIsDefault = !net.defaultTransport || net.defaultTransport[0] == '\0';
+    if (wsIsDefault && net.host && net.host[0] != '\0') {
+      net.defaultTransport = "ws";
+    }
+    _courier.emplace(net);
     _ws = &_courier->transport<Courier::WebSocketTransport>("ws");
   }
 }
@@ -246,6 +262,14 @@ void Sandbox::initialize()
     lua_setglobal(_lua, ext->name());
   }
 
+  // Internal modules — same registration shape as declared extensions.
+  lua_newtable(_lua);
+  {
+    LuaModule m(_lua, &_eventsModule);
+    _eventsModule.registerModule(m);
+  }
+  lua_setglobal(_lua, _eventsModule.name());
+
   _triggerResetTime = millis();
   _lastTickTime = millis();
 
@@ -407,28 +431,264 @@ void Sandbox::deferAppLoads(bool defer)
   dispatchMessage("", type, doc);
 }
 
+void Sandbox::stashDeferredLoad(JsonDocument& doc)
+{
+  size_t need = measureJson(doc) + 1;
+  char* stash = (char*)malloc(need);
+  if (!stash) {
+    Serial.println("Resident::Sandbox: deferred load alloc failed; dropped");
+    return;
+  }
+  serializeJson(doc, stash, need);
+  if (_deferredLoadJson) free(_deferredLoadJson);
+  _deferredLoadJson = stash;
+}
+
 void Sandbox::onCourierMessage(const char* transportName,
                                 const char* type, JsonDocument& doc)
 {
-  // Platform filter runs before everything; false = consumed.
-  if (_messageFilter && !_messageFilter(transportName, type, doc)) return;
-
-  // App-load deferral: stash (last one wins) instead of loading.
-  if (_deferLoads &&
-      (strcmp(type, "app") == 0 || strcmp(type, "shader") == 0)) {
-    size_t need = measureJson(doc) + 1;
-    char* stash = (char*)malloc(need);
-    if (!stash) {
-      Serial.println("Resident::Sandbox: deferred load alloc failed; dropped");
-      return;
-    }
-    serializeJson(doc, stash, need);
-    if (_deferredLoadJson) free(_deferredLoadJson);
-    _deferredLoadJson = stash;
+  const char* channel = doc["channel"] | "";
+  if (channel[0]) {
+    if (strcmp(channel, "app") == 0)    { handleAppMessage(transportName, type, doc); return; }
+    if (strcmp(channel, "system") == 0) { handleSystemMessage(transportName, type, doc); return; }
+    MessageCallback* cb = lookupChannelSlot(channel);
+    if (cb && *cb) { (*cb)(transportName, type, doc); return; }
+    Serial.printf("Resident::Sandbox: no handler for channel '%s' (type '%s'); dropped\n",
+                  channel, type);
     return;
   }
 
+  // ── Legacy un-channelled path (deprecated) ──
+  Serial.printf("[deprecated] un-channelled '%s' message; sender should stamp channel\n", type);
+  if (_messageFilter && !_messageFilter(transportName, type, doc)) return;
+  bool isLoad = strcmp(type, "app") == 0 || strcmp(type, "shader") == 0;
+  if (isLoad) maybeShowDescription(doc);
+  if (_deferLoads && isLoad) {
+    stashDeferredLoad(doc);
+    return;
+  }
   dispatchMessage(transportName, type, doc);
+}
+
+void Sandbox::handleAppMessage(const char* transportName, const char* type,
+                               JsonDocument& doc)
+{
+  (void)transportName;
+  const char* name = type;
+  if (strcmp(type, "app_event") == 0) {
+    // Legacy envelope on the data plane — removed when the shims retire.
+    Serial.println("[deprecated] app_event wrapper; send channel:\"app\" with type=<event name>");
+    name = doc["name"] | "";
+    if (!name[0]) return;
+  }
+  const char* from = doc["from"] | "";
+  if (from[0] && _deviceId.equals(from)) return;   // self-echo (multicast loopback)
+  const char* nonce = doc["nonce"] | "";
+  if (nonce[0] && isDuplicateNonce(nonce)) return;
+  // Same gate as sendAppEvent (see its comment — "deliberate"): no app loaded,
+  // or no on_event handler → drop. The event ring is not reset on app load, so
+  // queueing here would leak stale events into whatever app loads next.
+  if (!isAppRunning() || !_onEventFuncRef) return;
+  char dataJson[256] = "{}";
+  if (doc["data"].is<JsonObject>()) {
+    serializeJson(doc["data"], dataJson, sizeof(dataJson));
+  }
+  pushAppEvent(name, dataJson, from, doc["ts_ms"] | millis());
+}
+
+bool Sandbox::isDuplicateNonce(const char* nonce)
+{
+  if (!nonce || !nonce[0]) return false;
+
+  for (int i = 0; i < DEDUP_RING_SIZE; i++) {
+    if (_recentNonces[i][0] && strcmp(_recentNonces[i], nonce) == 0) {
+      return true;
+    }
+  }
+
+  strncpy(_recentNonces[_nonceRingPos], nonce, sizeof(_recentNonces[0]) - 1);
+  _recentNonces[_nonceRingPos][sizeof(_recentNonces[0]) - 1] = '\0';
+  _nonceRingPos = (_nonceRingPos + 1) % DEDUP_RING_SIZE;
+  return false;
+}
+
+void Sandbox::handleSystemMessage(const char* transportName, const char* type,
+                                  JsonDocument& doc)
+{
+  bool isLoad = strcmp(type, "app") == 0 || strcmp(type, "shader") == 0;
+  if (isLoad) maybeShowDescription(doc);
+  if (_deferLoads && isLoad) { stashDeferredLoad(doc); return; }
+  if (strcmp(type, "app") == 0) {
+    const char* code = doc["code"];
+    if (code) loadApp(code);
+    return;
+  }
+  if (strcmp(type, "shader") == 0) {
+    ShaderFields fields;
+    for (JsonPair kv : doc.as<JsonObject>()) {
+      if (strcmp(kv.key().c_str(), "type") == 0) continue;
+      if (strcmp(kv.key().c_str(), "channel") == 0) continue;
+      if (kv.value().is<const char*>()) {
+        fields[String(kv.key().c_str())] = String(kv.value().as<const char*>());
+      }
+    }
+    loadShader(fields);
+    return;
+  }
+  if (strcmp(type, "forget") == 0) { clearPersistedApp(); return; }
+
+  MessageCallback* cb = lookupChannelSlot("system");
+  if (cb && *cb) { (*cb)(transportName, type, doc); return; }
+  Serial.printf("Resident::Sandbox: unhandled system message '%s'; dropped\n", type);
+}
+
+Sandbox::MessageCallback* Sandbox::lookupChannelSlot(const char* channel)
+{
+  for (int i = 0; i < _channelSlotCount; i++) {
+    if (_channelSlots[i].name == channel) return &_channelSlots[i].cb;
+  }
+  return nullptr;
+}
+
+void Sandbox::onMessageWithChannel(const char* channel, MessageCallback cb)
+{
+  for (int i = 0; i < _channelSlotCount; i++) {
+    if (_channelSlots[i].name == channel) { _channelSlots[i].cb = std::move(cb); return; }
+  }
+  if (_channelSlotCount >= MAX_CHANNEL_SLOTS) {
+    Serial.println("Resident::Sandbox: channel slot registry full");
+    return;
+  }
+  _channelSlots[_channelSlotCount].name = channel;
+  _channelSlots[_channelSlotCount].cb = std::move(cb);
+  _channelSlotCount++;
+}
+
+// Control-plane emit: stamps channel:"system" and sends via the default
+// transport. Used for device control messages (voice start/end etc.) — the
+// doc is stamped whether or not a network is configured, so callers can
+// inspect the envelope even when send fails.
+bool Sandbox::sendSystem(JsonDocument& doc)
+{
+  doc["channel"] = "system";
+  if (!_courier.has_value()) return false;
+  return _courier->send(doc);
+}
+
+// App/shader "description" field -> systemDisplay on load receipt. Called
+// once per load, before deferral is applied — a deferred load's description
+// was already shown here at receipt, so the deferred-apply path shows nothing.
+void Sandbox::maybeShowDescription(JsonDocument& doc)
+{
+  if (!_showDescriptions || !systemDisplay()) return;
+  const char* desc = doc["description"];
+  if (desc && desc[0]) systemDisplay()->displayText(desc);
+}
+
+// Data-plane emit: builds the app-channel envelope and hands it to the
+// event sink. Shared by events.send (EventsModule::send, below) and any
+// C++ caller (e.g. a wrapper's room.announce alias).
+bool Sandbox::publishEvent(const char* name, const char* dataJson)
+{
+  if (!name || !name[0]) return false;
+  if (!_eventsModule.takeToken()) {
+    Serial.println("Resident::Sandbox: publishEvent rate-limited; dropped");
+    return false;
+  }
+  JsonDocument doc;
+  doc["channel"] = "app";
+  doc["type"] = name;
+  JsonDocument data;
+  if (dataJson && dataJson[0] && !deserializeJson(data, dataJson)) {
+    doc["data"] = data;
+  } else {
+    doc["data"].to<JsonObject>();
+  }
+  doc["from"] = _deviceId;
+  char nonce[64];
+  snprintf(nonce, sizeof(nonce), "%s:%lu", _deviceId.c_str(),
+           (unsigned long)++_eventNonceCounter);
+  doc["nonce"] = nonce;
+  doc["ts_ms"] = millis();
+
+  if (_eventSink) return _eventSink(doc);
+  if (_courier.has_value()) return _courier->send(doc);
+  return false;
+}
+
+// events.send(name [, data_table]) -> boolean. Defined here (not in
+// ResidentEvents.h) because it needs Sandbox::publishEvent, i.e. Sandbox as
+// a complete type — see the linkage note atop ResidentEvents.h. The
+// flat-table -> JSON serializer is ported verbatim from RoomModule::announce
+// (lib/HawthornRoomDevice/src/modules/RoomModule.cpp in the parent repo).
+int EventsModule::send(lua_State* L)
+{
+  // Arg 1: event name (string, required)
+  const char* name = luaL_checkstring(L, 1);
+
+  // Arg 2: data table (optional)
+  char dataJson[256] = "{}";
+
+  if (lua_gettop(L) >= 2 && lua_istable(L, 2)) {
+    // Serialize flat Lua table to JSON
+    char* p = dataJson;
+    char* end = dataJson + sizeof(dataJson) - 2;
+    *p++ = '{';
+    bool first = true;
+
+    lua_pushnil(L);  // First key
+    while (lua_next(L, 2) != 0 && p < end) {
+      if (lua_type(L, -2) == LUA_TSTRING) {
+        const char* key = lua_tostring(L, -2);
+
+        if (!first && p < end) {
+          *p++ = ',';
+        }
+
+        int written = snprintf(p, end - p, "\"%s\":", key);
+        if (written > 0 && p + written < end) {
+          p += written;
+        } else {
+          lua_pop(L, 1);
+          break;
+        }
+
+        if (lua_type(L, -1) == LUA_TSTRING) {
+          const char* val = lua_tostring(L, -1);
+          written = snprintf(p, end - p, "\"%s\"", val);
+        } else if (lua_type(L, -1) == LUA_TNUMBER) {
+          if (lua_isinteger(L, -1)) {
+            written = snprintf(p, end - p, "%lld", (long long)lua_tointeger(L, -1));
+          } else {
+            written = snprintf(p, end - p, "%g", lua_tonumber(L, -1));
+          }
+        } else {
+          // Skip unsupported types - back out the key
+          if (!first) p--;
+          while (p > dataJson + 1 && *(p - 1) != '{' && *(p - 1) != ',') p--;
+          lua_pop(L, 1);
+          continue;
+        }
+
+        if (written > 0 && p + written < end) {
+          p += written;
+          first = false;
+        } else {
+          lua_pop(L, 1);
+          break;
+        }
+      }
+
+      lua_pop(L, 1);  // Pop value, keep key for next iteration
+    }
+
+    *p++ = '}';
+    *p = '\0';
+  }
+
+  bool sent = _sandbox && _sandbox->publishEvent(name, dataJson);
+  lua_pushboolean(L, sent);
+  return 1;
 }
 
 // Reserved-type routing + user callback. Entered from onCourierMessage (after
@@ -654,6 +914,7 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
     _config.extensions.items[i]->onAppReset();
   }
+  _eventsModule.onAppReset();
 
   // Generate new generation ID
   _generationId = String(millis(), HEX);

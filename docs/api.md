@@ -143,6 +143,7 @@ sandbox.onTransportsWillConnect([]() {
     sandbox.ws().setEndpoint("resident.inanimate.tech", 443, path.c_str());
 });
 
+// Legacy un-channelled path only — see Channel routing below for new code.
 sandbox.onMessage([](const char* transport, const char* type, JsonDocument& doc) {
     if (strcmp(type, "config") == 0) {
         // handle a custom message type
@@ -164,12 +165,14 @@ sandbox.onConnected([]() {
 
 ### Message interposition
 
-Three tools for platform wrappers that need to sit in front of the sandbox's message routing without re-implementing it:
+Three tools for platform wrappers that need to sit in front of the sandbox's message routing without re-implementing it. Their reach differs since channel routing landed: `onMessageFilter` is **legacy un-channelled path only**; `deferAppLoads` and `injectMessage` apply across both the legacy path and channel routing (see [Channel routing](#channel-routing)).
 
 ```cpp
-// Pre-routing filter (single-slot). Runs before app-load deferral, reserved-
-// type routing (app/shader/app_event/forget), and the user onMessage
-// callback. Return true to continue routing; false to consume the message.
+// Pre-routing filter (single-slot), legacy un-channelled path only (no
+// "channel" field). Runs before app-load deferral, reserved-type routing
+// (app/shader/app_event/forget), and the user onMessage callback. Return
+// true to continue routing; false to consume the message. Channelled
+// messages never reach this filter.
 sandbox.onMessageFilter([](const char* transport, const char* type, JsonDocument& doc) {
     if (strcmp(type, "my_platform_thing") == 0) { handleIt(doc); return false; }
     if (isDuplicate(doc["nonce"] | "")) return false;
@@ -177,27 +180,74 @@ sandbox.onMessageFilter([](const char* transport, const char* type, JsonDocument
 });
 
 // Defer app/shader loads during a memory/CPU-sensitive window (e.g. voice
-// recording — a Lua compile would stall the audio path). Stash is last-one-
-// wins; clearing applies it immediately. Other message types flow normally.
-// The applied stash routes straight to loading — the filter already ran at
-// receipt, so a dedup filter like the one above won't drop it a second time.
+// recording — a Lua compile would stall the audio path). Applies to app/
+// shader loads on the legacy path AND the "system" channel (handleSystemMessage
+// checks the same defer flag). Stash is last-one-wins; clearing applies it
+// immediately. Other message types flow normally. The applied stash routes
+// straight to loading — the filter already ran at receipt (legacy path only),
+// so a dedup filter like the one above won't drop it a second time.
 sandbox.deferAppLoads(true);
 // ... later ...
 sandbox.deferAppLoads(false);          // applies any stashed app/shader now
 sandbox.hasDeferredAppLoad();          // pending stash?
 
-// Route a message through the pipeline (filter → deferral → routing → user
-// callback) as if it arrived from a transport — for wrappers with their own
-// receive path, and for native tests.
+// Route a message through the sandbox's full receive pipeline exactly as if
+// it arrived from a transport — channel-aware: a "channel" field in doc sends
+// it through handleAppMessage/handleSystemMessage/onMessageWithChannel same
+// as a real transport message; no "channel" field takes the legacy path
+// (filter → deferral → reserved-type routing → onMessage). For wrappers with
+// their own receive path, and for native tests.
 sandbox.injectMessage("mqtt", "app", doc);
 ```
 
 | Callback | Signature | Fires |
 |----------|-----------|-------|
 | `onTransportsWillConnect` | `void()` | Once, after Resident sets the default WS path and before transports start. Override the path here. |
-| `onMessage` | `void(const char* transport, const char* type, JsonDocument&)` | For **non-reserved** message types only. Reserved types (`app`, `shader`, `app_event`) are routed internally — no super-call is needed. |
+| `onMessage` | `void(const char* transport, const char* type, JsonDocument&)` | **Legacy un-channelled path only** — fires for messages with no `channel` field, and only for non-reserved types (reserved types `app`/`shader`/`app_event`/`forget` are still routed internally on that path, no super-call needed). Channelled messages (`channel:"app"`/`"system"`/custom) never reach this callback — see [Channel routing](#channel-routing). |
 | `onConnectionChange` | `void(Courier::State)` | On every state transition. Resident's internal handler updates `systemDisplay`/`systemLED` first; your callback runs alongside (does not replace). |
 | `onConnected` | `void()` | When fully connected. Often used to load a bootstrap app — guard with a function-local `static bool loaded` to avoid re-firing on reconnect. |
+
+### Channel routing
+
+Incoming messages carry an envelope `channel` field that steers them onto one of three planes. This is the routing new senders should use; the un-channelled path above is legacy.
+
+```json
+{ "channel": "app",    "type": "turn", "data": { "n": 1 } }
+{ "channel": "system", "type": "ota", "url": "..." }
+{ "channel": "metrics", "type": "sample", "value": 42 }
+```
+
+| `channel` value | Routes to | Notes |
+|-----------------|-----------|-------|
+| `"app"` | `handleAppMessage` → Lua `on_event(ctx, event)` with `event.name = type` | Data plane. No reserved types here — `type:"forget"` on this channel is just an event, not a persistence op. Self-echo (`from == getDeviceId()`) and duplicate `nonce` (16-entry ring, exact match) are dropped before delivery. Gated like `sendAppEvent`: dropped when no app is loaded or the app defines no `on_event`. The legacy `app_event` envelope (`{"type":"app_event","name":...,"data":...}`) is still accepted here for one release, logging `[deprecated] app_event wrapper; send channel:"app" with type=<event name>`. |
+| `"system"` | `handleSystemMessage` | Control plane. Reserved types `app`/`shader`/`forget` are handled exactly as on the legacy path (including `deferAppLoads` and the `description` display below); any other type falls through to the single `"system"` slot registered via `onMessageWithChannel("system", cb)`. |
+| anything else | the matching slot registered via `onMessageWithChannel(name, cb)` | Single slot per channel name (exact string match), last registration wins. An unregistered channel is logged (`Resident::Sandbox: no handler for channel '<channel>' (type '<type>'); dropped`) and the message is dropped. Up to 8 slots (`onMessageWithChannel` does not include `"app"` — the data plane belongs to the Lua app, not a C++ slot). |
+| *(absent)* | the legacy un-channelled path | `[deprecated] un-channelled '<type>' message; sender should stamp channel`, then `onMessageFilter` → deferral → reserved-type routing → `onMessage` — unchanged from before channel routing. |
+
+```cpp
+// Public entry points, callable directly by wrappers with their own receive
+// path (e.g. per-transport/topic hooks) — no loopback through Courier needed.
+sandbox.handleAppMessage(transportName, type, doc);
+sandbox.handleSystemMessage(transportName, type, doc);
+
+// Register a "system" (or custom) channel slot.
+sandbox.onMessageWithChannel("system", [](const char* transport, const char* type, JsonDocument& doc) {
+    if (strcmp(type, "ota") == 0) { /* ... */ }
+});
+```
+
+**Control-plane emit** — `sandbox.sendSystem(doc)` stamps `doc["channel"] = "system"` and sends it via the default transport (`courier().send`). For device control messages (voice start/end, etc.). Returns `false` when no network is configured or the send fails; the doc is stamped either way, so a caller inspecting it afterward always sees the envelope.
+
+**Data-plane emit** — `sandbox.publishEvent(name, dataJson)` builds `{channel:"app", type:name, data, from:getDeviceId(), nonce, ts_ms}` and hands it to the event sink: the sink set via `setEventSink(EventSink)` if one is registered, otherwise `courier().send` on the default transport. Rate-limited with a token bucket (5 events/s sustained, burst of 10); returns `false` on rate limit, no sink/network, or send failure — it never raises. This is the shared implementation behind the Lua `events.send` (see [Lua API](#events-module)) and any C++ caller, e.g. a platform wrapper's `room.announce` alias — note this is a **deliberate behavior change** from the old `room.announce`, which raised a Lua error on rate limit rather than returning `false`.
+
+```cpp
+using EventSink = std::function<bool(JsonDocument&)>;
+sandbox.setEventSink([](JsonDocument& doc) {
+    return myTransport.publish(doc);   // return true on success
+});
+```
+
+**Description-on-load display** — when an `app`/`shader` load message (on either the legacy path or the `"system"` channel) carries a `description` field, it's shown on `systemDisplay` via `displayText()` at receipt (before any `deferAppLoads` stash is applied — a deferred load's description was already shown at receipt, so the deferred-apply path shows nothing). On by default; call `sandbox.setShowDescriptions(false)` to disable — e.g. on devices whose `systemDisplay` *is* the main app screen.
 
 ### Sandbox controls
 
@@ -205,6 +255,11 @@ sandbox.injectMessage("mqtt", "app", doc);
 sandbox.loadApp(luaCode);              // compile and run a Lua source string
 sandbox.loadShader(fields);            // generate Lua via ShaderTemplateFn, then loadApp
 sandbox.sendAppEvent(name, dataJson);  // queue an app_event to the running app
+sandbox.onMessageWithChannel(name, cb); // register a channel slot (see Channel routing)
+sandbox.sendSystem(doc);               // stamp channel:"system", send via default transport
+sandbox.publishEvent(name, dataJson);  // stamp channel:"app" event, rate-limited, send via sink
+sandbox.setEventSink(fn);              // override publishEvent's/events.send's destination
+sandbox.setShowDescriptions(show);     // toggle description → systemDisplay on app/shader load
 sandbox.setTimezone("Europe/London");  // IANA zone — performs UDP lookup on first use
 sandbox.hasTimezone();                 // true after a successful setTimezone call
 sandbox.isAppRunning();                // true when an app is compiled and active
@@ -683,6 +738,24 @@ log.info("hello from Lua")
 log.error("something went wrong")
 ```
 
+### `events` module
+
+Publishes an event on the app data plane (`channel:"app"`) — the Lua-side entry point to [`Sandbox::publishEvent`](#channel-routing), which every recipient (this device's own network peers, or a server relay) delivers back as `on_event(ctx, event)` with `event.name` set to the published name.
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `events.send(name)` | boolean | Publish `name` with no data |
+| `events.send(name, data)` | boolean | Publish `name` with a flat table of string/number values as `event.data` |
+
+```lua
+events.send("turn")
+events.send("color_change", { hue = 180, label = "warm" })
+```
+
+`data` must be a **flat** table — string and number values only (booleans, nested tables, and other types are silently skipped per-key). Serialized to a bounded 256-byte JSON buffer; oversized payloads are truncated.
+
+Rate-limited by a shared token bucket: 5 events/s sustained, burst of 10. Returns `false` (rather than raising a Lua error) when rate-limited, when the event name is empty, or when the underlying send fails — always check the return value if you need to know whether it went out.
+
 ### `time` module
 
 Reads wall-clock time from NTP (via ezTime). Functions return UTC unless a timezone is set via `Sandbox::setTimezone`.
@@ -749,7 +822,7 @@ See [Writing a Driver](#writing-a-driver) for the C++ side of this.
 
 ## Message Protocol
 
-Resident routes three JSON message types internally — they never reach the user's `onMessage(cb)` callback. Any other type is forwarded to `onMessage` if registered.
+This section describes the reserved types on the legacy un-channelled path (no `channel` field) — see [Channel routing](#channel-routing) for the full envelope picture, including the `"app"` data plane and custom channels. Resident routes four JSON message types (`app`, `shader`, `app_event`, `forget`) internally on this path — they never reach the user's `onMessage(cb)` callback. Any other type is forwarded to `onMessage` if registered. The `"system"` channel handles `app`/`shader`/`forget` identically (same `loadApp`/`loadShader`/`clearPersistedApp` calls, same deferral and description-display behavior) but has no `app_event` — the app data plane is `channel:"app"`, documented under Channel routing.
 
 ### `app` — load a Lua app
 

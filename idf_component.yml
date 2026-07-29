@@ -1,4 +1,4 @@
-version: "0.6.2"
+version: "0.7.0-dev"
 description: "Sandbox with hardware IO and hot reload for ESP32 devices"
 url: "https://github.com/inanimate-tech/resident"
 
@@ -11,10 +11,12 @@ dependencies:
   # sync (robust HTTPS-Date fallback), larger receivable payloads on no-PSRAM
   # boards, and per-transport endpoint state (Resident sets the WS endpoint via
   # _ws.setEndpoint() inside onTransportsWillConnect(), which requires that
-  # surface). Pinned to ^0.5.1, which additionally enables the IDF certificate
-  # bundle by default on the WS and MQTT transports.
+  # surface). Pinned to ^0.6.0, which makes Client::onMessage deliver the
+  # default transport only (receive parallels send) — required so channel
+  # routing (Resident's `channel` envelope field) sees one coherent message
+  # stream per transport instead of everything funnelled through onMessage.
   inanimate/courier:
-    version: "^0.5.1"
+    version: "^0.6.0"
   bblanchon/arduinojson:
     version: "^7.0.0"
   # Esp32Lua is not on the ESP component registry. Consumers must provide it

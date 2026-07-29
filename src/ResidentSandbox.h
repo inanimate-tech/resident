@@ -13,6 +13,7 @@
 #include "ResidentLuaModule.h"
 #include "ResidentSandboxConfig.h"
 #include "ResidentOverlay.h"
+#include "ResidentEvents.h"
 
 namespace Resident {
 
@@ -135,6 +136,12 @@ public:
     void onTransportsWillConnect(TransportsWillConnectCallback cb) {
       _onTransportsWillConnect = std::move(cb);
     }
+    // Legacy un-channelled path ONLY: fires for messages with no "channel"
+    // field (and, among those, only non-reserved types — app/shader/
+    // app_event/forget are still routed internally). New code should use
+    // channel routing instead: handleAppMessage / handleSystemMessage /
+    // onMessageWithChannel. This slot exists so senders that predate the
+    // channel field keep working, and is not where new message types land.
     void onMessage(MessageCallback cb) {
       _onMessage = std::move(cb);
     }
@@ -146,12 +153,15 @@ public:
     }
 
     // ── Message interposition ──
-    // Pre-routing filter (single-slot). Runs before app-load deferral,
+    // Legacy un-channelled path ONLY: runs before app-load deferral,
     // reserved-type routing (app/shader/app_event/forget), and the user
-    // onMessage callback. Return true to continue normal routing; return
-    // false to consume the message (nothing further runs). Platform wrappers
-    // use this for dedup, self-echo filtering, and platform-only message
-    // types — without re-implementing the sandbox's routing.
+    // onMessage callback — but only for messages with no "channel" field.
+    // Channelled messages (app/system/custom) bypass this filter entirely;
+    // it does not run in front of handleAppMessage / handleSystemMessage /
+    // onMessageWithChannel. Return true to continue normal routing; return
+    // false to consume the message (nothing further runs). Kept for
+    // dedup/self-echo filtering and platform-only message types on senders
+    // that predate the channel field.
     using MessageFilter = std::function<bool(const char* transportName,
                                               const char* type,
                                               JsonDocument& doc)>;
@@ -171,6 +181,46 @@ public:
     // For wrappers with their own receive path, and for native tests.
     void injectMessage(const char* transportName, const char* type,
                        JsonDocument& doc);
+
+    // ── Channel routing (see docs: channels) ──
+    // Data-plane entry: every message on channel "app". Self-echo drop and
+    // nonce dedup (Task 4), then delivery to on_event with event.name = type.
+    // Public because wrappers call it directly from per-transport hooks
+    // (e.g. MQTT topic mapping) — no loopback through Courier.
+    void handleAppMessage(const char* transportName, const char* type,
+                          JsonDocument& doc);
+
+    // Control-plane entry: every message on channel "system". Reserved types
+    // app/shader/forget are handled internally (deferral included); all other
+    // types fall through to the "system" channel slot.
+    void handleSystemMessage(const char* transportName, const char* type,
+                             JsonDocument& doc);
+
+    // Single slot per channel, last registration wins. "app" is not
+    // registrable (the data plane belongs to the Lua app); a "system" slot
+    // receives only non-reserved control types.
+    void onMessageWithChannel(const char* channel, MessageCallback cb);
+
+    // ── Control-plane emit ──
+    // Stamps channel:"system" and sends via the default transport. For
+    // device control messages (voice start/end etc.). Returns false when no
+    // network is configured or the send fails; the doc is stamped either way.
+    bool sendSystem(JsonDocument& doc);
+
+    // App/shader "description" → systemDisplay on load receipt (default on).
+    // Disable on devices whose system display IS the main app screen.
+    void setShowDescriptions(bool show) { _showDescriptions = show; }
+
+    // ── Data-plane emit ──
+    // Builds {channel:"app", type:name, data, from, nonce, ts_ms} and hands
+    // it to the event sink (default: courier().send on the default
+    // transport). Rate-limited (5/s, burst 10). Returns false on rate limit,
+    // no sink, or sink failure. Shared by the Lua path (events.send) and the
+    // C++ path (wrapper aliases, e.g. HRD's room.announce).
+    bool publishEvent(const char* name, const char* dataJson);
+
+    using EventSink = std::function<bool(JsonDocument&)>;
+    void setEventSink(EventSink sink) { _eventSink = std::move(sink); }
 
     // ── Identity / status accessors ──
     const String& getDeviceId() const { return _deviceId; }
@@ -234,6 +284,28 @@ private:
     // exists for. Freed on apply, overwrite, and destruction.
     bool  _deferLoads = false;
     char* _deferredLoadJson = nullptr;
+
+    // Channel slot registry (single slot per channel, exact-string match).
+    static constexpr int MAX_CHANNEL_SLOTS = 8;
+    struct ChannelSlot { String name; MessageCallback cb; };
+    ChannelSlot _channelSlots[MAX_CHANNEL_SLOTS];
+    int _channelSlotCount = 0;
+    MessageCallback* lookupChannelSlot(const char* channel);
+
+    // Data-plane emit: internal Extension registering the `events` Lua
+    // module (events.send) + the shared token-bucket rate limiter. Named
+    // _eventsModule (not _events) — that name is already taken by the
+    // Event ring buffer below.
+    EventsModule _eventsModule;
+    EventSink _eventSink;
+    unsigned long _eventNonceCounter = 0;
+
+    // Description-on-load display (setShowDescriptions).
+    bool _showDescriptions = true;
+    void maybeShowDescription(JsonDocument& doc);
+
+    // Shared by the channelled and legacy load paths.
+    void stashDeferredLoad(JsonDocument& doc);
 
     // Internal Courier hook handlers (drive status indicators + reserved-type
     // routing, then delegate to user callbacks).
@@ -381,6 +453,13 @@ private:
     Event _events[SANDBOX_MAX_EVENTS];
     int _eventHead = 0;
     int _eventTail = 0;
+
+    // Data-plane event dedup — the same event may arrive via multiple
+    // transports (e.g. LAN multicast fast path + broker durable path).
+    static constexpr int DEDUP_RING_SIZE = 16;
+    char _recentNonces[DEDUP_RING_SIZE][48] = {};
+    int _nonceRingPos = 0;
+    bool isDuplicateNonce(const char* nonce);
 
     // Trigger state
     unsigned long _triggerResetTime = 0;

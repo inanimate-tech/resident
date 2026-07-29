@@ -65,7 +65,12 @@ public:
 
 class Client {
 public:
-  explicit Client(const Config& config) { (void)config; }
+  // Records the Config it was constructed with (by value) so native tests
+  // can assert on defaulting behavior Sandbox applies before construction
+  // (e.g. defaultTransport falling back to "ws").
+  Config config;
+
+  explicit Client(const Config& cfg) : config(cfg) {}
 
   template <typename T>
   T& transport(const char* name) {
@@ -84,6 +89,11 @@ public:
   void onConnectionChange(std::function<void(State)>) {}
   void onTransportsWillConnect(std::function<void()>) {}
   void onConnected(std::function<void()>) {}
+
+  // Default-transport send (Sandbox::publishEvent's network fallback when no
+  // event sink is set). Native tests run networkless (cfg.network unset), so
+  // this is never reached at runtime — stubbed only so the call compiles.
+  bool send(JsonDocument& doc) { (void)doc; return false; }
 };
 
 } // namespace Courier
