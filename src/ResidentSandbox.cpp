@@ -51,7 +51,22 @@ Sandbox::Sandbox(const SandboxConfig& config) : Sandbox() {
   _deviceId = ::getDeviceId();
 
   if (_config.network.has_value()) {
-    _courier.emplace(*_config.network);
+    // Courier 0.6+ delivers Client::onMessage from the default transport's
+    // lane only ("receive parallels send" — see Courier::Client::dispatchJSON).
+    // The sandbox's channel router receives exclusively through that
+    // callback, so a networked Sandbox always needs a default lane or its
+    // entire inbound path is dead. Mirror Courier's own auto-WS heuristic
+    // (auto-registers WebSocketTransport as "ws" when host is set and
+    // defaultTransport is unset/"ws"): default to "ws" here too when the
+    // caller left it null/empty and set a host. A literal has static storage
+    // duration, so storing it in the const char* is safe. Callers who
+    // explicitly set a different defaultTransport (e.g. "mqtt") keep it.
+    Courier::Config& net = *_config.network;
+    bool wsIsDefault = !net.defaultTransport || net.defaultTransport[0] == '\0';
+    if (wsIsDefault && net.host && net.host[0] != '\0') {
+      net.defaultTransport = "ws";
+    }
+    _courier.emplace(net);
     _ws = &_courier->transport<Courier::WebSocketTransport>("ws");
   }
 }

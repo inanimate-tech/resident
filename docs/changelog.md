@@ -21,6 +21,10 @@ Theme: channel-based message routing — an envelope `channel` field steers mess
 - **`Sandbox::sendSystem(doc)`** — stamps `channel:"system"` and sends via the default transport. For device control messages (voice start/end, etc.). Returns `false` with no network configured or on send failure; the doc is stamped either way.
 - **Description-on-load display.** An `app`/`shader` load message (legacy path or `"system"` channel) carrying a `description` field is shown on `systemDisplay` at receipt, before any `deferAppLoads` stash is applied. On by default; `Sandbox::setShowDescriptions(false)` disables it — e.g. for devices whose `systemDisplay` is the main app screen.
 
+### Fixes
+
+- **`Sandbox` now defaults a networked `Courier::Config::defaultTransport` to `"ws"` when unset and `host` is set** — under 0.6's "receive parallels send", an unset default transport meant `Client::onMessage` (and thus all channel routing) never fired on any real device; callers who set an explicit `defaultTransport` are unaffected.
+
 ### Deprecations
 
 - **Un-channelled message routing** (no `channel` field) still works but now logs `[deprecated] un-channelled '<type>' message; sender should stamp channel` on every message. Stamp `channel:"app"`/`"system"`/a custom name instead.
