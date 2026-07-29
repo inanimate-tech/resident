@@ -599,9 +599,10 @@ Interface for a microphone the runtime can stream. Implement it in a driver and 
 ```cpp
 class MyMic : public Resident::SystemMic {
 public:
-    void begin() override { /* init capture hardware */ }
+    void begin() override { startCapture(); }   // pipeline runs from here on
     int read(int16_t* buf, int maxSamples, int timeoutMs) override {
-        return capture(buf, maxSamples);   // samples written; 0 on timeout / no data
+        // Copy out of a buffer *we* own; return what was actually ready.
+        return drainCaptured(buf, maxSamples, timeoutMs);
     }
     uint32_t sampleRate() const override { return 16000; }
     int frameSamples() const override { return 512; }   // natural read granularity
@@ -610,7 +611,7 @@ public:
 
 | Method | Default | Description |
 |--------|---------|-------------|
-| `read(int16_t* buf, int maxSamples, int timeoutMs)` | *(pure virtual)* | Fill up to `maxSamples` 16-bit mono samples; return the count written (0 on timeout) |
+| `read(int16_t* buf, int maxSamples, int timeoutMs)` | *(pure virtual)* | Drain up to `maxSamples` 16-bit mono samples; return the count actually written (0 if none ready) |
 | `sampleRate()` | *(pure virtual)* | Capture rate in Hz (e.g. `16000`) |
 | `frameSamples()` | *(pure virtual)* | Natural read chunk size |
 | `begin()` / `update()` | no-op | Standard `Driver` lifecycle |
@@ -625,6 +626,17 @@ sandbox.setMicStreamSink(fn);  // bool(const uint8_t* data, size_t len) — defa
 ```
 
 While streaming, each `Sandbox::loop()` reads up to `frameSamples()` (capped at an internal 512-sample buffer) and forwards the bytes to the sink — the default sink is `ws().sendBinary`. The pump adds **no framing or control frames**: any envelope (e.g. a `{"type":"..."}` start/stop text frame, or a format handshake) is a device concern, sent by your code around `startMicStream()` / `stopMicStream()`. Streaming is independent of app state — it continues while the app is suspended, and is a no-op when `cfg.systemMic` is unset.
+
+### Implementing `read()`
+
+Capture backends are usually asynchronous — DMA or a background task filling buffers while your code runs — and that makes `read()` easy to get subtly wrong. Every rule below has silently corrupted audio in a real driver:
+
+1. **Capture is `begin()`'s job, not `read()`'s.** Keep the pipeline running and its buffers queued from `begin()` onwards; `read()` only copies out what already landed. Don't start a capture inside `read()` and wait for that one buffer — a pipeline that holds a destination only while `read()` is in flight loses everything in between. Backends commonly discard the partial chunk they were holding whenever their queue runs dry, with no error and no counter, and every gap is an audible splice.
+2. **Never give capture hardware the caller's `buf`.** Record into memory the driver owns and copy out. An async backend keeps writing its destination after the call that queued it returned — so passing `buf` straight through is a background write into memory the caller already considers its own.
+3. **`timeoutMs == 0` means do not block.** Return what is ready this instant, `0` if that's nothing. The pump calls `read(buf, frameSamples(), 0)` from `Sandbox::loop()`, so blocking there stalls the whole sandbox — app ticks, transports, overlays and all. `timeoutMs > 0` is a ceiling to respect, not a duration to fill; never block unbounded.
+4. **Short reads are legal.** The return value is authoritative — never assume `maxSamples` were written. Returning `0` is routine and just means nothing has been captured yet.
+
+`examples/m5stick-voice/device/src/M5MicDriver.h` is a worked reference over an asynchronous backend (M5Unified), including how it derives buffer completion without polling.
 
 ---
 
