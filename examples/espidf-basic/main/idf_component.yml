@@ -12,9 +12,10 @@ dependencies:
   espressif/arduino-esp32:
     version: "^3.0.0"
 
-  # Courier 0.5.0+ (NTP-first time sync, per-transport setEndpoint()).
+  # Courier 0.6.0+ (receive parallels send: Client::onMessage delivers the
+  # default transport only — required by resident's channel routing).
   inanimate/courier:
-    version: "^0.5.0"
+    version: "^0.6.0"
 
   bblanchon/arduinojson:
     version: "^7.0.0"
