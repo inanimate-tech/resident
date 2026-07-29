@@ -161,6 +161,20 @@ void test_filter_does_not_gate_channelled_messages(void) {
   TEST_ASSERT_TRUE(sandbox->isAppRunning());
 }
 
+void test_app_channel_event_before_load_does_not_leak(void) {
+  build();
+  // No app loaded yet: an app-channel event must be dropped, not queued for
+  // whatever app loads next (the event ring is not reset on app load).
+  JsonDocument evt;
+  evt["channel"] = "app";
+  evt["type"] = "turn";
+  evt["data"]["n"] = 1;
+  sandbox->injectMessage("test", "turn", evt);
+  loadCountingApp();
+  pump();
+  TEST_ASSERT_EQUAL_INT(0, sandbox->luaGlobalIntForTest("cnt"));
+}
+
 void test_defer_applies_to_system_channel_loads(void) {
   build();
   sandbox->deferAppLoads(true);
@@ -183,6 +197,7 @@ int main(int, char**) {
   RUN_TEST(test_unchannelled_legacy_path_still_works);
   RUN_TEST(test_unchannelled_filter_still_consumes);
   RUN_TEST(test_filter_does_not_gate_channelled_messages);
+  RUN_TEST(test_app_channel_event_before_load_does_not_leak);
   RUN_TEST(test_defer_applies_to_system_channel_loads);
   return UNITY_END();
 }

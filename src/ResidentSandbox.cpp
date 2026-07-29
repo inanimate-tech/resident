@@ -456,6 +456,10 @@ void Sandbox::handleAppMessage(const char* transportName, const char* type,
     name = doc["name"] | "";
     if (!name[0]) return;
   }
+  // Same gate as sendAppEvent (see its comment — "deliberate"): no app loaded,
+  // or no on_event handler → drop. The event ring is not reset on app load, so
+  // queueing here would leak stale events into whatever app loads next.
+  if (!isAppRunning() || !_onEventFuncRef) return;
   char dataJson[256] = "{}";
   if (doc["data"].is<JsonObject>()) {
     serializeJson(doc["data"], dataJson, sizeof(dataJson));
