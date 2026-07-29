@@ -49,12 +49,11 @@ public:
 };
 
 // A dedicated SystemMic spy usable as the systemMic slot. Counts begin().
+// SystemMic is not a Driver: the pump owns begin()/end(), not the lifecycle.
 class SpyMic : public Resident::SystemMic {
 public:
-  int beginCount = 0, updateCount = 0;
-  const char* name() const override { return "spy-mic"; }
-  void begin() override { beginCount++; }
-  void update() override { updateCount++; }
+  int beginCount = 0;
+  bool begin() override { beginCount++; return true; }
   int read(int16_t*, int, int) override { return 0; }
   uint32_t sampleRate() const override { return 16000; }
   int frameSamples() const override { return 256; }
@@ -224,15 +223,16 @@ public:
   void begin() override { beginCount++; }
 };
 
-// Regression for the lifecycle-array sizing bug: with cfg.extensions[] full
-// (Extensions::MAX distinct objects) and all four role slots (display, LED,
-// button, mic) assigned to distinct objects NOT also in extensions[], the
-// unified lifecycle set needs Extensions::MAX + 4 slots. Before that fix the
-// array (and its capacity guard) topped out at MAX + 3, so the fourth
-// role-slot append (systemMic) was silently dropped by addLifecycle()'s
-// capacity check — the mic never received begin() and hardware was never
-// initialised, with no error reported.
-void test_dedicated_mic_begun_when_extensions_full(void) {
+// Two guarantees at once, with cfg.extensions[] full (Extensions::MAX
+// distinct objects) and every role slot assigned to a distinct object NOT
+// also in extensions[]:
+//  - Lifecycle-array sizing regression (originally: the capacity guard
+//    topped out too small and the last role-slot append was silently
+//    dropped, so its hardware was never initialised, with no error): the
+//    Driver role slots (display, LED, button) must all be begun at setup().
+//  - The mic is NOT a Driver and must NOT be begun at setup() — capture
+//    belongs to the streaming pump, which begins it on startMicStream().
+void test_role_slots_begun_when_extensions_full_but_mic_waits_for_stream(void) {
   Resident::SandboxConfig cfg;
   cfg.deviceType = "native-test";
 
@@ -259,7 +259,13 @@ void test_dedicated_mic_begun_when_extensions_full(void) {
   sandbox = new Resident::Sandbox(cfg);
   sandbox->setup();
 
-  TEST_ASSERT_EQUAL_INT(1, dedicatedMic->beginCount);
+  TEST_ASSERT_EQUAL_INT(1, dedicatedDisplay->beginCount);
+  TEST_ASSERT_EQUAL_INT(1, dedicatedLED->beginCount);
+  TEST_ASSERT_EQUAL_INT(1, dedicatedButton->beginCount);
+  TEST_ASSERT_EQUAL_INT(0, dedicatedMic->beginCount);   // not at setup...
+
+  TEST_ASSERT_TRUE(sandbox->startMicStream());
+  TEST_ASSERT_EQUAL_INT(1, dedicatedMic->beginCount);   // ...but on stream start
 
   delete dedicatedDisplay;
   delete dedicatedLED;
@@ -277,7 +283,7 @@ int main(int, char**) {
   RUN_TEST(test_slot_only_display_no_lua_global);
   RUN_TEST(test_extension_driver_has_lua_global);
   RUN_TEST(test_driver_event_dropped_until_app_loaded);
-  RUN_TEST(test_dedicated_mic_begun_when_extensions_full);
+  RUN_TEST(test_role_slots_begun_when_extensions_full_but_mic_waits_for_stream);
   UNITY_END();
   return 0;
 }

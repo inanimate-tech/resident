@@ -85,12 +85,14 @@ public:
     using SystemButtonHoldCallback = std::function<void(bool held)>;
     void onSystemButtonHold(SystemButtonHoldCallback cb) { _onHoldCb = std::move(cb); }
 
-    // Mic streaming pump. While streaming, each loop() drains systemMic and
-    // ships int16 frames to the sink (default: ws().sendBinary). No framing —
-    // control frames are a device concern. No-op if cfg.systemMic is unset.
+    // Mic streaming pump. startMicStream() begins the mic (capture runs only
+    // while streaming; false = no mic, or it failed to start); each loop()
+    // then drains systemMic and ships int16 frames to the sink (default:
+    // ws().sendBinary). No framing — control frames are a device concern.
+    // stopMicStream() ends the mic, releasing shared capture hardware.
     using MicStreamSink = std::function<bool(const uint8_t* data, size_t len)>;
     void setMicStreamSink(MicStreamSink sink) { _micSink = std::move(sink); }
-    void startMicStream();
+    bool startMicStream();
     void stopMicStream();
     bool isMicStreaming() const { return _micStreaming; }
 
@@ -336,9 +338,11 @@ private:
 
     // Unified lifecycle set: extensions[] plus any role-slot object not
     // already present, de-duped by pointer. Driven for begin() and update().
-    // Sized for extensions[] (MAX) plus the four role slots (display, LED,
-    // button, mic) that buildLifecycleSet() may append when each is a
-    // distinct object not already in extensions[].
+    // Sized for extensions[] (MAX) plus the Driver role slots (display, LED,
+    // button) that buildLifecycleSet() may append when each is a distinct
+    // object not already in extensions[]. (systemMic is not a Driver and not
+    // in this set — the mic pump owns its begin()/end(). One slot of
+    // headroom remains from when it was.)
     Extension* _lifecycle[Extensions::MAX + 4] = {};
     uint8_t _lifecycleCount = 0;
     void buildLifecycleSet();

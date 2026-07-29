@@ -11,7 +11,10 @@ public:
   int returnSamples = -1;    // -1 = fill maxSamples; otherwise a short read
   int lastTimeoutMs = -999;  // what the pump asked for
   int calls = 0;
-  const char* name() const override { return "mic"; }
+  int beginCount = 0, endCount = 0;
+  bool beginResult = true;
+  bool begin() override { beginCount++; return beginResult; }
+  void end() override { endCount++; }
   int read(int16_t* b, int maxSamples, int timeoutMs) override {
     lastTimeoutMs = timeoutMs;
     calls++;
@@ -107,6 +110,44 @@ void test_empty_read_sends_nothing(void) {
   TEST_ASSERT_EQUAL_INT(0, (int)sends.size());
 }
 
+// Capture runs only while streaming: the pump owns the mic's begin()/end().
+// begin() once per stream (idempotent across repeated starts), end() on stop,
+// and a restart re-begins — so shared-codec hardware is released while idle.
+void test_pump_owns_mic_begin_end(void) {
+  TEST_ASSERT_EQUAL_INT(0, mic->beginCount);   // NOT begun at setup()
+  TEST_ASSERT_TRUE(sandbox->startMicStream());
+  TEST_ASSERT_EQUAL_INT(1, mic->beginCount);
+  TEST_ASSERT_TRUE(sandbox->startMicStream()); // already streaming: no re-begin
+  TEST_ASSERT_EQUAL_INT(1, mic->beginCount);
+  sandbox->stopMicStream();
+  TEST_ASSERT_EQUAL_INT(1, mic->endCount);
+  sandbox->stopMicStream();                    // not streaming: no re-end
+  TEST_ASSERT_EQUAL_INT(1, mic->endCount);
+  TEST_ASSERT_TRUE(sandbox->startMicStream()); // restart re-begins
+  TEST_ASSERT_EQUAL_INT(2, mic->beginCount);
+}
+
+// A mic that fails to start must not leave the pump "streaming" a dead source.
+void test_start_fails_when_mic_begin_fails(void) {
+  mic->beginResult = false;
+  TEST_ASSERT_FALSE(sandbox->startMicStream());
+  TEST_ASSERT_FALSE(sandbox->isMicStreaming());
+  runLoop(2);
+  TEST_ASSERT_EQUAL_INT(0, (int)sends.size());
+  TEST_ASSERT_EQUAL_INT(0, mic->calls);
+}
+
+// No systemMic configured: startMicStream() reports failure instead of
+// silently entering a state where the pump has nothing to drain.
+void test_start_without_mic_returns_false(void) {
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  Resident::Sandbox s{cfg};
+  s.setup();
+  TEST_ASSERT_FALSE(s.startMicStream());
+  TEST_ASSERT_FALSE(s.isMicStreaming());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_streaming_sends_frames_and_stops);
@@ -115,6 +156,9 @@ int main(int, char**) {
   RUN_TEST(test_pump_never_asks_the_driver_to_block);
   RUN_TEST(test_short_read_is_forwarded_verbatim);
   RUN_TEST(test_empty_read_sends_nothing);
+  RUN_TEST(test_pump_owns_mic_begin_end);
+  RUN_TEST(test_start_fails_when_mic_begin_fails);
+  RUN_TEST(test_start_without_mic_returns_false);
   UNITY_END();
   return 0;
 }

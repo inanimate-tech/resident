@@ -169,21 +169,20 @@ void Sandbox::buildLifecycleSet()
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
     addLifecycle(_config.extensions.items[i]);
   }
-  // Role slots are Driver subclasses, so they upcast to Extension*. Append any
-  // not already in extensions[] so an assigned-but-unlisted peripheral is
-  // still begun and updated.
+  // Driver role slots upcast to Extension*. Append any not already in
+  // extensions[] so an assigned-but-unlisted peripheral is still begun and
+  // updated. (systemMic is not a Driver: the mic pump owns its begin()/end(),
+  // so capture hardware is held only while streaming.)
   addLifecycle(systemDisplay());
   addLifecycle(systemLED());
   addLifecycle(_config.systemButton);
-  addLifecycle(_config.systemMic);
 }
 
 bool Sandbox::isSystemExtension(Extension* e) const
 {
   return e == static_cast<Extension*>(systemDisplay())
       || e == static_cast<Extension*>(systemLED())
-      || e == static_cast<Extension*>(_config.systemButton)
-      || e == static_cast<Extension*>(_config.systemMic);
+      || e == static_cast<Extension*>(_config.systemButton);
 }
 
 Resident::SystemDisplay* Sandbox::systemDisplay() const
@@ -1032,8 +1031,21 @@ void Sandbox::updateSystemButtonHold()
   }
 }
 
-void Sandbox::startMicStream() { _micStreaming = true; }
-void Sandbox::stopMicStream()  { _micStreaming = false; }
+bool Sandbox::startMicStream()
+{
+  if (_micStreaming) return true;
+  if (!_config.systemMic) return false;
+  if (!_config.systemMic->begin()) return false;
+  _micStreaming = true;
+  return true;
+}
+
+void Sandbox::stopMicStream()
+{
+  if (!_micStreaming) return;
+  _micStreaming = false;
+  _config.systemMic->end();
+}
 
 void Sandbox::updateMicStream()
 {

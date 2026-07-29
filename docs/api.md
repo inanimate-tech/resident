@@ -44,7 +44,7 @@ void loop()  { sandbox.loop(); }
 | `network` | `std::optional<Courier::Config>` | unset | Networking opt-in. Set ⇒ Sandbox constructs an internal `Courier::Client`, drives WiFi / transports, fires connection callbacks. Unset ⇒ standalone runtime, no WiFi pulled in. |
 | `persistApps` | `bool` | `true` | Save the last successfully-loaded app to flash and restore it on boot. Set to `false` to disable for a build. |
 | `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
-| `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). Implement `Resident::SystemMic` and pass a pointer here. |
+| `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). On M5 boards use the shipped `Resident::M5Mic` (`#include <ResidentM5Mic.h>`); otherwise implement `Resident::SystemMic`. Not a `Driver` — the pump owns its `begin()`/`end()`. |
 | `persistentStore` | `Resident::PersistentStore*` | `nullptr` | Override the backing store for persistence. `nullptr` uses NVS on device; inject a fake in tests. |
 | `statusDisplay` | `SystemDisplay*` | `nullptr` | **Deprecated** — use `systemDisplay`. Kept as a fallback; a compile-time warning nudges migration. |
 | `statusLED` | `SystemLED*` | `nullptr` | **Deprecated** — use `systemLED`. Kept as a fallback; a compile-time warning nudges migration. |
@@ -450,7 +450,7 @@ peripherals (system display, system button, system LED, system mic) — is a `Dr
 runs on a single de-duplicated list every loop:
 
 - **Role peripherals** (whatever you assign to `config.systemDisplay` /
-  `systemLED` / `systemButton` / `systemMic`) update **every loop, always** — so
+  `systemLED` / `systemButton`) update **every loop, always** — so
   the status screen and system button work before any app exists and across a
   brief reconnect.
 - **Other extensions** update **only while an app is loaded** (running or
@@ -459,8 +459,10 @@ runs on a single de-duplicated list every loop:
   for the first connection on networked boards.)
 
 A driver fills a device role by implementing the role interface (`SystemDisplay`
-/ `SystemButton` / `SystemLED` / `SystemMic`, each a `Driver` subclass) — that's the
-*capability*. `SystemDisplay` additionally has an optional `restoreContent()`
+/ `SystemButton` / `SystemLED`, each a `Driver` subclass) — that's the
+*capability*. (`SystemMic` is a role slot too, but not a `Driver`: it is a
+[standalone capture interface](#residentsystemmic) whose lifecycle belongs to
+the mic pump, not the extension set.) `SystemDisplay` additionally has an optional `restoreContent()`
 (default no-op): repaint the surface's underlying content after the last
 [Overlay](#residentoverlay) claiming it releases. Whether it's *used* in that role is the per-device config slot,
 so the same driver is reusable across boards. An object fills at most one role.
@@ -594,49 +596,68 @@ Resident's internal handler calls `solidColor` automatically as the connection s
 
 ## Resident::SystemMic
 
-Interface for a microphone the runtime can stream. Implement it in a driver and pass a pointer via `SandboxConfig::systemMic`. Captures 16-bit signed mono PCM; `sampleRate()` is the single source of truth for the wire format.
+A capture source the runtime can stream: 16-bit signed mono PCM, with `sampleRate()` the single source of truth for the wire format. Assign one via `SandboxConfig::systemMic`.
+
+Unlike the other role slots, **`SystemMic` is not a `Driver`** — it has no Lua surface, no events, no per-loop `update()`. It is a standalone interface whose lifecycle belongs to the **mic pump**: capture runs between `begin()` and `end()`, and the pump calls those in `startMicStream()` / `stopMicStream()`, so capture hardware (a shared codec, a background task) is held only while streaming. Any Lua-facing mic activity — levels, meters — is a separate extension's concern, fed by your board's own plumbing.
+
+### Using an M5 device? The driver is already written
+
+Resident ships `Resident::M5Mic` (any board M5Unified's mic supports: M5StickS3, M5StickC Plus2, M5Stack ...). It is opt-in — one include, one object, nothing else to get right:
+
+```cpp
+#include <ResidentM5Mic.h>       // not pulled in by Resident.h
+
+Resident::M5Mic micDriver;
+cfg.systemMic = &micDriver;
+```
+
+M5Unified must be in *your* project's `lib_deps` (it already is if you build for an M5 board); Resident itself does not depend on it. Internally `M5Mic` handles the awkward parts of M5Unified's asynchronous mic — buffer-completion tracking, keeping the capture queue primed, mic-task priority — and exposes `audit()` health counters if you want to check pipeline integrity in the field. See `src/ResidentM5Mic.h` for the full story; it is also the worked reference for writing your own adaptor.
+
+### The interface
 
 ```cpp
 class MyMic : public Resident::SystemMic {
 public:
-    void begin() override { startCapture(); }   // pipeline runs from here on
+    bool begin() override { return startCapture(); }  // acquire hw; pipeline runs from here on
+    void end() override { stopCapture(); }            // release hw (e.g. shared codec)
     int read(int16_t* buf, int maxSamples, int timeoutMs) override {
         // Copy out of a buffer *we* own; return what was actually ready.
         return drainCaptured(buf, maxSamples, timeoutMs);
     }
     uint32_t sampleRate() const override { return 16000; }
-    int frameSamples() const override { return 512; }   // natural read granularity
 };
 ```
 
 | Method | Default | Description |
 |--------|---------|-------------|
+| `begin()` | *(pure virtual)* | Acquire the capture hardware and start the pipeline; `false` = failed. Re-`begin()` while capturing must be benign |
+| `end()` | no-op | Stop capture and release the hardware, e.g. for the speaker side of a shared full-duplex codec |
 | `read(int16_t* buf, int maxSamples, int timeoutMs)` | *(pure virtual)* | Drain up to `maxSamples` 16-bit mono samples; return the count actually written (0 if none ready) |
 | `sampleRate()` | *(pure virtual)* | Capture rate in Hz (e.g. `16000`) |
-| `frameSamples()` | *(pure virtual)* | Natural read chunk size |
-| `begin()` / `update()` | no-op | Standard `Driver` lifecycle |
+| `frameSamples()` | `512` | Natural read chunk size (the pump's per-loop read size, capped at 512) |
 
-`SystemMic` is a `Driver` role slot alongside `SystemDisplay` / `SystemLED` / `SystemButton`. The **streaming pump** ships its frames over the WebSocket:
+The **streaming pump** ships its frames over the WebSocket:
 
 ```cpp
-sandbox.startMicStream();      // each loop(): drain systemMic, send raw int16 frames
-sandbox.stopMicStream();
-sandbox.isMicStreaming();      // true while streaming
-sandbox.setMicStreamSink(fn);  // bool(const uint8_t* data, size_t len) — default: ws().sendBinary
+bool ok = sandbox.startMicStream();  // mic->begin(), then each loop(): drain + send raw int16 frames
+sandbox.stopMicStream();             // mic->end() — capture hardware released
+sandbox.isMicStreaming();            // true while streaming
+sandbox.setMicStreamSink(fn);        // bool(const uint8_t* data, size_t len) — default: ws().sendBinary
 ```
 
-While streaming, each `Sandbox::loop()` reads up to `frameSamples()` (capped at an internal 512-sample buffer) and forwards the bytes to the sink — the default sink is `ws().sendBinary`. The pump adds **no framing or control frames**: any envelope (e.g. a `{"type":"..."}` start/stop text frame, or a format handshake) is a device concern, sent by your code around `startMicStream()` / `stopMicStream()`. Streaming is independent of app state — it continues while the app is suspended, and is a no-op when `cfg.systemMic` is unset.
+`startMicStream()` returns `false` (and does not start streaming) when no `systemMic` is configured or its `begin()` fails. While streaming, each `Sandbox::loop()` reads up to `frameSamples()` (capped at an internal 512-sample buffer) and forwards the bytes to the sink — the default sink is `ws().sendBinary`. The pump adds **no framing or control frames**: any envelope (e.g. a `{"type":"..."}` start/stop text frame, or a format handshake) is a device concern, sent by your code around `startMicStream()` / `stopMicStream()`. Streaming is independent of app state — it continues while the app is suspended.
 
-### Implementing `read()`
+### Writing a mic adaptor
 
-Capture backends are usually asynchronous — DMA or a background task filling buffers while your code runs — and that makes `read()` easy to get subtly wrong. Every rule below has silently corrupted audio in a real driver:
+Capture backends are usually asynchronous — DMA or a background task filling buffers while your code runs — and that makes drivers easy to get subtly wrong. Every rule below has silently corrupted audio in a real driver:
 
-1. **Capture is `begin()`'s job, not `read()`'s.** Keep the pipeline running and its buffers queued from `begin()` onwards; `read()` only copies out what already landed. Don't start a capture inside `read()` and wait for that one buffer — a pipeline that holds a destination only while `read()` is in flight loses everything in between. Backends commonly discard the partial chunk they were holding whenever their queue runs dry, with no error and no counter, and every gap is an audible splice.
+1. **Capture runs from `begin()` to `end()`; `read()` only drains.** Keep the pipeline running and its buffers queued from `begin()` onwards; `read()` copies out what already landed. Don't start a capture inside `read()` and wait for that one buffer — a pipeline that holds a destination only while `read()` is in flight loses everything in between. Backends commonly discard the partial chunk they were holding whenever their queue runs dry, with no error and no counter, and every gap is an audible splice.
 2. **Never give capture hardware the caller's `buf`.** Record into memory the driver owns and copy out. An async backend keeps writing its destination after the call that queued it returned — so passing `buf` straight through is a background write into memory the caller already considers its own.
 3. **`timeoutMs == 0` means do not block.** Return what is ready this instant, `0` if that's nothing. The pump calls `read(buf, frameSamples(), 0)` from `Sandbox::loop()`, so blocking there stalls the whole sandbox — app ticks, transports, overlays and all. `timeoutMs > 0` is a ceiling to respect, not a duration to fill; never block unbounded.
 4. **Short reads are legal.** The return value is authoritative — never assume `maxSamples` were written. Returning `0` is routine and just means nothing has been captured yet.
+5. **Assume a single caller.** `read()` is called by exactly one reader — the pump, or one producer task — so drivers need no locking against concurrent reads.
 
-`examples/m5stick-voice/device/src/M5MicDriver.h` is a worked reference over an asynchronous backend (M5Unified), including how it derives buffer completion without polling.
+Backend-specific extras (health counters, per-channel metrics, one-shot capture) belong on your concrete driver type, reached by the board code that owns the instance — not on `SystemMic`. `src/ResidentM5Mic.h` is the worked reference over an asynchronous backend, including how it derives buffer completion without polling.
 
 ---
 

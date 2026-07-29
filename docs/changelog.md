@@ -1,14 +1,67 @@
 # Changelog
 
-## v0.7.0-dev
+## v0.7.0-dev (cbe3aab)
 
-Theme: channel-based message routing — an envelope `channel` field steers messages onto a data plane, a control plane, or a custom slot, replacing the single flat `onMessage`/reserved-type dispatch as the routing new senders should use.
+Theme: channel-based message routing — an envelope `channel` field steers messages onto a data plane, a control plane, or a custom slot, replacing the single flat `onMessage`/reserved-type dispatch as the routing new senders should use. Also in this release: `SystemMic` becomes a standalone capture interface with a shipped M5 driver.
 
 ### Dependencies
 
 - **Courier `^0.6.0` on both registries** (was `^0.5.1`). 0.6.0 makes `Client::onMessage` deliver only the default transport's messages ("receive parallels send", mirroring `Client::send`) — channel routing needs one coherent per-transport message stream instead of every transport's traffic funnelled through the client-level callback.
 
+### Breaking changes
+
+- **`SystemMic` is no longer a `Driver` — it is a standalone capture
+  interface, converged with hawthorn-firmware's `HawthornMicrophone`** (which
+  it replaces downstream). Three backends with radically different internal
+  models — synchronous I2S, M5Unified's asynchronous request queue, and a
+  multi-mic array with a processing stage — had independently converged on the
+  same three methods, and the `Driver` inheritance bought the mic nothing (no
+  Lua surface, no events, no per-loop update) while forcing `void begin()`:
+  - `begin()` now returns **`bool`** (false = capture hardware not acquired)
+    and must be benign to call while already capturing.
+  - New **`end()`** (default no-op): stop capture and release the hardware —
+    for boards where mic and speaker share one full-duplex codec.
+  - `frameSamples()` gains a default (`512`, the pump's cap); `sampleRate()`
+    stays pure virtual. `name()`, `update()` and the rest of the
+    `Driver`/`Extension` surface are gone.
+  - The sandbox no longer runs the mic in its extension lifecycle: **the mic
+    pump owns capture**. `startMicStream()` calls `begin()` — and now returns
+    `bool`, false when there is no `systemMic` or it fails to start —
+    `stopMicStream()` calls `end()`. Capture hardware is held only while
+    streaming; expect ~2 frames of priming latency at stream start.
+
+  Migrating a driver: change the base-class method signatures, move any
+  capture-start out of setup-time assumptions, and delete `name()`. The
+  contract in `ResidentSystemMic.h` (also
+  [api.md](api.md#writing-a-mic-adaptor)) now has five rules — capture runs
+  `begin()`→`end()` and `read()` only drains; never hand capture hardware the
+  caller's buffer; `timeoutMs == 0` means do not block; short reads are
+  legal; single caller.
+
 ### New features
+
+- **`Resident::M5Mic`: a shipped, production-grade mic driver for M5 boards**
+  (`#include <ResidentM5Mic.h>` — opt-in, not pulled in by `Resident.h`, and
+  M5Unified stays *your* project's dependency, not Resident's). Wiring a mic
+  on an M5StickS3 / M5StickC Plus2 / M5Stack is now two lines:
+
+  ```cpp
+  Resident::M5Mic mic;
+  cfg.systemMic = &mic;
+  ```
+
+  Internally it is the three-buffer rotation described under Fixes below,
+  plus the mic task pinned to core 1 at priority 18 (fixes a DMA-ring overrun
+  under TLS streaming load at M5Unified's default priority 2) and `audit()`
+  pipeline-health counters (`underruns` / `tornSlots` / `timeouts`) for field
+  diagnosis. Ported from the Hawthorn firmware's on-device-validated
+  `M5Microphone`, with two deliberate changes: `timeoutMs == 0` is a
+  non-blocking poll per the contract (was: block indefinitely), and underrun
+  detection is queue-occupancy-based rather than wait-duration-based, so it
+  works under both blocking and non-blocking callers.
+
+  The `m5stick-voice` example's hand-rolled `M5MicDriver.h` is deleted in
+  favour of it.
 
 - **Channel routing.** Incoming messages carry an envelope `channel` field:
   - **`channel:"app"` (data plane).** Every message routes to `handleAppMessage` → Lua `on_event(ctx, event)` with `event.name` set to `type`. No reserved types on this channel — `type:"forget"` here is just an event, not a persistence op. Self-echo is dropped (`from == getDeviceId()`, guards multicast loopback) and duplicates are deduped by `nonce` against a 16-entry ring (guards the same event arriving over more than one transport). Gated exactly like the existing `sendAppEvent`: dropped with no app loaded or no `on_event` handler, so the event ring can't leak stale events into whatever app loads next. The legacy `app_event` envelope is still accepted here for one release (`[deprecated] app_event wrapper; send channel:"app" with type=<event name>`).
@@ -49,6 +102,9 @@ Theme: channel-based message routing — an envelope `channel` field steers mess
   pending" and a wait on it falls straight through onto an unfilled buffer. It
   answers queue occupancy, and is used only for that.
 
+  (The rewritten driver has since moved out of the example and into Resident
+  itself as `Resident::M5Mic` — see New features.)
+
 ### Deprecations
 
 - **Un-channelled message routing** (no `channel` field) still works but now logs `[deprecated] un-channelled '<type>' message; sender should stamp channel` on every message. Stamp `channel:"app"`/`"system"`/a custom name instead.
@@ -58,7 +114,7 @@ Theme: channel-based message routing — an envelope `channel` field steers mess
 ### Internal
 
 - **`Resident::SystemMic::read()` now states its contract**, in
-  `ResidentSystemMic.h` and [api.md](api.md#implementing-read). The four rules
+  `ResidentSystemMic.h` and [api.md](api.md#writing-a-mic-adaptor). The four rules
   each correspond to a defect seen in a real driver: capture belongs in
   `begin()` rather than `read()`; never hand capture hardware the caller's
   buffer; `timeoutMs == 0` means *do not block* (the pump calls
@@ -72,8 +128,10 @@ Theme: channel-based message routing — an envelope `channel` field steers mess
 
 - **Mic pump contract tests** (`test/unit/test/test_mic_stream/`) covering the
   rules the pump is responsible for upholding: it reads with `timeoutMs == 0`,
-  forwards short reads verbatim rather than padding to `maxSamples`, and emits
-  nothing when a read returns `0`.
+  forwards short reads verbatim rather than padding to `maxSamples`, emits
+  nothing when a read returns `0`, and owns the mic's `begin()`/`end()` —
+  begun once per stream start (not at `setup()`), ended on stop, re-begun on
+  restart, and never left "streaming" when `begin()` fails.
 
 ---
 
