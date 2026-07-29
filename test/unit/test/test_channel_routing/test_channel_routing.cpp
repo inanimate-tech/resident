@@ -29,6 +29,15 @@ void loadCountingApp() {
 
 // Deliver queued events: advance past TICK_INTERVAL and tick.
 void pump() { testMillis() += 200; sandbox->loop(); }
+
+// Minimal fake SystemDisplay — no reusable one captures displayText in the
+// existing stub set (test_system_rename's SpyDisplay only counts updates()).
+class FakeSystemDisplay : public Resident::SystemDisplay {
+public:
+  const char* name() const override { return "display"; }
+  void displayText(const char* t) override { lastText = t; }
+  String lastText;
+};
 }  // namespace
 
 void setUp(void) { testMillis() = 0; }
@@ -230,6 +239,31 @@ void test_app_channel_distinct_nonces_both_deliver(void) {
   TEST_ASSERT_EQUAL_INT(2, sandbox->luaGlobalIntForTest("cnt"));
 }
 
+void test_send_system_stamps_channel(void) {
+  build();  // no network configured
+  JsonDocument doc;
+  doc["type"] = "realtime_start";
+  TEST_ASSERT_FALSE(sandbox->sendSystem(doc));       // no courier → false
+  TEST_ASSERT_EQUAL_STRING("system", doc["channel"] | "");  // stamped anyway
+}
+
+void test_description_shown_on_system_display(void) {
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  FakeSystemDisplay display;                 // reuse existing fake
+  cfg.systemDisplay = &display;
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setup();
+
+  JsonDocument doc;
+  doc["channel"] = "system";
+  doc["type"] = "app";
+  doc["code"] = APP_COUNTS_EVENTS;
+  doc["description"] = "My App";
+  sandbox->injectMessage("test", "app", doc);
+  TEST_ASSERT_EQUAL_STRING("My App", display.lastText.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_system_channel_routes_reserved_app_load);
@@ -247,5 +281,7 @@ int main(int, char**) {
   RUN_TEST(test_app_channel_drops_self_echo);
   RUN_TEST(test_app_channel_dedups_by_nonce);
   RUN_TEST(test_app_channel_distinct_nonces_both_deliver);
+  RUN_TEST(test_send_system_stamps_channel);
+  RUN_TEST(test_description_shown_on_system_display);
   return UNITY_END();
 }

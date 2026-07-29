@@ -446,8 +446,9 @@ void Sandbox::onCourierMessage(const char* transportName,
   // ── Legacy un-channelled path (deprecated) ──
   Serial.printf("[deprecated] un-channelled '%s' message; sender should stamp channel\n", type);
   if (_messageFilter && !_messageFilter(transportName, type, doc)) return;
-  if (_deferLoads &&
-      (strcmp(type, "app") == 0 || strcmp(type, "shader") == 0)) {
+  bool isLoad = strcmp(type, "app") == 0 || strcmp(type, "shader") == 0;
+  if (isLoad) maybeShowDescription(doc);
+  if (_deferLoads && isLoad) {
     stashDeferredLoad(doc);
     return;
   }
@@ -500,6 +501,7 @@ void Sandbox::handleSystemMessage(const char* transportName, const char* type,
                                   JsonDocument& doc)
 {
   bool isLoad = strcmp(type, "app") == 0 || strcmp(type, "shader") == 0;
+  if (isLoad) maybeShowDescription(doc);
   if (_deferLoads && isLoad) { stashDeferredLoad(doc); return; }
   if (strcmp(type, "app") == 0) {
     const char* code = doc["code"];
@@ -545,6 +547,27 @@ void Sandbox::onMessageWithChannel(const char* channel, MessageCallback cb)
   _channelSlots[_channelSlotCount].name = channel;
   _channelSlots[_channelSlotCount].cb = std::move(cb);
   _channelSlotCount++;
+}
+
+// Control-plane emit: stamps channel:"system" and sends via the default
+// transport. Used for device control messages (voice start/end etc.) — the
+// doc is stamped whether or not a network is configured, so callers can
+// inspect the envelope even when send fails.
+bool Sandbox::sendSystem(JsonDocument& doc)
+{
+  doc["channel"] = "system";
+  if (!_courier.has_value()) return false;
+  return _courier->send(doc);
+}
+
+// App/shader "description" field -> systemDisplay on load receipt. Called
+// once per load, before deferral is applied — a deferred load's description
+// was already shown here at receipt, so the deferred-apply path shows nothing.
+void Sandbox::maybeShowDescription(JsonDocument& doc)
+{
+  if (!_showDescriptions || !systemDisplay()) return;
+  const char* desc = doc["description"];
+  if (desc && desc[0]) systemDisplay()->displayText(desc);
 }
 
 // Data-plane emit: builds the app-channel envelope and hands it to the

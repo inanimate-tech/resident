@@ -192,6 +192,16 @@ public:
     // receives only non-reserved control types.
     void onMessageWithChannel(const char* channel, MessageCallback cb);
 
+    // ── Control-plane emit ──
+    // Stamps channel:"system" and sends via the default transport. For
+    // device control messages (voice start/end etc.). Returns false when no
+    // network is configured or the send fails; the doc is stamped either way.
+    bool sendSystem(JsonDocument& doc);
+
+    // App/shader "description" → systemDisplay on load receipt (default on).
+    // Disable on devices whose system display IS the main app screen.
+    void setShowDescriptions(bool show) { _showDescriptions = show; }
+
     // ── Data-plane emit ──
     // Builds {channel:"app", type:name, data, from, nonce, ts_ms} and hands
     // it to the event sink (default: courier().send on the default
@@ -280,6 +290,10 @@ private:
     EventsModule _eventsModule;
     EventSink _eventSink;
     unsigned long _eventNonceCounter = 0;
+
+    // Description-on-load display (setShowDescriptions).
+    bool _showDescriptions = true;
+    void maybeShowDescription(JsonDocument& doc);
 
     // Shared by the channelled and legacy load paths.
     void stashDeferredLoad(JsonDocument& doc);
