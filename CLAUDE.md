@@ -39,7 +39,19 @@ The runner self-installs its Python deps via `uv` (PEP 723 inline metadata).
 
 - **Public API** lives under the `Resident::` namespace, declared in headers
   under `src/`. The current API is centred on `Resident::Sandbox` (renamed
-  from `Resident::Device` in 0.5).
+  from `Resident::Device` in 0.5). Since 0.7, incoming messages carry an
+  envelope `channel` field that routes them onto a plane: `"app"` (data
+  plane) reaches `Sandbox::handleAppMessage` → Lua `on_event`; `"system"`
+  (control plane) reaches `Sandbox::handleSystemMessage`, which still handles
+  the reserved `app`/`shader`/`forget` types and falls through to a
+  `"system"` slot for anything else; any other channel name goes to a slot
+  registered via `Sandbox::onMessageWithChannel(name, cb)`. Messages with no
+  `channel` field take the legacy un-channelled path (`onMessage` /
+  `onMessageFilter`) — still supported, but new code should stamp a channel.
+  Emit-side: `Sandbox::sendSystem(doc)` for control-plane sends,
+  `Sandbox::publishEvent(name, dataJson)` / the Lua `events.send(name, data)`
+  for rate-limited data-plane events. See `docs/api.md`'s "Channel routing"
+  section for the full picture.
 - **Examples are independent PlatformIO projects.** Each has its own
   `platformio.ini` and uses `lib_deps = symlink://../../..` to pull in this
   library from the repo root. They should build standalone.

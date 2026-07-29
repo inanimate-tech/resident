@@ -136,6 +136,12 @@ public:
     void onTransportsWillConnect(TransportsWillConnectCallback cb) {
       _onTransportsWillConnect = std::move(cb);
     }
+    // Legacy un-channelled path ONLY: fires for messages with no "channel"
+    // field (and, among those, only non-reserved types — app/shader/
+    // app_event/forget are still routed internally). New code should use
+    // channel routing instead: handleAppMessage / handleSystemMessage /
+    // onMessageWithChannel. This slot exists so senders that predate the
+    // channel field keep working, and is not where new message types land.
     void onMessage(MessageCallback cb) {
       _onMessage = std::move(cb);
     }
@@ -147,12 +153,15 @@ public:
     }
 
     // ── Message interposition ──
-    // Pre-routing filter (single-slot). Runs before app-load deferral,
+    // Legacy un-channelled path ONLY: runs before app-load deferral,
     // reserved-type routing (app/shader/app_event/forget), and the user
-    // onMessage callback. Return true to continue normal routing; return
-    // false to consume the message (nothing further runs). Platform wrappers
-    // use this for dedup, self-echo filtering, and platform-only message
-    // types — without re-implementing the sandbox's routing.
+    // onMessage callback — but only for messages with no "channel" field.
+    // Channelled messages (app/system/custom) bypass this filter entirely;
+    // it does not run in front of handleAppMessage / handleSystemMessage /
+    // onMessageWithChannel. Return true to continue normal routing; return
+    // false to consume the message (nothing further runs). Kept for
+    // dedup/self-echo filtering and platform-only message types on senders
+    // that predate the channel field.
     using MessageFilter = std::function<bool(const char* transportName,
                                               const char* type,
                                               JsonDocument& doc)>;

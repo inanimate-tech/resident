@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.7.0-dev
+
+Theme: channel-based message routing — an envelope `channel` field steers messages onto a data plane, a control plane, or a custom slot, replacing the single flat `onMessage`/reserved-type dispatch as the routing new senders should use.
+
+### Dependencies
+
+- **Courier `^0.6.0` on both registries** (was `^0.5.1`). 0.6.0 makes `Client::onMessage` deliver only the default transport's messages ("receive parallels send", mirroring `Client::send`) — channel routing needs one coherent per-transport message stream instead of every transport's traffic funnelled through the client-level callback.
+
+### New features
+
+- **Channel routing.** Incoming messages carry an envelope `channel` field:
+  - **`channel:"app"` (data plane).** Every message routes to `handleAppMessage` → Lua `on_event(ctx, event)` with `event.name` set to `type`. No reserved types on this channel — `type:"forget"` here is just an event, not a persistence op. Self-echo is dropped (`from == getDeviceId()`, guards multicast loopback) and duplicates are deduped by `nonce` against a 16-entry ring (guards the same event arriving over more than one transport). Gated exactly like the existing `sendAppEvent`: dropped with no app loaded or no `on_event` handler, so the event ring can't leak stale events into whatever app loads next. The legacy `app_event` envelope is still accepted here for one release (`[deprecated] app_event wrapper; send channel:"app" with type=<event name>`).
+  - **`channel:"system"` (control plane).** Reserved types `app`/`shader`/`forget` are handled exactly as before (including `deferAppLoads` and the new description display, below); any other type falls through to a `"system"` channel slot.
+  - **Any other `channel` value** routes to a per-channel slot registered via `Sandbox::onMessageWithChannel(name, cb)` — up to 8 slots, exact-string match, last registration wins. An unregistered channel is logged and dropped.
+  - **No `channel` field** takes the legacy un-channelled path — logs `[deprecated] un-channelled '<type>' message; sender should stamp channel`, then routes exactly as before (`onMessageFilter` → deferral → reserved-type routing → `onMessage`).
+  - New public API: `Sandbox::handleAppMessage` / `handleSystemMessage` (callable directly by wrappers with their own receive path — e.g. per-topic MQTT hooks — with no loopback through Courier) and `Sandbox::onMessageWithChannel`.
+- **`Sandbox::publishEvent(name, dataJson)`** — builds the `channel:"app"` envelope (`type`, `data`, `from`, `nonce`, `ts_ms`) and hands it to the event sink (`setEventSink(EventSink)` if set, otherwise `courier().send` on the default transport). Rate-limited with a token bucket (5 events/s sustained, burst of 10); returns `false` on rate limit, no sink/network, or send failure. This is the shared implementation behind the new Lua `events.send` and any C++ caller (e.g. a platform wrapper's `room.announce` alias) — **a deliberate behavior change** from the old `room.announce`, which raised a Lua error on rate limit rather than returning `false`.
+- **`events` Lua module.** `events.send(name [, data])` publishes on the app data plane via `publishEvent` and returns a boolean. `data`, if given, must be a flat table of string/number values (other value types are silently skipped); serialized into a bounded 256-byte JSON buffer.
+- **`Sandbox::sendSystem(doc)`** — stamps `channel:"system"` and sends via the default transport. For device control messages (voice start/end, etc.). Returns `false` with no network configured or on send failure; the doc is stamped either way.
+- **Description-on-load display.** An `app`/`shader` load message (legacy path or `"system"` channel) carrying a `description` field is shown on `systemDisplay` at receipt, before any `deferAppLoads` stash is applied. On by default; `Sandbox::setShowDescriptions(false)` disables it — e.g. for devices whose `systemDisplay` is the main app screen.
+
+### Deprecations
+
+- **Un-channelled message routing** (no `channel` field) still works but now logs `[deprecated] un-channelled '<type>' message; sender should stamp channel` on every message. Stamp `channel:"app"`/`"system"`/a custom name instead.
+- **The `app_event` envelope** on the app channel still works but now logs `[deprecated] app_event wrapper; send channel:"app" with type=<event name>`.
+- **`Sandbox::onMessage` / `onMessageFilter`** now serve the legacy un-channelled path only (doc comments updated accordingly) — new code should use `onMessageWithChannel` / `handleAppMessage` / `handleSystemMessage`. Not yet `[[deprecated]]`-attributed: platform wrappers (e.g. Hawthorn's `HawthornRoomDevice`) still register the filter, and SDK examples may still use `onMessage`; attributes land when that shim is removed.
+
+---
+
 ## v0.6.2
 
 ### Dependencies
