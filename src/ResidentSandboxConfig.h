@@ -57,7 +57,9 @@ struct SandboxConfig {
   // A button the runtime can poll directly (e.g. to skip the boot countdown).
   SystemButton* systemButton = nullptr;
 
-  // A microphone the runtime can stream while a mode is active.
+  // A capture source for the mic streaming pump. Not a Driver: the pump owns
+  // its begin()/end(), so capture runs only while streaming. On M5 boards use
+  // the shipped Resident::M5Mic (#include <ResidentM5Mic.h>).
   SystemMic* systemMic = nullptr;
 
   // Deprecated: use systemDisplay / systemLED. Reconciled internally — the

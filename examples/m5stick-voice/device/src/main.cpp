@@ -1,10 +1,10 @@
 #include <M5Unified.h>
 #include <Resident.h>
+#include <ResidentM5Mic.h>   // opt-in M5 mic driver shipped with Resident
 #include "DisplayDriver.h"
 #include "IMUDriver.h"
 #include "BuzzerDriver.h"
 #include "PushButtonsDriver.h"
-#include "M5MicDriver.h"
 
 // ---------------------------------------------------------------------------
 // m5stick-voice — push-to-talk audio streaming, built on Resident core.
@@ -28,7 +28,7 @@ static constexpr PushButtonsConfig buttonConfig = {.numButtons = 2, .pins = BUTT
 IMUDriver imuDriver;
 BuzzerDriver buzzerDriver{255};
 PushButtonsDriver buttonDriver{buttonConfig};
-M5MicDriver micDriver;
+Resident::M5Mic micDriver;   // capture runs only while the pump streams
 
 // Forward declarations so VoiceDisplay::restoreContent() can reach the
 // idle prompt and the sandbox's run state; both are defined further down.
