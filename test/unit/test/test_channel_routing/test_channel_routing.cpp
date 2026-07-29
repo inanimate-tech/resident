@@ -208,7 +208,9 @@ void test_app_channel_dedups_by_nonce(void) {
     evt["nonce"] = "otherdev:42";        // same nonce via local + mqtt
     sandbox->injectMessage(i == 0 ? "local" : "mqtt", "turn", evt);
   }
-  pump();
+  // Two pumps: loop() drains one queued event per tick, so a single pump
+  // would show cnt==1 even without dedup. With dedup deleted this reads 2.
+  pump(); pump();
   TEST_ASSERT_EQUAL_INT(1, sandbox->luaGlobalIntForTest("cnt"));
 }
 
