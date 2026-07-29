@@ -25,11 +25,55 @@ Theme: channel-based message routing — an envelope `channel` field steers mess
 
 - **`Sandbox` now defaults a networked `Courier::Config::defaultTransport` to `"ws"` when unset and `host` is set** — under 0.6's "receive parallels send", an unset default transport meant `Client::onMessage` (and thus all channel routing) never fired on any real device; callers who set an explicit `defaultTransport` are unaffected.
 
+- **`m5stick-voice`'s `M5MicDriver` returned unfilled audio.** `M5.Mic.record()`
+  is asynchronous — it queues a destination buffer into M5Unified's request
+  queue and returns while the mic task fills it in the background — but the
+  driver returned `maxSamples` the instant it returned. Every read handed back
+  a buffer that had not been written yet, and because the destination was the
+  *caller's* buffer, the mic task went on writing memory the caller already
+  considered its own.
+
+  Rewritten as a three-buffer rotation that derives completion from `record()`
+  itself: M5Unified's queue holds exactly two requests and `record()` blocks
+  until its slot is free, so `record()` returning means the request queued two
+  calls earlier has completed — a guarantee, with nothing to poll. Queueing
+  before serving also keeps two requests outstanding at all times, which
+  matters: when its queue runs empty the mic task parks and silently discards
+  the partially consumed DMA chunk it was holding, splicing the audio. The old
+  one-buffer-per-read shape hit that on every read. The mic task is also now
+  pinned to core 1 at priority 18, which fixes a separate DMA-ring overrun
+  under TLS streaming load at M5Unified's default priority 2.
+
+  Note `isRecording()` is *not* a completion signal — it is gated on a flag the
+  mic task sets itself, so a freshly queued request reads back as "nothing
+  pending" and a wait on it falls straight through onto an unfilled buffer. It
+  answers queue occupancy, and is used only for that.
+
 ### Deprecations
 
 - **Un-channelled message routing** (no `channel` field) still works but now logs `[deprecated] un-channelled '<type>' message; sender should stamp channel` on every message. Stamp `channel:"app"`/`"system"`/a custom name instead.
 - **The `app_event` envelope** on the app channel still works but now logs `[deprecated] app_event wrapper; send channel:"app" with type=<event name>`.
 - **`Sandbox::onMessage` / `onMessageFilter`** now serve the legacy un-channelled path only (doc comments updated accordingly) — new code should use `onMessageWithChannel` / `handleAppMessage` / `handleSystemMessage`. Not yet `[[deprecated]]`-attributed: platform wrappers (e.g. Hawthorn's `HawthornRoomDevice`) still register the filter, and SDK examples may still use `onMessage`; attributes land when that shim is removed.
+
+### Internal
+
+- **`Resident::SystemMic::read()` now states its contract**, in
+  `ResidentSystemMic.h` and [api.md](api.md#implementing-read). The four rules
+  each correspond to a defect seen in a real driver: capture belongs in
+  `begin()` rather than `read()`; never hand capture hardware the caller's
+  buffer; `timeoutMs == 0` means *do not block* (the pump calls
+  `read(buf, frameSamples(), 0)` from `loop()`, so blocking stalls the whole
+  sandbox); and short reads — including `0` — are legal and routine.
+
+  Previously `timeoutMs == 0` was undefined, and independent implementations
+  had read it as "don't block", "block indefinitely" and "ignore the parameter
+  entirely". No runtime behaviour changed — the pump already passed `0` — but
+  that is now the documented, tested contract rather than an accident.
+
+- **Mic pump contract tests** (`test/unit/test/test_mic_stream/`) covering the
+  rules the pump is responsible for upholding: it reads with `timeoutMs == 0`,
+  forwards short reads verbatim rather than padding to `maxSamples`, and emits
+  nothing when a read returns `0`.
 
 ---
 
