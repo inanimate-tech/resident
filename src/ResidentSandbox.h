@@ -13,6 +13,7 @@
 #include "ResidentLuaModule.h"
 #include "ResidentSandboxConfig.h"
 #include "ResidentOverlay.h"
+#include "ResidentEvents.h"
 
 namespace Resident {
 
@@ -191,6 +192,17 @@ public:
     // receives only non-reserved control types.
     void onMessageWithChannel(const char* channel, MessageCallback cb);
 
+    // ── Data-plane emit ──
+    // Builds {channel:"app", type:name, data, from, nonce, ts_ms} and hands
+    // it to the event sink (default: courier().send on the default
+    // transport). Rate-limited (5/s, burst 10). Returns false on rate limit,
+    // no sink, or sink failure. Shared by the Lua path (events.send) and the
+    // C++ path (wrapper aliases, e.g. HRD's room.announce).
+    bool publishEvent(const char* name, const char* dataJson);
+
+    using EventSink = std::function<bool(JsonDocument&)>;
+    void setEventSink(EventSink sink) { _eventSink = std::move(sink); }
+
     // ── Identity / status accessors ──
     const String& getDeviceId() const { return _deviceId; }
     const String& getAPName() const { return _apName; }
@@ -260,6 +272,14 @@ private:
     ChannelSlot _channelSlots[MAX_CHANNEL_SLOTS];
     int _channelSlotCount = 0;
     MessageCallback* lookupChannelSlot(const char* channel);
+
+    // Data-plane emit: internal Extension registering the `events` Lua
+    // module (events.send) + the shared token-bucket rate limiter. Named
+    // _eventsModule (not _events) — that name is already taken by the
+    // Event ring buffer below.
+    EventsModule _eventsModule;
+    EventSink _eventSink;
+    unsigned long _eventNonceCounter = 0;
 
     // Shared by the channelled and legacy load paths.
     void stashDeferredLoad(JsonDocument& doc);

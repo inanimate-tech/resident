@@ -43,6 +43,7 @@ static const char* REGISTRY_KEY = "ResidentSandbox_instance";
 
 Sandbox::Sandbox() {
   memset(_events, 0, sizeof(_events));
+  _eventsModule.bind(this);
 }
 
 Sandbox::Sandbox(const SandboxConfig& config) : Sandbox() {
@@ -245,6 +246,14 @@ void Sandbox::initialize()
     ext->registerModule(m);
     lua_setglobal(_lua, ext->name());
   }
+
+  // Internal modules — same registration shape as declared extensions.
+  lua_newtable(_lua);
+  {
+    LuaModule m(_lua, &_eventsModule);
+    _eventsModule.registerModule(m);
+  }
+  lua_setglobal(_lua, _eventsModule.name());
 
   _triggerResetTime = millis();
   _lastTickTime = millis();
@@ -538,6 +547,112 @@ void Sandbox::onMessageWithChannel(const char* channel, MessageCallback cb)
   _channelSlotCount++;
 }
 
+// Data-plane emit: builds the app-channel envelope and hands it to the
+// event sink. Shared by events.send (EventsModule::send, below) and any
+// C++ caller (e.g. a wrapper's room.announce alias).
+bool Sandbox::publishEvent(const char* name, const char* dataJson)
+{
+  if (!name || !name[0]) return false;
+  if (!_eventsModule.takeToken()) {
+    Serial.println("Resident::Sandbox: publishEvent rate-limited; dropped");
+    return false;
+  }
+  JsonDocument doc;
+  doc["channel"] = "app";
+  doc["type"] = name;
+  JsonDocument data;
+  if (dataJson && dataJson[0] && !deserializeJson(data, dataJson)) {
+    doc["data"] = data;
+  } else {
+    doc["data"].to<JsonObject>();
+  }
+  doc["from"] = _deviceId;
+  char nonce[64];
+  snprintf(nonce, sizeof(nonce), "%s:%lu", _deviceId.c_str(),
+           (unsigned long)++_eventNonceCounter);
+  doc["nonce"] = nonce;
+  doc["ts_ms"] = millis();
+
+  if (_eventSink) return _eventSink(doc);
+  if (_courier.has_value()) return _courier->send(doc);
+  return false;
+}
+
+// events.send(name [, data_table]) -> boolean. Defined here (not in
+// ResidentEvents.h) because it needs Sandbox::publishEvent, i.e. Sandbox as
+// a complete type — see the linkage note atop ResidentEvents.h. The
+// flat-table -> JSON serializer is ported verbatim from RoomModule::announce
+// (lib/HawthornRoomDevice/src/modules/RoomModule.cpp in the parent repo).
+int EventsModule::send(lua_State* L)
+{
+  // Arg 1: event name (string, required)
+  const char* name = luaL_checkstring(L, 1);
+
+  // Arg 2: data table (optional)
+  char dataJson[256] = "{}";
+
+  if (lua_gettop(L) >= 2 && lua_istable(L, 2)) {
+    // Serialize flat Lua table to JSON
+    char* p = dataJson;
+    char* end = dataJson + sizeof(dataJson) - 2;
+    *p++ = '{';
+    bool first = true;
+
+    lua_pushnil(L);  // First key
+    while (lua_next(L, 2) != 0 && p < end) {
+      if (lua_type(L, -2) == LUA_TSTRING) {
+        const char* key = lua_tostring(L, -2);
+
+        if (!first && p < end) {
+          *p++ = ',';
+        }
+
+        int written = snprintf(p, end - p, "\"%s\":", key);
+        if (written > 0 && p + written < end) {
+          p += written;
+        } else {
+          lua_pop(L, 1);
+          break;
+        }
+
+        if (lua_type(L, -1) == LUA_TSTRING) {
+          const char* val = lua_tostring(L, -1);
+          written = snprintf(p, end - p, "\"%s\"", val);
+        } else if (lua_type(L, -1) == LUA_TNUMBER) {
+          if (lua_isinteger(L, -1)) {
+            written = snprintf(p, end - p, "%lld", (long long)lua_tointeger(L, -1));
+          } else {
+            written = snprintf(p, end - p, "%g", lua_tonumber(L, -1));
+          }
+        } else {
+          // Skip unsupported types - back out the key
+          if (!first) p--;
+          while (p > dataJson + 1 && *(p - 1) != '{' && *(p - 1) != ',') p--;
+          lua_pop(L, 1);
+          continue;
+        }
+
+        if (written > 0 && p + written < end) {
+          p += written;
+          first = false;
+        } else {
+          lua_pop(L, 1);
+          break;
+        }
+      }
+
+      lua_pop(L, 1);  // Pop value, keep key for next iteration
+    }
+
+    *p++ = '}';
+    *p = '\0';
+  }
+
+  bool sent = _sandbox && _sandbox->publishEvent(name, dataJson);
+  lua_pushboolean(L, sent);
+  return 1;
+}
+
 // Reserved-type routing + user callback. Entered from onCourierMessage (after
 // the filter and deferral guards) and, for an applied stash, directly from
 // deferAppLoads — a stashed load already passed the filter at receipt, so
@@ -761,6 +876,7 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
     _config.extensions.items[i]->onAppReset();
   }
+  _eventsModule.onAppReset();
 
   // Generate new generation ID
   _generationId = String(millis(), HEX);
