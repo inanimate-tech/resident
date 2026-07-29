@@ -15,8 +15,8 @@
 // Headers like ResidentSandboxConfig.h declare `std::map<String, String>`
 // aliases that need a String type at parse time, and ResidentSandbox.cpp /
 // chipstring.h use the Arduino-only surface (numeric-with-base constructor,
-// toLowerCase, substring, isEmpty). Inheriting from std::string keeps the
-// std interop (comparisons, operator+, map ordering) that earlier tests
+// toLowerCase, substring, isEmpty, equals). Inheriting from std::string keeps
+// the std interop (comparisons, operator+, map ordering) that earlier tests
 // relied on when this was a plain alias.
 class String : public std::string {
 public:
@@ -37,6 +37,8 @@ public:
     void toLowerCase() {
         for (auto& c : *this) c = (char)tolower((unsigned char)c);
     }
+    bool equals(const char* s) const { return compare(s ? s : "") == 0; }
+    bool equals(const String& s) const { return compare(s) == 0; }
 };
 
 // Numeric base constants (Arduino.h defines these as macros)

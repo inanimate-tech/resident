@@ -456,6 +456,10 @@ void Sandbox::handleAppMessage(const char* transportName, const char* type,
     name = doc["name"] | "";
     if (!name[0]) return;
   }
+  const char* from = doc["from"] | "";
+  if (from[0] && _deviceId.equals(from)) return;   // self-echo (multicast loopback)
+  const char* nonce = doc["nonce"] | "";
+  if (nonce[0] && isDuplicateNonce(nonce)) return;
   // Same gate as sendAppEvent (see its comment — "deliberate"): no app loaded,
   // or no on_event handler → drop. The event ring is not reset on app load, so
   // queueing here would leak stale events into whatever app loads next.
@@ -464,8 +468,23 @@ void Sandbox::handleAppMessage(const char* transportName, const char* type,
   if (doc["data"].is<JsonObject>()) {
     serializeJson(doc["data"], dataJson, sizeof(dataJson));
   }
-  const char* from = doc["from"] | "";
   pushAppEvent(name, dataJson, from, doc["ts_ms"] | millis());
+}
+
+bool Sandbox::isDuplicateNonce(const char* nonce)
+{
+  if (!nonce || !nonce[0]) return false;
+
+  for (int i = 0; i < DEDUP_RING_SIZE; i++) {
+    if (_recentNonces[i][0] && strcmp(_recentNonces[i], nonce) == 0) {
+      return true;
+    }
+  }
+
+  strncpy(_recentNonces[_nonceRingPos], nonce, sizeof(_recentNonces[0]) - 1);
+  _recentNonces[_nonceRingPos][sizeof(_recentNonces[0]) - 1] = '\0';
+  _nonceRingPos = (_nonceRingPos + 1) % DEDUP_RING_SIZE;
+  return false;
 }
 
 void Sandbox::handleSystemMessage(const char* transportName, const char* type,

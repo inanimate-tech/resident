@@ -411,6 +411,13 @@ private:
     int _eventHead = 0;
     int _eventTail = 0;
 
+    // Data-plane event dedup — the same event may arrive via multiple
+    // transports (e.g. LAN multicast fast path + broker durable path).
+    static constexpr int DEDUP_RING_SIZE = 16;
+    char _recentNonces[DEDUP_RING_SIZE][48] = {};
+    int _nonceRingPos = 0;
+    bool isDuplicateNonce(const char* nonce);
+
     // Trigger state
     unsigned long _triggerResetTime = 0;
     int _triggerCount = 0;

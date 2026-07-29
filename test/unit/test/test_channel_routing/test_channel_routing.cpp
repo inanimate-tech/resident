@@ -185,6 +185,49 @@ void test_defer_applies_to_system_channel_loads(void) {
   TEST_ASSERT_TRUE(sandbox->isAppRunning());
 }
 
+void test_app_channel_drops_self_echo(void) {
+  build();
+  loadCountingApp();
+  JsonDocument evt;
+  evt["channel"] = "app";
+  evt["type"] = "turn";
+  evt["from"] = sandbox->getDeviceId();   // our own event echoed back (UDP)
+  sandbox->injectMessage("test", "turn", evt);
+  pump();
+  TEST_ASSERT_EQUAL_INT(0, sandbox->luaGlobalIntForTest("cnt"));
+}
+
+void test_app_channel_dedups_by_nonce(void) {
+  build();
+  loadCountingApp();
+  for (int i = 0; i < 2; i++) {
+    JsonDocument evt;
+    evt["channel"] = "app";
+    evt["type"] = "turn";
+    evt["from"] = "otherdev";
+    evt["nonce"] = "otherdev:42";        // same nonce via local + mqtt
+    sandbox->injectMessage(i == 0 ? "local" : "mqtt", "turn", evt);
+  }
+  pump();
+  TEST_ASSERT_EQUAL_INT(1, sandbox->luaGlobalIntForTest("cnt"));
+}
+
+void test_app_channel_distinct_nonces_both_deliver(void) {
+  build();
+  loadCountingApp();
+  const char* nonces[] = {"otherdev:1", "otherdev:2"};
+  for (int i = 0; i < 2; i++) {
+    JsonDocument evt;
+    evt["channel"] = "app";
+    evt["type"] = "turn";
+    evt["from"] = "otherdev";
+    evt["nonce"] = nonces[i];
+    sandbox->injectMessage("test", "turn", evt);
+  }
+  pump(); pump();
+  TEST_ASSERT_EQUAL_INT(2, sandbox->luaGlobalIntForTest("cnt"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_system_channel_routes_reserved_app_load);
@@ -199,5 +242,8 @@ int main(int, char**) {
   RUN_TEST(test_filter_does_not_gate_channelled_messages);
   RUN_TEST(test_app_channel_event_before_load_does_not_leak);
   RUN_TEST(test_defer_applies_to_system_channel_loads);
+  RUN_TEST(test_app_channel_drops_self_echo);
+  RUN_TEST(test_app_channel_dedups_by_nonce);
+  RUN_TEST(test_app_channel_distinct_nonces_both_deliver);
   return UNITY_END();
 }
