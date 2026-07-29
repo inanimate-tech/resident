@@ -407,28 +407,112 @@ void Sandbox::deferAppLoads(bool defer)
   dispatchMessage("", type, doc);
 }
 
+void Sandbox::stashDeferredLoad(JsonDocument& doc)
+{
+  size_t need = measureJson(doc) + 1;
+  char* stash = (char*)malloc(need);
+  if (!stash) {
+    Serial.println("Resident::Sandbox: deferred load alloc failed; dropped");
+    return;
+  }
+  serializeJson(doc, stash, need);
+  if (_deferredLoadJson) free(_deferredLoadJson);
+  _deferredLoadJson = stash;
+}
+
 void Sandbox::onCourierMessage(const char* transportName,
                                 const char* type, JsonDocument& doc)
 {
-  // Platform filter runs before everything; false = consumed.
-  if (_messageFilter && !_messageFilter(transportName, type, doc)) return;
-
-  // App-load deferral: stash (last one wins) instead of loading.
-  if (_deferLoads &&
-      (strcmp(type, "app") == 0 || strcmp(type, "shader") == 0)) {
-    size_t need = measureJson(doc) + 1;
-    char* stash = (char*)malloc(need);
-    if (!stash) {
-      Serial.println("Resident::Sandbox: deferred load alloc failed; dropped");
-      return;
-    }
-    serializeJson(doc, stash, need);
-    if (_deferredLoadJson) free(_deferredLoadJson);
-    _deferredLoadJson = stash;
+  const char* channel = doc["channel"] | "";
+  if (channel[0]) {
+    if (strcmp(channel, "app") == 0)    { handleAppMessage(transportName, type, doc); return; }
+    if (strcmp(channel, "system") == 0) { handleSystemMessage(transportName, type, doc); return; }
+    MessageCallback* cb = lookupChannelSlot(channel);
+    if (cb && *cb) { (*cb)(transportName, type, doc); return; }
+    Serial.printf("Resident::Sandbox: no handler for channel '%s' (type '%s'); dropped\n",
+                  channel, type);
     return;
   }
 
+  // ── Legacy un-channelled path (deprecated) ──
+  Serial.printf("[deprecated] un-channelled '%s' message; sender should stamp channel\n", type);
+  if (_messageFilter && !_messageFilter(transportName, type, doc)) return;
+  if (_deferLoads &&
+      (strcmp(type, "app") == 0 || strcmp(type, "shader") == 0)) {
+    stashDeferredLoad(doc);
+    return;
+  }
   dispatchMessage(transportName, type, doc);
+}
+
+void Sandbox::handleAppMessage(const char* transportName, const char* type,
+                               JsonDocument& doc)
+{
+  (void)transportName;
+  const char* name = type;
+  if (strcmp(type, "app_event") == 0) {
+    // Legacy envelope on the data plane — removed when the shims retire.
+    Serial.println("[deprecated] app_event wrapper; send channel:\"app\" with type=<event name>");
+    name = doc["name"] | "";
+    if (!name[0]) return;
+  }
+  char dataJson[256] = "{}";
+  if (doc["data"].is<JsonObject>()) {
+    serializeJson(doc["data"], dataJson, sizeof(dataJson));
+  }
+  const char* from = doc["from"] | "";
+  pushAppEvent(name, dataJson, from, doc["ts_ms"] | millis());
+}
+
+void Sandbox::handleSystemMessage(const char* transportName, const char* type,
+                                  JsonDocument& doc)
+{
+  bool isLoad = strcmp(type, "app") == 0 || strcmp(type, "shader") == 0;
+  if (_deferLoads && isLoad) { stashDeferredLoad(doc); return; }
+  if (strcmp(type, "app") == 0) {
+    const char* code = doc["code"];
+    if (code) loadApp(code);
+    return;
+  }
+  if (strcmp(type, "shader") == 0) {
+    ShaderFields fields;
+    for (JsonPair kv : doc.as<JsonObject>()) {
+      if (strcmp(kv.key().c_str(), "type") == 0) continue;
+      if (strcmp(kv.key().c_str(), "channel") == 0) continue;
+      if (kv.value().is<const char*>()) {
+        fields[String(kv.key().c_str())] = String(kv.value().as<const char*>());
+      }
+    }
+    loadShader(fields);
+    return;
+  }
+  if (strcmp(type, "forget") == 0) { clearPersistedApp(); return; }
+
+  MessageCallback* cb = lookupChannelSlot("system");
+  if (cb && *cb) { (*cb)(transportName, type, doc); return; }
+  Serial.printf("Resident::Sandbox: unhandled system message '%s'; dropped\n", type);
+}
+
+Sandbox::MessageCallback* Sandbox::lookupChannelSlot(const char* channel)
+{
+  for (int i = 0; i < _channelSlotCount; i++) {
+    if (_channelSlots[i].name == channel) return &_channelSlots[i].cb;
+  }
+  return nullptr;
+}
+
+void Sandbox::onMessageWithChannel(const char* channel, MessageCallback cb)
+{
+  for (int i = 0; i < _channelSlotCount; i++) {
+    if (_channelSlots[i].name == channel) { _channelSlots[i].cb = std::move(cb); return; }
+  }
+  if (_channelSlotCount >= MAX_CHANNEL_SLOTS) {
+    Serial.println("Resident::Sandbox: channel slot registry full");
+    return;
+  }
+  _channelSlots[_channelSlotCount].name = channel;
+  _channelSlots[_channelSlotCount].cb = std::move(cb);
+  _channelSlotCount++;
 }
 
 // Reserved-type routing + user callback. Entered from onCourierMessage (after

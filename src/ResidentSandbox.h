@@ -172,6 +172,25 @@ public:
     void injectMessage(const char* transportName, const char* type,
                        JsonDocument& doc);
 
+    // ── Channel routing (see docs: channels) ──
+    // Data-plane entry: every message on channel "app". Self-echo drop and
+    // nonce dedup (Task 4), then delivery to on_event with event.name = type.
+    // Public because wrappers call it directly from per-transport hooks
+    // (e.g. MQTT topic mapping) — no loopback through Courier.
+    void handleAppMessage(const char* transportName, const char* type,
+                          JsonDocument& doc);
+
+    // Control-plane entry: every message on channel "system". Reserved types
+    // app/shader/forget are handled internally (deferral included); all other
+    // types fall through to the "system" channel slot.
+    void handleSystemMessage(const char* transportName, const char* type,
+                             JsonDocument& doc);
+
+    // Single slot per channel, last registration wins. "app" is not
+    // registrable (the data plane belongs to the Lua app); a "system" slot
+    // receives only non-reserved control types.
+    void onMessageWithChannel(const char* channel, MessageCallback cb);
+
     // ── Identity / status accessors ──
     const String& getDeviceId() const { return _deviceId; }
     const String& getAPName() const { return _apName; }
@@ -234,6 +253,16 @@ private:
     // exists for. Freed on apply, overwrite, and destruction.
     bool  _deferLoads = false;
     char* _deferredLoadJson = nullptr;
+
+    // Channel slot registry (single slot per channel, exact-string match).
+    static constexpr int MAX_CHANNEL_SLOTS = 8;
+    struct ChannelSlot { String name; MessageCallback cb; };
+    ChannelSlot _channelSlots[MAX_CHANNEL_SLOTS];
+    int _channelSlotCount = 0;
+    MessageCallback* lookupChannelSlot(const char* channel);
+
+    // Shared by the channelled and legacy load paths.
+    void stashDeferredLoad(JsonDocument& doc);
 
     // Internal Courier hook handlers (drive status indicators + reserved-type
     // routing, then delegate to user callbacks).
