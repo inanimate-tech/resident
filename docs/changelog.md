@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.7.0-dev (cbe3aab)
+## v0.7.0
 
 Theme: channel-based message routing — an envelope `channel` field steers messages onto a data plane, a control plane, or a custom slot, replacing the single flat `onMessage`/reserved-type dispatch as the routing new senders should use. Also in this release: `SystemMic` becomes a standalone capture interface with a shipped M5 driver.
 
