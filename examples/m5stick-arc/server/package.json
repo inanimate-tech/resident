@@ -1,0 +1,26 @@
+{
+  "name": "m5stick-arc-server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cloudflare Worker running the arc agent loop: relays Resident devices, answers arc:ask events with inference via AI Gateway, and serves a live viewer.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.94",
+    "@inanimate/resident": "^0.1.0",
+    "agents": "^0.10.1",
+    "ai": "^6.0.220",
+    "luaparse": "^0.3.1",
+    "workers-ai-provider": "^3.3.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260411.1",
+    "typescript": "^6.0.2",
+    "wrangler": "4.81.1"
+  }
+}

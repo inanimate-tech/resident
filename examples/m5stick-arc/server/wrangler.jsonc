@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "m5stick-arc",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-03-02",
+  "compatibility_flags": ["nodejs_compat"],
+  // Deploy with CLOUDFLARE_ACCOUNT_ID=<your account id> in the environment —
+  // the account id is deliberately not committed here.
+  "vars": {
+    // Name of the AI Gateway on your account. The gateway holds the Anthropic
+    // API key (BYOK) so this worker needs no model-provider secret.
+    "CLOUDFLARE_AIG_ID": "hawthorn-gateway"
+  },
+  "ai": { "binding": "AI", "remote": true },
+  "durable_objects": {
+    "bindings": [{ "name": "ArcAgent", "class_name": "ArcAgent" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ArcAgent"] }],
+  // Bundle .lua sources as text modules (the arc runtime + the generation).
+  "rules": [{ "type": "Text", "globs": ["**/*.lua"], "fallthrough": true }],
+  "observability": { "enabled": true }
+}

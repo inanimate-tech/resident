@@ -15,6 +15,9 @@ examples/*/dependencies.lock
 # PlatformIO test build artifacts
 test/unit/.pio/
 
+# Node dependencies (per-example server projects)
+node_modules/
+
 # Python bytecode (from tools/run-tests.py and friends)
 __pycache__/
 

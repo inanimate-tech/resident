@@ -82,6 +82,8 @@ PLATFORMIO_EXAMPLES: list[Path | tuple[Path, str]] = [
     ROOT / "examples" / "adafruit-esp32-s2-feather" / "device-no-resident",
     (ROOT / "examples" / "m5stick-voice" / "device", "m5stick"),
     (ROOT / "examples" / "m5stick-voice" / "device", "m5sticks3"),
+    (ROOT / "examples" / "m5stick-arc" / "device", "m5stick"),
+    (ROOT / "examples" / "m5stick-arc" / "device", "m5sticks3"),
 ]
 
 
