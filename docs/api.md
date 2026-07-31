@@ -46,6 +46,7 @@ void loop()  { sandbox.loop(); }
 | `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
 | `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). On M5 boards use the shipped `Resident::M5Mic` (`#include <ResidentM5Mic.h>`); otherwise implement `Resident::SystemMic`. Not a `Driver` — the pump owns its `begin()`/`end()`. |
 | `persistentStore` | `Resident::PersistentStore*` | `nullptr` | Override the backing store for persistence. `nullptr` uses NVS on device; inject a fake in tests. |
+| `tickSliceMs` | `uint32_t` | `8` | Wall-clock budget for one continuous slice of `on_tick`. A frame that outruns it yields and resumes on the next `loop()` pass (see [Tick slicing](#tick-slicing)). `0` disables slicing. |
 | `statusDisplay` | `SystemDisplay*` | `nullptr` | **Deprecated** — use `systemDisplay`. Kept as a fallback; a compile-time warning nudges migration. |
 | `statusLED` | `SystemLED*` | `nullptr` | **Deprecated** — use `systemLED`. Kept as a fallback; a compile-time warning nudges migration. |
 
@@ -733,6 +734,45 @@ All callbacks receive a `ctx` table. `on_tick` also receives `dt_ms` (integer, m
 | `localtime_m` | integer | Local minute — equals `utc_m` unless a timezone has been set |
 
 `localtime_h` / `localtime_m` reflect local time only after `Sandbox::setTimezone` succeeds. Otherwise they are equal to `utc_h` / `utc_m`.
+
+Every field above is sampled **once, when the frame starts**, and stays fixed
+for the frame's whole life even if it spans several slices (see
+[Tick slicing](#tick-slicing)). Motion computed against `time_ms` or `dt_ms`
+is therefore stable regardless of how expensive the frame is.
+
+### Tick slicing
+
+`on_tick` runs on a coroutine with a wall-clock budget of
+`SandboxConfig::tickSliceMs` (default 8 ms). A frame that finishes inside its
+budget behaves exactly like a plain call. A frame that outruns it is yielded
+mid-flight: `Sandbox::loop()` returns, the rest of the system runs, and the
+**same frame** resumes on the next pass.
+
+```
+loop() pass 1:  [courier][drivers][overlays]  frame slice ─┐
+loop() pass 2:  [courier][drivers][overlays]  frame slice ─┤ one on_tick
+loop() pass 3:  [courier][drivers][overlays]  frame slice ─┘
+loop() pass 4:  [courier][drivers][overlays]  FRAME READY → next frame
+```
+
+An expensive app therefore costs frame rate, not system responsiveness —
+networking, driver polling and overlay drawing keep running at full loop rate
+throughout. The app is told the truth about the cost: `dt_ms` spans
+frame-start to frame-start, so a frame that takes a second reports ~1000 ms
+next time round, and time-based motion stays correct at the lower rate.
+
+Guarantees while a frame is in flight:
+
+- No second frame starts — frames never overlap.
+- `on_event` does not run. A queued event dispatches once the frame completes,
+  so a handler never observes half-updated app state.
+- `loadApp`, `loadShader` and `suspendApp` abandon the frame cleanly.
+
+Set `tickSliceMs = 0` to opt out and run each frame as one uninterrupted call.
+
+**Limitation:** a frame running below a C-call boundary — an extension binding
+that called back into Lua — has no resumable continuation and cannot be
+yielded. Such a frame runs to completion in the current pass.
 
 ### `event` table
 

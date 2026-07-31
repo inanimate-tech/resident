@@ -105,6 +105,11 @@ Sandbox::~Sandbox()
     _deferredLoadJson = nullptr;
   }
   if (_lua) {
+    abandonTickFrame();
+    if (_tickCoRef != LUA_NOREF)
+      luaL_unref(_lua, LUA_REGISTRYINDEX, _tickCoRef);
+    _tickCo = nullptr;
+
     if (_initFuncRef != LUA_NOREF)
       luaL_unref(_lua, LUA_REGISTRYINDEX, _initFuncRef);
     if (_onTickFuncRef != LUA_NOREF)
@@ -869,11 +874,25 @@ void Sandbox::loop() {
   // Networked apps tick only once connected (unchanged); standalone always.
   if (_courier.has_value() && !isConnected()) return;
 
+  // A frame parked mid-execution owns the Lua VM for this pass: run one more
+  // slice of it, and start nothing else. No new frame (frames never overlap),
+  // and no event dispatch — on_event must not interleave with a suspended
+  // on_tick, which would let it observe the app's half-updated state. The
+  // queued event waits for the frame to finish.
+  if (_tickInFlight) {
+    resumeTickFrame();
+    return;
+  }
+
   unsigned long now = millis();
   unsigned long elapsed = now - _lastTickTime;
   if (elapsed >= TICK_INTERVAL) {
-    callOnTick(elapsed);
+    // Stamped at frame START, before the frame runs, so the next frame's
+    // dt_ms spans start-to-start and covers everything this frame cost.
+    // A frame that takes a second reports ~1000ms next time round: the app
+    // sees an honest 1 FPS and time-based motion stays correct.
     _lastTickTime = now;
+    callOnTick(elapsed);
   }
 
   processNextEvent();
@@ -1286,6 +1305,10 @@ bool Sandbox::isAppRunning() const
 void Sandbox::suspendApp()
 {
   if (_runState != RunState::Running) return;
+  // Suspension means "the app stops ticking now". A frame parked mid-flight
+  // is dropped rather than held: resuming starts a fresh frame with a current
+  // ctx, instead of finishing one whose clock stopped before the suspension.
+  abandonTickFrame();
   _runState = RunState::Suspended;
   notifyAppRunning(false);  // free the status display for overlay text
 }
@@ -1307,6 +1330,11 @@ bool Sandbox::isAppSuspended() const
 bool Sandbox::compileApp(const char* code)
 {
   if (!_lua) return false;
+
+  // The outgoing app may have a frame parked mid-execution (Courier::loop()
+  // runs between slices, so an app/shader message can land here while one is
+  // in flight). Drop it before its on_tick reference is unref'd underneath it.
+  abandonTickFrame();
 
   // Free old function references
   if (_initFuncRef != LUA_NOREF) {
@@ -1421,7 +1449,7 @@ bool Sandbox::callInit()
   lua_setfield(_lua, -2, "trigger_count");
 
   // Time-of-day fields
-  pushLocalTimeFields();
+  pushLocalTimeFields(_lua);
 
   int result = lua_pcall(_lua, 1, 0, 0);
   if (result != 0) {
@@ -1434,57 +1462,150 @@ bool Sandbox::callInit()
   return true;
 }
 
-void Sandbox::callOnTick(unsigned long dt_ms)
+// Count hook installed on the tick coroutine while a frame runs. Fires every
+// SLICE_HOOK_COUNT VM instructions; yields the frame once it has held the CPU
+// for cfg.tickSliceMs. lua_yield does not return — it unwinds to lua_resume,
+// which reports LUA_YIELD back to resumeTickFrame().
+void Sandbox::sliceHook(lua_State* L, lua_Debug* ar)
 {
-  if (!_lua || _onTickFuncRef == LUA_NOREF) return;
+  (void)ar;
 
-  lua_rawgeti(_lua, LUA_REGISTRYINDEX, _onTickFuncRef);
+  lua_getfield(L, LUA_REGISTRYINDEX, REGISTRY_KEY);
+  Sandbox* self = (Sandbox*)lua_touserdata(L, -1);
+  lua_pop(L, 1);
+  if (!self) return;
 
-  // Push ctx table
+  if (millis() - self->_sliceStartMs < self->_config.tickSliceMs) return;
+
+  // Only a Lua frame can yield. If the app is currently running below a
+  // C-call boundary — an extension binding that called back into Lua — there
+  // is no resumable continuation, so let the frame run on and complete in
+  // this pass rather than erroring it.
+  if (!lua_isyieldable(L)) return;
+
+  lua_yield(L, 0);
+}
+
+// Start a frame: build ctx once and leave (fn, ctx, dt) on the coroutine
+// stack ready for the first resume. Returns false if no coroutine could be
+// created, in which case no frame is in flight.
+bool Sandbox::beginTickFrame(unsigned long dt_ms)
+{
+  if (!_tickCo) {
+    _tickCo = lua_newthread(_lua);
+    if (!_tickCo) return false;
+    // Anchor it in the registry (also pops it off _lua's stack) so the
+    // collector cannot reclaim a coroutine that a frame is parked on.
+    _tickCoRef = luaL_ref(_lua, LUA_REGISTRYINDEX);
+  }
+
+  // Clear anything a previous frame left behind (an error unwind, or an
+  // abandoned frame) so this one starts on an empty stack.
+  lua_closethread(_tickCo, _lua);
+
+  lua_rawgeti(_tickCo, LUA_REGISTRYINDEX, _onTickFuncRef);
+
+  // ctx is built exactly once per frame, here — never on resume. Every slice
+  // of this frame therefore sees the same time_ms, trigger_count and
+  // time-of-day. A clock that moved between slices would silently corrupt any
+  // motion the app derives from it.
   unsigned long t = millis() - _triggerResetTime;
-  lua_newtable(_lua);
-  lua_pushinteger(_lua, t);
-  lua_setfield(_lua, -2, "time_ms");
-  lua_pushinteger(_lua, _triggerCount);
-  lua_setfield(_lua, -2, "trigger_count");
+  lua_newtable(_tickCo);
+  lua_pushinteger(_tickCo, t);
+  lua_setfield(_tickCo, -2, "time_ms");
+  lua_pushinteger(_tickCo, _triggerCount);
+  lua_setfield(_tickCo, -2, "trigger_count");
 
   // Time-of-day fields
-  pushLocalTimeFields();
+  pushLocalTimeFields(_tickCo);
 
-  lua_pushinteger(_lua, dt_ms);
+  lua_pushinteger(_tickCo, dt_ms);
 
-  int result = lua_pcall(_lua, 2, 0, 0);
-  if (result != 0) {
-    const char* errMsg = lua_tostring(_lua, -1);
-    Serial.printf("Resident::Sandbox: on_tick() error: %s\n", errMsg);
+  _tickInFlight = true;
+  _tickResumeArgs = 2;   // (ctx, dt) — consumed by the first resume
+  return true;
+}
 
-    // Rate-limit on_tick errors (fires 10x/sec)
-    unsigned long now = millis();
-    if (_runtimeErrorCount < RUNTIME_ERROR_MAX_BURST ||
-        now - _lastRuntimeErrorMillis >= RUNTIME_ERROR_COOLDOWN) {
-      emitTelemetry("runtime_error", errMsg);
-      _lastRuntimeErrorMillis = now;
-      _runtimeErrorCount++;
-    }
-    lua_pop(_lua, 1);
+// Run one slice of the in-flight frame. Leaves _tickInFlight set if the frame
+// yielded (more slices to come), clears it when the frame finishes or errors.
+void Sandbox::resumeTickFrame()
+{
+  if (!_tickInFlight || !_tickCo) return;
+
+  _sliceStartMs = millis();
+
+  // Re-armed each slice: this is also what makes tickSliceMs == 0 a true
+  // opt-out — with no hook installed the frame can never yield, so the first
+  // resume runs it to completion exactly as a plain call would.
+  const bool sliced = _config.tickSliceMs > 0;
+  lua_sethook(_tickCo, sliced ? &Sandbox::sliceHook : nullptr,
+              sliced ? LUA_MASKCOUNT : 0, sliced ? SLICE_HOOK_COUNT : 0);
+
+  int nres = 0;
+  int status = lua_resume(_tickCo, _lua, _tickResumeArgs, &nres);
+  _tickResumeArgs = 0;
+
+  if (status == LUA_YIELD) return;   // budget spent; frame stays parked
+
+  _tickInFlight = false;
+  lua_sethook(_tickCo, nullptr, 0, 0);
+
+  if (status == LUA_OK) {
+    if (nres > 0) lua_pop(_tickCo, nres);   // on_tick returns nothing; be safe
+    return;
+  }
+
+  const char* errMsg = lua_tostring(_tickCo, -1);
+  Serial.printf("Resident::Sandbox: on_tick() error: %s\n", errMsg);
+
+  // Rate-limit on_tick errors (fires 10x/sec)
+  unsigned long now = millis();
+  if (_runtimeErrorCount < RUNTIME_ERROR_MAX_BURST ||
+      now - _lastRuntimeErrorMillis >= RUNTIME_ERROR_COOLDOWN) {
+    emitTelemetry("runtime_error", errMsg);
+    _lastRuntimeErrorMillis = now;
+    _runtimeErrorCount++;
+  }
+  lua_closethread(_tickCo, _lua);   // discard the error object + unwound stack
+}
+
+// Drop a frame that is parked mid-execution. Safe because the coroutine is
+// suspended, never running, at every call site: the app is being replaced,
+// suspended, or torn down. Courier::loop() runs between slices, so a message
+// that loads a new app can land here while a frame is in flight.
+void Sandbox::abandonTickFrame()
+{
+  if (!_tickInFlight) return;
+  _tickInFlight = false;
+  _tickResumeArgs = 0;
+  if (_tickCo) {
+    lua_sethook(_tickCo, nullptr, 0, 0);
+    lua_closethread(_tickCo, _lua);
   }
 }
 
-void Sandbox::pushLocalTimeFields()
+void Sandbox::callOnTick(unsigned long dt_ms)
+{
+  if (!_lua || _onTickFuncRef == LUA_NOREF) return;
+  if (!beginTickFrame(dt_ms)) return;
+  resumeTickFrame();
+}
+
+void Sandbox::pushLocalTimeFields(lua_State* L)
 {
   int utcH = UTC.hour();
   int utcM = UTC.minute();
-  lua_pushinteger(_lua, utcH);
-  lua_setfield(_lua, -2, "utc_h");
-  lua_pushinteger(_lua, utcM);
-  lua_setfield(_lua, -2, "utc_m");
+  lua_pushinteger(L, utcH);
+  lua_setfield(L, -2, "utc_h");
+  lua_pushinteger(L, utcM);
+  lua_setfield(L, -2, "utc_m");
 
   int localH = _hasTimezone ? _tz.hour()   : utcH;
   int localM = _hasTimezone ? _tz.minute() : utcM;
-  lua_pushinteger(_lua, localH);
-  lua_setfield(_lua, -2, "localtime_h");
-  lua_pushinteger(_lua, localM);
-  lua_setfield(_lua, -2, "localtime_m");
+  lua_pushinteger(L, localH);
+  lua_setfield(L, -2, "localtime_h");
+  lua_pushinteger(L, localM);
+  lua_setfield(L, -2, "localtime_m");
 }
 
 void Sandbox::processNextEvent()

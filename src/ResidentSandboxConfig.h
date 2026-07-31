@@ -74,6 +74,25 @@ struct SandboxConfig {
   bool persistApps = true;
   PersistentStore* persistentStore = nullptr;
 
+  // Wall-clock budget for one continuous slice of on_tick, in milliseconds.
+  // A frame that outruns it is yielded mid-flight: Sandbox::loop() returns so
+  // the rest of the system (Courier, driver update(), overlays, the system
+  // button) gets its turn, and the SAME frame resumes on the next pass. An
+  // expensive app therefore degrades to a lower frame rate instead of holding
+  // the main loop for the whole frame.
+  //
+  // A frame that finishes inside its slice is untouched — same single call,
+  // same timing as before. ctx is built once per frame, so time_ms and the
+  // time-of-day fields do not move between slices and motion computed from
+  // them stays correct.
+  //
+  // 0 disables slicing: on_tick runs as one uninterrupted call.
+  //
+  // Slicing cannot interrupt a frame that is below a C-call boundary (an
+  // extension binding that called back into Lua); such a frame runs to
+  // completion in the current pass.
+  uint32_t tickSliceMs = 8;
+
   // Networking opt-in. Presence ⇒ Sandbox constructs a Courier::Client with
   // this config, drives WiFi/transports, fires onConnected/onMessage/etc.
   // Absence ⇒ standalone runtime, no WiFi pulled in.

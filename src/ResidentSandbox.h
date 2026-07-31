@@ -445,6 +445,27 @@ private:
     unsigned long _lastTickTime = 0;
     static constexpr unsigned long TICK_INTERVAL = 100; // 10 FPS
 
+    // Time-sliced tick execution. on_tick runs on a reusable coroutine so a
+    // frame that outruns cfg.tickSliceMs can yield mid-flight and resume on a
+    // later loop() pass, leaving the main loop free to service Courier,
+    // driver update(), overlays and the system button in between. The
+    // coroutine is anchored in the registry (_tickCoRef) so the collector
+    // cannot take it while a frame is parked on it.
+    struct lua_State* _tickCo = nullptr;
+    int _tickCoRef = -2;            // LUA_NOREF; lauxlib.h is not includable here
+    bool _tickInFlight = false;     // a frame is parked mid-execution
+    int _tickResumeArgs = 0;        // 2 (ctx, dt) on a frame's first resume, else 0
+    unsigned long _sliceStartMs = 0;
+    // VM instructions between budget checks. Sets the granularity floor: a
+    // slice can overrun the budget by up to this many instructions' worth of
+    // work. Small enough that on-device slices track the budget closely,
+    // large enough that the hook is not a measurable tax on normal frames.
+    static constexpr int SLICE_HOOK_COUNT = 250;
+    bool beginTickFrame(unsigned long dt_ms);  // build ctx, arm the coroutine
+    void resumeTickFrame();                     // run one slice
+    void abandonTickFrame();                    // drop a parked frame
+    static void sliceHook(struct lua_State* L, struct lua_Debug* ar);
+
     // Event queue
     struct Event {
         enum Type { BUTTON, APP_EVENT, DRIVER } type;
@@ -475,7 +496,10 @@ private:
     bool callInit();  // true if init ran without error (or no init function)
     void callOnTick(unsigned long dt_ms);
     void processNextEvent();
-    void pushLocalTimeFields();  // pushes utc_h/utc_m/localtime_h/localtime_m onto the Lua table at stack top
+    // Pushes utc_h/utc_m/localtime_h/localtime_m onto the table at the top of
+    // L's stack. Takes the state explicitly because a tick frame builds its
+    // ctx on the tick coroutine, not on the main state.
+    void pushLocalTimeFields(struct lua_State* L);
     void pushAppEvent(const char* name, const char* dataJson, const char* from, uint32_t ts_ms);
     void notifyAppRunning(bool running);
     static void driverEventHandler(void* ctx, const char* name,

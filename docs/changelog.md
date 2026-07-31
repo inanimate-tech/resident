@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### Time-sliced `on_tick`
+
+`on_tick` now runs on a reusable coroutine with a wall-clock slice budget
+(`SandboxConfig::tickSliceMs`, default **8 ms**). A frame that outruns its
+slice yields mid-flight; `Sandbox::loop()` returns so Courier, driver
+`update()`, overlays and the system button all get their turn, and the *same*
+frame resumes on the next pass until it completes.
+
+Previously an expensive frame held the main loop for its entire duration —
+network servicing, driver polling and overlay drawing all stopped until it
+returned, and a frame that never returned wedged the device with no way back
+in (an OTA could not land, because OTA is driven from the loop the app was
+holding). Now an expensive app degrades to a lower frame rate instead.
+
+- **`ctx` is built once per frame**, never on resume. `time_ms`,
+  `trigger_count` and the time-of-day fields are frozen for the frame's whole
+  life, so motion computed against them stays correct no matter how many
+  slices the frame takes. `dt_ms` spans frame-start to frame-start, so a frame
+  costing a second reports ~1000 ms next time round — an honest 1 FPS.
+- **Frames never overlap.** No new frame starts while one is in flight, even
+  if `TICK_INTERVAL` has elapsed.
+- **`on_event` no longer interleaves with a suspended `on_tick`.** Events
+  queued mid-frame dispatch once the frame completes, so an event handler
+  cannot observe the app's half-updated state.
+- `loadApp` / `loadShader` / `suspendApp` abandon an in-flight frame cleanly.
+  This matters more than it used to: `Courier::loop()` runs *between* slices,
+  so an app-load message can now arrive while a frame is parked.
+- **`tickSliceMs = 0` restores the old un-sliced behaviour** — one
+  uninterrupted call per frame.
+
+A frame that finishes inside its slice is untouched: same single call, same
+timing, no yield. The only cost is a count hook every 250 VM instructions.
+
+Not covered: slicing cannot interrupt a frame running below a C-call boundary
+(an extension binding that called back into Lua). Such a frame has no
+resumable continuation and runs to completion in the current pass.
+
 ## v0.7.0
 
 Theme: channel-based message routing — an envelope `channel` field steers messages onto a data plane, a control plane, or a custom slot, replacing the single flat `onMessage`/reserved-type dispatch as the routing new senders should use. Also in this release: `SystemMic` becomes a standalone capture interface with a shipped M5 driver.
