@@ -1,5 +1,7 @@
 #include <M5Unified.h>
 #include <Resident.h>
+#include <ResidentM5Mic.h>   // opt-in M5 mic driver (not pulled in by Resident.h)
+#include <ArduinoJson.h>
 #include "le_roots.h"
 #include "DisplayDriver.h"
 #include "IMUDriver.h"
@@ -34,6 +36,7 @@ DisplayDriver displayDriver;
 IMUDriver imuDriver;
 BuzzerDriver buzzerDriver{255};
 PushButtonsDriver buttonDriver{buttonConfig};
+Resident::M5Mic micDriver;   // 16 kHz mono PCM; capture runs only while streaming
 
 Resident::SandboxConfig makeConfig() {
     Resident::SandboxConfig cfg;
@@ -41,6 +44,7 @@ Resident::SandboxConfig makeConfig() {
     cfg.extensions    = {&displayDriver, &imuDriver, &buzzerDriver, &buttonDriver};
     cfg.systemDisplay = &displayDriver;
     cfg.systemButton  = &buttonDriver;   // front button: tap = load, hold = forget
+    cfg.systemMic     = &micDriver;      // push-to-talk source (see setLongPress below)
 
     // Courier::Config has a constructor with default args, so designated
     // initializers (.host = ...) don't compile under strict ESP-IDF builds.
@@ -76,6 +80,28 @@ void setup() {
         String wsPath = String("/devices/") + sandbox.getDeviceId();
         sandbox.ws().setEndpoint(RESIDENT_HOST, RESIDENT_PORT, wsPath.c_str());
     });
+
+    // Push-to-talk on the front button (index 0 — also choice B on tap). The
+    // driver's long-press detector both fires the hold callback AND
+    // suppresses the tap event on release, so holding to talk never
+    // registers as a choice. While held: a system-channel "voice" envelope
+    // brackets the raw 16 kHz PCM the mic pump streams over the binary WS,
+    // and the running arc app hears "ptt" events so its view can show a
+    // listening state. Transcription and interpretation happen server-side.
+    buttonDriver.setLongPress(0, [](bool held) {
+        JsonDocument doc;
+        doc["type"]  = "voice";
+        doc["state"] = held ? "start" : "end";
+        if (held) {
+            sandbox.sendSystem(doc);         // envelope precedes binary frames
+            sandbox.startMicStream();
+            sandbox.sendAppEvent("ptt", "{\"state\":\"on\"}");
+        } else {
+            sandbox.stopMicStream();
+            sandbox.sendSystem(doc);
+            sandbox.sendAppEvent("ptt", "{\"state\":\"off\"}");
+        }
+    }, 500);
 
     // No bootstrap app on connect: Resident now shows the device ID itself
     // (the boot countdown screen) and auto-restores the last persisted app.

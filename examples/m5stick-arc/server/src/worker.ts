@@ -37,6 +37,17 @@ const INTRO = {
 // the reply MUST fit or it is truncated mid-JSON and dropped by the app.
 const REPLY_BUDGET = 240
 
+const ROUTE_SYSTEM = `You route a spoken utterance for a tiny story device. You are given the device's current program (Lua, using the arc framework), its live state, and what the user said. Decide:
+- action="intent" when the utterance clearly expresses one of the available intents. Read the program to understand what each intent means in context — e.g. an utterance close in meaning to one of the on-screen choices maps to that choice's intent. Judge by meaning, never by keywords.
+- action="turn" when it is story input no intent captures — an instruction, a question, an idea the narrator should weave into the next beat.
+- action="ignore" for noise, fragments, or things that are not input.`
+
+const RouteSchema = z.object({
+  action: z.enum(["intent", "turn", "ignore"]),
+  intent: z.string().optional().describe("when action=intent: the exact intent name to inject"),
+  reason: z.string().optional().describe("one short sentence"),
+})
+
 const SceneSchema = z.object({
   text: z.string().describe(
     "The next story beat, second person, present tense, max 100 characters. Evocative, concrete, no choice text here."),
@@ -73,6 +84,7 @@ Readable globals:
   arc.pending("turn")  falsy when idle; while the next beat is being written it returns the ask payload table — p.choice is "a" or "b". ALWAYS use this to visibly confirm which option the reader picked (highlight it, dim the other, echo it) with your own waiting microcopy (never the word "Thinking"). The pause must confirm the choice, not just say "busy".
   arc.pending("remix") truthy while a new look is being designed
   arc.dots(n)  animated 1..n counter for motion
+  S.voice  non-empty while the reader is speaking or was just heard (a listening prompt or a quoted transcript) — show it when present, subtly, near the bottom
   sin cos floor abs min max fract are global functions
 
 The runtime always draws three small amber activity dots in the bottom-right
@@ -87,13 +99,66 @@ HARD RULES:
 
 type Turn = { choice?: string; text: string; a: string; b: string }
 
+// PTT audio bounds: 16 kHz mono int16 PCM from the mic pump.
+const PCM_BYTES_PER_SEC = 16000 * 2
+const VOICE_MIN_BYTES = 0.4 * PCM_BYTES_PER_SEC
+const VOICE_MAX_BYTES = 15 * PCM_BYTES_PER_SEC
+
+function pcmToWav(pcm: Uint8Array, rate: number): Uint8Array {
+  const out = new Uint8Array(44 + pcm.length)
+  const dv = new DataView(out.buffer)
+  const str = (off: number, s: string) => { for (let i = 0; i < s.length; i++) out[off + i] = s.charCodeAt(i) }
+  str(0, "RIFF"); dv.setUint32(4, 36 + pcm.length, true); str(8, "WAVE")
+  str(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true)
+  dv.setUint16(22, 1, true); dv.setUint32(24, rate, true)
+  dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true)
+  str(36, "data"); dv.setUint32(40, pcm.length, true)
+  out.set(pcm, 44)
+  return out
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ""
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(binary)
+}
+
 export class ArcAgent extends DeviceAgent<Env> {
+  // In-memory PTT capture. Frames arrive every few ms while the button is
+  // held, so the DO stays hot for the whole recording; a hibernation between
+  // start and end would drop the take (acceptable at demo scale).
+  private audio: Uint8Array[] = []
+  private audioBytes = 0
+  private recording = false
+
   async onMessage(connection: Connection, data: WSMessage): Promise<void> {
     await super.onMessage(connection, data)
+    if (data instanceof ArrayBuffer) {
+      if (this.recording && this.audioBytes < VOICE_MAX_BYTES) {
+        this.audio.push(new Uint8Array(data.slice(0)))
+        this.audioBytes += data.byteLength
+      }
+      return
+    }
     if (typeof data !== "string") return
     let msg: any
     try { msg = JSON.parse(data) } catch { return }
     this.toMonitors({ dir: "up", t: Date.now(), msg })
+
+    if (msg?.channel === "system" && msg.type === "voice") {
+      if (msg.state === "start") {
+        this.recording = true
+        this.audio = []
+        this.audioBytes = 0
+      } else if (msg.state === "end") {
+        this.recording = false
+        await this.handleVoiceEnd()
+      }
+      return
+    }
 
     if (msg?.channel !== "app") return
     if (msg.type === "arc:ask") {
@@ -103,6 +168,99 @@ export class ArcAgent extends DeviceAgent<Env> {
     }
     // arc:intent needs no handling here — it is the transcript, already
     // echoed to monitors above. A fuller agent would accumulate it as context.
+  }
+
+  /**
+   * PTT release: transcribe the take with Workers AI whisper, confirm what
+   * was heard back to the device (the app shows it — local reassurance),
+   * then let a model decide what the words MEAN by reading the device's
+   * current program and state. Nothing about the mapping is hardcoded: an
+   * utterance near one of the on-screen choices becomes that choice's
+   * intent on the normal bus; free-form story input becomes the next beat.
+   */
+  private async handleVoiceEnd(): Promise<void> {
+    const total = this.audioBytes
+    const chunks = this.audio
+    this.audio = []
+    this.audioBytes = 0
+    if (total < VOICE_MIN_BYTES) {
+      console.log(`[arc] voice: take too short (${total} bytes), ignoring`)
+      return
+    }
+    const pcm = new Uint8Array(total)
+    let off = 0
+    for (const c of chunks) { pcm.set(c, off); off += c.length }
+
+    const t0 = Date.now()
+    let text = ""
+    try {
+      const res: any = await (this.env.AI as any).run(
+        "@cf/openai/whisper-large-v3-turbo",
+        { audio: bytesToBase64(pcmToWav(pcm, 16000)) },
+        { gateway: { id: this.env.CLOUDFLARE_AIG_ID } },
+      )
+      text = String(res?.text ?? "").trim()
+    } catch (err) {
+      console.error("[arc] whisper failed:", err)
+    }
+    console.log(`[arc] voice: ${(total / PCM_BYTES_PER_SEC).toFixed(1)}s -> ${JSON.stringify(text)} in ${Date.now() - t0}ms`)
+
+    // Confirm the transcript on-device even when empty — the app's "heard"
+    // handler shows it (or "(couldn't hear)") in place of the listening state.
+    this.sendToDevice({
+      channel: "app", type: "heard", from: "arc-server",
+      nonce: crypto.randomUUID().slice(0, 8),
+      data: { text: text.slice(0, 180) },
+    })
+    if (text) await this.routeUtterance(text)
+  }
+
+  private async routeUtterance(text: string): Promise<void> {
+    const mirror = (await this.ctx.storage.get<Record<string, unknown>>("mirror")) ?? {}
+    const intents = [...adventureLua.matchAll(/arc\.on\("([a-z_]+)"/g)]
+      .map((m) => m[1])
+      .filter((n) => n !== "ptt" && n !== "heard")
+    const model = createGatewayProvider(createAnthropic, {
+      binding: this.env.AI,
+      gateway: this.env.CLOUDFLARE_AIG_ID,
+    })(ASK_MODEL)
+    let route: z.infer<typeof RouteSchema>
+    try {
+      const { object } = await generateObject({
+        model, schema: RouteSchema, system: ROUTE_SYSTEM,
+        prompt:
+          `The device is running this program:\n\n${adventureLua}\n\n` +
+          `Its live state (the store):\n${JSON.stringify(mirror)}\n\n` +
+          `Available intents to inject: ${intents.join(", ")}\n\n` +
+          `The user held the talk button and said: ${JSON.stringify(text)}\n\nRoute it.`,
+        maxOutputTokens: 200,
+      })
+      route = object
+    } catch (err: any) {
+      console.error("[arc] voice routing failed:", err)
+      this.toMonitors({ dir: "down", t: Date.now(),
+        msg: { type: "voice:route", data: { text, error: String(err?.message ?? err).slice(0, 200) } } })
+      return
+    }
+    console.log(`[arc] voice route: ${JSON.stringify(route)}`)
+    this.toMonitors({ dir: "down", t: Date.now(), msg: { type: "voice:route", data: { text, ...route } } })
+
+    if (route.action === "intent" && route.intent && intents.includes(route.intent)) {
+      this.sendToDevice({
+        channel: "app", type: route.intent, from: "arc-server",
+        nonce: crypto.randomUUID().slice(0, 8),
+        data: { via: "voice" },
+      })
+    } else if (route.action === "turn") {
+      const beat = await this.nextBeat(`(spoken) ${JSON.stringify(text)}`)
+      if (beat) {
+        this.sendToDevice({
+          channel: "app", type: "arc:hydrate", from: "arc-server",
+          nonce: crypto.randomUUID().slice(0, 8),
+          data: beat,
+        })
+      }
+    }
   }
 
   async onRequest(request: Request): Promise<Response> {
@@ -182,12 +340,34 @@ export class ArcAgent extends DeviceAgent<Env> {
 
     const story = (await this.ctx.storage.get<Turn[]>("story")) ?? [{ ...INTRO }]
     const t0 = Date.now()
+    const beat = await this.nextBeat(this.choiceLabel(story, d.choice), d.tilt)
+    if (!beat) return // the device's shipped fallback covers us
 
+    this.sendToDevice({
+      channel: "app",
+      type: "arc:reply",
+      from: "arc-server",
+      nonce: crypto.randomUUID().slice(0, 8),
+      data: { id: d.id, ...beat },
+    })
+    console.log(`[arc] answered ask ${d.id} (${d.ask}) in ${Date.now() - t0}ms: ${beat.text}`)
+  }
+
+  /**
+   * Generate, fit, and record the next story beat for a "choice" — either a
+   * button choice's label or a free-form `(spoken) "..."` utterance. Shared
+   * by the ask path (reply) and the voice path (hydrate).
+   */
+  private async nextBeat(
+    choiceText: string,
+    tilt?: unknown,
+  ): Promise<{ text: string; a: string; b: string; scene: number } | null> {
+    const story = (await this.ctx.storage.get<Turn[]>("story")) ?? [{ ...INTRO }]
     const transcript = story
       .map((s) => (s.choice ? `[chose: ${s.choice}]\n${s.text}` : s.text))
       .join("\n")
-    const tilt = typeof d.tilt === "number" ? ` (lantern tilt: ${d.tilt})` : ""
-    const prompt = `Story so far:\n${transcript}\n\nThe reader chose: "${this.choiceLabel(story, d.choice)}"${tilt}. Continue the story.`
+    const tiltNote = typeof tilt === "number" ? ` (lantern tilt: ${tilt})` : ""
+    const prompt = `Story so far:\n${transcript}\n\nThe reader chose: "${choiceText}"${tiltNote}. Continue the story.`
 
     let scene: z.infer<typeof SceneSchema>
     try {
@@ -205,29 +385,18 @@ export class ArcAgent extends DeviceAgent<Env> {
       scene = object
     } catch (err) {
       console.error("[arc] inference failed:", err)
-      return // the device's shipped fallback covers us
+      return null
     }
 
-    const reply = this.fitReply({
-      id: d.id,
+    const beat = this.fitReply({
       text: scene.text,
       a: scene.a,
       b: scene.b,
       scene: story.length + 1,
     })
-    this.sendToDevice({
-      channel: "app",
-      type: "arc:reply",
-      from: "arc-server",
-      nonce: crypto.randomUUID().slice(0, 8),
-      data: reply,
-    })
-    console.log(`[arc] answered ask ${d.id} (${d.ask}) in ${Date.now() - t0}ms: ${reply.text}`)
-
-    if (d.ask !== "recap") {
-      story.push({ choice: this.choiceLabel(story, d.choice), text: reply.text, a: reply.a, b: reply.b })
-      await this.ctx.storage.put("story", story.slice(-12))
-    }
+    story.push({ choice: choiceText, text: beat.text, a: beat.a, b: beat.b })
+    await this.ctx.storage.put("story", story.slice(-12))
+    return beat
   }
 
   /**

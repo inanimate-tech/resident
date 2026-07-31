@@ -63,6 +63,37 @@ arc.on("remix", function()
   })
 end)
 
+-- Voice. Hold the front button to talk: the firmware injects "ptt" events
+-- around the mic stream, and the server sends "heard" with the transcript
+-- once whisper has run — local confirmation of what the device heard. What
+-- the utterance MEANS is decided server-side by a model reading this very
+-- program; if it maps to an intent (choose_a/choose_b/remix) that intent
+-- arrives on the bus like any button press, and if it's free-form story
+-- input the next beat arrives as an arc:hydrate.
+S.voice = ""   -- "" | listening prompt | ellipsis | quoted transcript
+
+local function clear_voice_later(was, ms)
+  arc.after(ms, function()
+    if S.voice == was then S.voice = "" end
+  end)
+end
+
+arc.on("ptt", function(p)
+  if p.state == "on" then
+    buzzer.beep(980, 30)
+    S.voice = "listening..."
+  else
+    S.voice = "..."
+    clear_voice_later("...", 8000)   -- transcript never came; stand down
+  end
+end)
+
+arc.on("heard", function(p)
+  local t = p.text or ""
+  if t == "" then S.voice = "(couldn't hear)" else S.voice = '"' .. t .. '"' end
+  clear_voice_later(S.voice, 6000)
+end)
+
 -- "bored" has no local handler: published upstream for the revision loop.
 
 -- The default look. A remix chunk appended after this file re-registers
@@ -94,6 +125,9 @@ arc.view(function()
          },
     arc.pending("remix")
       and ui.label{ text = "reimagining the world...", size = 1, color = "magenta" }
+      or false,
+    (S.voice ~= "")
+      and ui.text{ text = S.voice, size = 1, w = 228, color = "green" }
       or false,
   }
 end)

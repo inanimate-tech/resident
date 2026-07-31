@@ -87,6 +87,40 @@ working — a turn or a remix — the arc runtime itself pulses three amber
 dots in the bottom-right corner, on top of whatever waiting state the
 current view has authored; that's framework chrome, not app code.
 
+## Voice (push-to-talk)
+
+**Hold the front button and speak; release to send.** The driver's
+long-press detector doubles as tap-suppression, so holding to talk never
+registers as a choice-B tap. While held, the firmware brackets the mic
+pump's raw 16 kHz PCM with `voice start/end` system-channel envelopes and
+injects `ptt` events so the running app can show its listening state.
+
+Server-side, the take is transcribed with Workers AI whisper
+(`@cf/openai/whisper-large-v3-turbo`, via the AI Gateway binding — still
+no secrets in the worker), and the transcript is immediately sent back as
+a `heard` event — the app shows what the device heard before anything is
+done about it.
+
+Then a model decides what the words *mean* — nothing is hardcoded. The
+router is given the device's current Lua program, its live store, and the
+utterance, and returns one of:
+
+- **intent** — "I should take that lantern" ≈ choice A → it injects
+  `choose_a` onto the normal bus, indistinguishable from a button press;
+- **turn** — "I want to climb the tree and look at the moon" fits no
+  intent → the narrator weaves it into the next beat, delivered as an
+  `arc:hydrate`;
+- **ignore** — noise.
+
+The generation needed zero framework changes for any of this: `ptt` and
+`heard` are ordinary intents, and voice-routed actions reuse the existing
+reply/hydrate paths.
+
+Voice can be exercised without hardware: synthesize a take
+(`say -o take.wav --file-format=WAVE --data-format=LEI16@16000 "..."`)
+and stream it over a plain `/devices/<id>` WebSocket between `voice`
+start/end envelopes, watching the result on the monitor socket.
+
 `POST /devices/<id>/arc/remix` runs the same remix as the shake but returns
 vet/inference diagnostics in the response — useful when prompt-tuning the
 view writer.
