@@ -551,6 +551,15 @@ void Sandbox::handleSystemMessage(const char* transportName, const char* type,
     loadShader(fields);
     return;
   }
+  if (strcmp(type, "chunk") == 0) {
+    // In-sandbox chunk load (update lattice A6). Deliberately OUTSIDE the
+    // app/shader stash-deferral above: a chunk during a deferred-load
+    // window is dropped inside loadChunk (see its comment), never stashed,
+    // and never persisted.
+    const char* code = doc["code"];
+    if (code) loadChunk(code);
+    return;
+  }
   if (strcmp(type, "forget") == 0) { clearPersistedApp(); return; }
 
   MessageCallback* cb = lookupChannelSlot("system");
@@ -1142,6 +1151,71 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   }
 
   return loadedOk;
+}
+
+// The update lattice's middle rung (arc A6): run `code` in the CURRENT
+// lua_State with the running app's globals intact — that is the point.
+// Replacing one component means re-running a small chunk; the app's own
+// last-registration-wins registries (named timers/recognizers, done in
+// arc-core) make the swap surgical. Contrast loadApp: full teardown +
+// lifecycle reboot.
+//
+// Semantics:
+// - init() is NOT re-called; timers/events keep flowing. _runState, the
+//   generation ID, overlay claims, persistence, and the runtime-error rate
+//   limiter are all untouched.
+// - If the chunk (re)defines init/on_tick/on_event as functions, the cached
+//   registry refs are refreshed so the redefinition takes effect on the
+//   next dispatch; lifecycle globals the chunk doesn't set keep their refs.
+// - Never persisted: NVS keeps the base generation; the server re-sends
+//   chunks after a reboot via its own assembly.
+// - DROPPED (not stashed) during a deferAppLoads window: applying a stale
+//   surgical patch minutes later — possibly onto a different generation —
+//   is worse than asking the server to re-send. Logged, returns false.
+// - Failure reporting matches the compile path's mechanism (Serial +
+//   telemetry) under its own name, "chunk_error", so a failed chunk is not
+//   mistaken for a failed generation; a failed chunk leaves the app running.
+bool Sandbox::loadChunk(const char* code)
+{
+  if (!code || !code[0]) return false;
+  if (!_lua || !isAppRunning()) {
+    Serial.println("Resident::Sandbox: chunk with no app loaded; dropped");
+    return false;
+  }
+  if (_deferLoads) {
+    Serial.println("Resident::Sandbox: chunk during deferred-load window; dropped");
+    return false;
+  }
+
+  if (luaL_loadstring(_lua, code) != 0) {
+    const char* errMsg = lua_tostring(_lua, -1);
+    Serial.printf("Resident::Sandbox: chunk compile failed: %s\n", errMsg);
+    emitTelemetry("chunk_error", errMsg);
+    lua_pop(_lua, 1);
+    return false;
+  }
+  if (lua_pcall(_lua, 0, 0, 0) != 0) {
+    const char* errMsg = lua_tostring(_lua, -1);
+    Serial.printf("Resident::Sandbox: chunk execution failed: %s\n", errMsg);
+    emitTelemetry("chunk_error", errMsg);
+    lua_pop(_lua, 1);
+    return false;
+  }
+
+  refreshLifecycleRef("init", _initFuncRef);
+  refreshLifecycleRef("on_tick", _onTickFuncRef);
+  refreshLifecycleRef("on_event", _onEventFuncRef);
+
+  emitTelemetry("chunk_applied");
+  return true;
+}
+
+void Sandbox::refreshLifecycleRef(const char* global, int& ref)
+{
+  lua_getglobal(_lua, global);
+  if (!lua_isfunction(_lua, -1)) { lua_pop(_lua, 1); return; }
+  if (ref != LUA_NOREF) luaL_unref(_lua, LUA_REGISTRYINDEX, ref);
+  ref = luaL_ref(_lua, LUA_REGISTRYINDEX);  // pops the function
 }
 
 void Sandbox::updateBootCountdown()

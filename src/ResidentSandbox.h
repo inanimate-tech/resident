@@ -64,6 +64,17 @@ public:
     // Load a shader from fields (uses shader template)
     void loadShader(const ShaderFields& fields);
 
+    // Run a Lua chunk in the RUNNING app's lua_State — the update lattice's
+    // middle rung: the app's globals, timers, and event flow survive, and
+    // the chunk's re-registrations take effect through the app's own
+    // last-registration-wins registries. init() is NOT re-called. Never
+    // persisted (chunks are ephemeral; the server re-sends them after a
+    // reboot). Returns false — with the app left running and untouched — on
+    // compile error, runtime error, no app loaded, or during a
+    // deferAppLoads window (chunks are DROPPED with a log, not stashed).
+    // Wire entry: system-channel {type:"chunk", code:"..."}.
+    bool loadChunk(const char* code);
+
     // Send an app event to the running app. Host-firmware injections are
     // tagged channel "driver" by default (delivered as e.channel in Lua);
     // pass "app"/"runtime" to impersonate a wire channel deliberately.
@@ -492,6 +503,10 @@ private:
     // Lua setup
     void setupLuaEnvironment();
     bool compileApp(const char* code);
+    // Re-take the registry ref for a lifecycle global (init/on_tick/on_event)
+    // iff it currently holds a function — used by loadChunk so a chunk's
+    // redefinition reaches the dispatchers, which call cached refs.
+    void refreshLifecycleRef(const char* global, int& ref);
     bool callInit();  // true if init ran without error (or no init function)
     void callOnTick(unsigned long dt_ms);
     void processNextEvent();

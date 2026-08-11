@@ -254,6 +254,7 @@ sandbox.setEventSink([](JsonDocument& doc) {
 ```cpp
 sandbox.loadApp(luaCode);              // compile and run a Lua source string
 sandbox.loadShader(fields);            // generate Lua via ShaderTemplateFn, then loadApp
+sandbox.loadChunk(luaChunk);           // run a chunk in the RUNNING app's state (surgical update)
 sandbox.sendAppEvent(name, dataJson);  // queue an app_event to the running app
 sandbox.onMessageWithChannel(name, cb); // register a channel slot (see Channel routing)
 sandbox.sendSystem(doc);               // stamp channel:"system", send via default transport
@@ -282,6 +283,8 @@ sandbox.clearPersistedApp();           // wipe the saved app from the persistent
 `loadApp` stops any running app, calls `onAppReset()` on all extensions, generates a new `generationId`, and compiles the new app. An app must define at least one of `init`, `on_tick`, or `on_event` — compilation is rejected otherwise.
 
 `loadShader` requires `SandboxConfig::shaderTemplate` to be set; it converts the `ShaderFields` map to Lua source, then calls `loadApp`.
+
+`loadChunk(code)` runs a Lua chunk **in the running app's `lua_State`** — no teardown, no lifecycle reboot: globals, queued events, and timing survive, and `init()` is **not** re-called. It exists so replacing one registration (a named timer, recognizer, or component in an app built on last-registration-wins registries) can ship as a small chunk instead of a whole-generation reload. If the chunk (re)defines `init`/`on_tick`/`on_event` as functions, the cached dispatch refs are refreshed so the redefinition takes effect on the next dispatch. Returns `false` — with the app left running and untouched by the failure — on compile error or runtime error (Serial + `chunk_error` telemetry; note a chunk is not a transaction: statements before a runtime error did run), when no app is loaded, or during a `deferAppLoads` window (chunks are **dropped** with a log, never stashed — a stale surgical patch applied to a possibly different generation later is worse than a re-send). Chunks are never persisted: NVS keeps the base generation; senders must re-send chunks after a reboot. Wire entry: `channel:"system", type:"chunk", code:"..."`. Success emits `chunk_applied` telemetry.
 
 `suspendApp` pauses the Lua tick (`on_tick` and event dispatch) without unloading the app — Courier and extension `update()` keep running. While suspended, drivers receive `onAppRunning(false)` so the status display is freed for direct text (e.g. a "Listening" overlay via `SystemDisplay::displayText()`); `resumeApp` reverses this with `onAppRunning(true)`. Both are no-ops when no app is loaded, and repeated calls don't re-notify. `isAppRunning()` stays `true` while suspended — suspension is a separate axis queried via `isAppSuspended()`. Events arriving while suspended are queued, not dropped (though a long suspend can overflow the 8-slot ring, losing the oldest), and `loadApp` always clears suspension.
 
