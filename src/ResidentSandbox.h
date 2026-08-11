@@ -64,8 +64,11 @@ public:
     // Load a shader from fields (uses shader template)
     void loadShader(const ShaderFields& fields);
 
-    // Send an app event to the running app
-    void sendAppEvent(const char* name, const char* dataJson);
+    // Send an app event to the running app. Host-firmware injections are
+    // tagged channel "driver" by default (delivered as e.channel in Lua);
+    // pass "app"/"runtime" to impersonate a wire channel deliberately.
+    void sendAppEvent(const char* name, const char* dataJson,
+                      const char* channel = "driver");
 
     // Forget any persisted app (so the next boot has nothing to restore).
     void clearPersistedApp();
@@ -462,6 +465,13 @@ private:
         char data[RESIDENT_EVENT_JSON_MAX];
         char from[64];
         uint32_t ts_ms;
+        // Envelope fields (APP_EVENT): channel discriminates source
+        // (app/runtime for wire-borne frames, driver for host-firmware
+        // injections); src/seq are surfaced only when the frame carried them.
+        char channel[16];
+        char src[16];
+        uint32_t seq;
+        bool hasSeq;
     };
     static constexpr int SANDBOX_MAX_EVENTS = 8;
     Event _events[SANDBOX_MAX_EVENTS];
@@ -486,7 +496,9 @@ private:
     void callOnTick(unsigned long dt_ms);
     void processNextEvent();
     void pushLocalTimeFields();  // pushes utc_h/utc_m/localtime_h/localtime_m onto the Lua table at stack top
-    void pushAppEvent(const char* name, const char* dataJson, const char* from, uint32_t ts_ms);
+    void pushAppEvent(const char* name, const char* dataJson, const char* from, uint32_t ts_ms,
+                      const char* channel = "driver", const char* src = "",
+                      bool hasSeq = false, uint32_t seq = 0);
     void notifyAppRunning(bool running);
     static void driverEventHandler(void* ctx, const char* name,
                                    const EventField* fields, int fieldCount);

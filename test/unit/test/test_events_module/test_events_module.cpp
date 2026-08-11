@@ -382,6 +382,91 @@ void test_incoming_oversize_data_dropped(void) {
   TEST_ASSERT_EQUAL_INT(0, sandbox->luaGlobalIntForTest("cnt"));
 }
 
+// ── envelope: channel/src/seq through the sandbox boundary ────────────────
+
+void test_outgoing_envelope_stamps_src_and_monotonic_seq(void) {
+  build();
+  sandbox->publishEvent("a", "{}");
+  TEST_ASSERT_NOT_NULL(strstr(captured.c_str(), "\"channel\":\"app\""));
+  TEST_ASSERT_NOT_NULL(strstr(captured.c_str(), "\"src\":\"device\""));
+  TEST_ASSERT_NOT_NULL(strstr(captured.c_str(), "\"seq\":1,"));
+  sandbox->publishEvent("b", "{}");
+  TEST_ASSERT_NOT_NULL(strstr(captured.c_str(), "\"seq\":2,"));  // monotonic
+  // seq and the nonce suffix stay in lockstep for a frame.
+  char nonce[80];
+  snprintf(nonce, sizeof(nonce), "\"nonce\":\"%s:2\"", sandbox->getDeviceId().c_str());
+  TEST_ASSERT_NOT_NULL(strstr(captured.c_str(), nonce));
+}
+
+void test_incoming_app_frame_exposes_envelope_to_lua(void) {
+  build();
+  loadApp(
+      "ok = false\n"
+      "cnt = 0\n"
+      "function init(ctx) end\n"
+      "function on_tick(ctx, dt) end\n"
+      "function on_event(ctx, event)\n"
+      "  cnt = cnt + 1\n"
+      "  ok = event.channel == 'app' and event.src == 'server'\n"
+      "       and event.seq == 7 and event.data.n == 1\n"
+      "end\n");
+  JsonDocument evt;
+  evt["channel"] = "app";
+  evt["type"] = "ping";
+  evt["from"] = "otherdev";
+  evt["src"] = "server";
+  evt["seq"] = 7;
+  evt["data"]["n"] = 1;
+  sandbox->injectMessage("test", "ping", evt);
+  pump();
+  TEST_ASSERT_EQUAL_INT(1, sandbox->luaGlobalIntForTest("cnt"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("ok"));
+}
+
+void test_incoming_runtime_frame_routed_to_on_event(void) {
+  build();
+  loadApp(
+      "ok = false\n"
+      "cnt = 0\n"
+      "function init(ctx) end\n"
+      "function on_tick(ctx, dt) end\n"
+      "function on_event(ctx, event)\n"
+      "  cnt = cnt + 1\n"
+      "  ok = event.channel == 'runtime' and event.name == 'heard'\n"
+      "       and event.data.text == 'hi'\n"
+      "end\n");
+  JsonDocument evt;
+  evt["channel"] = "runtime";
+  evt["type"] = "heard";
+  evt["from"] = "server";
+  evt["data"]["text"] = "hi";
+  sandbox->injectMessage("test", "heard", evt);
+  pump();
+  TEST_ASSERT_EQUAL_INT(1, sandbox->luaGlobalIntForTest("cnt"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("ok"));
+}
+
+void test_host_injected_event_defaults_driver_channel(void) {
+  build();
+  loadApp(
+      "saw_driver = false\n"
+      "saw_runtime = false\n"
+      "function init(ctx) end\n"
+      "function on_tick(ctx, dt) end\n"
+      "function on_event(ctx, event)\n"
+      "  if event.channel == 'driver' and event.src == nil\n"
+      "     and event.seq == nil then saw_driver = true end\n"
+      "  if event.channel == 'runtime' then saw_runtime = true end\n"
+      "end\n");
+  sandbox->sendAppEvent("evt", "{}");            // default: "driver"
+  pump();
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("saw_driver"));
+  TEST_ASSERT_FALSE(sandbox->luaGlobalBoolForTest("saw_runtime"));
+  sandbox->sendAppEvent("evt", "{}", "runtime"); // caller-specified channel
+  pump();
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("saw_runtime"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_events_send_builds_app_channel_envelope);
@@ -408,5 +493,9 @@ int main(int, char**) {
   RUN_TEST(test_incoming_quoted_string_reaches_lua_intact);
   RUN_TEST(test_incoming_unparseable_data_drops_event);
   RUN_TEST(test_incoming_oversize_data_dropped);
+  RUN_TEST(test_outgoing_envelope_stamps_src_and_monotonic_seq);
+  RUN_TEST(test_incoming_app_frame_exposes_envelope_to_lua);
+  RUN_TEST(test_incoming_runtime_frame_routed_to_on_event);
+  RUN_TEST(test_host_injected_event_defaults_driver_channel);
   return UNITY_END();
 }

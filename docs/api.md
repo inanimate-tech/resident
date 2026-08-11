@@ -238,7 +238,7 @@ sandbox.onMessageWithChannel("system", [](const char* transport, const char* typ
 
 **Control-plane emit** — `sandbox.sendSystem(doc)` stamps `doc["channel"] = "system"` and sends it via the default transport (`courier().send`). For device control messages (voice start/end, etc.). Returns `false` when no network is configured or the send fails; the doc is stamped either way, so a caller inspecting it afterward always sees the envelope.
 
-**Data-plane emit** — `sandbox.publishEvent(name, dataJson)` builds `{channel:"app", type:name, data, from:getDeviceId(), nonce, ts_ms}` and hands it to the event sink: the sink set via `setEventSink(EventSink)` if one is registered, otherwise `courier().send` on the default transport. Rate-limited with a token bucket (5 events/s sustained, burst of 10); returns `false` on rate limit, no sink/network, or send failure — it never raises. This is the shared implementation behind the Lua `events.send` (see [Lua API](#events-module)) and any C++ caller, e.g. a platform wrapper's `room.announce` alias — note this is a **deliberate behavior change** from the old `room.announce`, which raised a Lua error on rate limit rather than returning `false`.
+**Data-plane emit** — `sandbox.publishEvent(name, dataJson)` builds `{channel:"app", type:name, data, from:getDeviceId(), src:"device", seq, nonce, ts_ms}` and hands it to the event sink. `seq` is the device's per-sender monotonic sequence (uint32, per-boot, one counter for all frames sent via this path; the `nonce` suffix reuses the same count). It goes to: the sink set via `setEventSink(EventSink)` if one is registered, otherwise `courier().send` on the default transport. Rate-limited with a token bucket (5 events/s sustained, burst of 10); returns `false` on rate limit, no sink/network, or send failure — it never raises. This is the shared implementation behind the Lua `events.send` (see [Lua API](#events-module)) and any C++ caller, e.g. a platform wrapper's `room.announce` alias — note this is a **deliberate behavior change** from the old `room.announce`, which raised a Lua error on rate limit rather than returning `false`.
 
 ```cpp
 using EventSink = std::function<bool(JsonDocument&)>;
@@ -741,6 +741,9 @@ All callbacks receive a `ctx` table. `on_tick` also receives `dt_ms` (integer, m
 | `name` | string | Event name (e.g. `"button"`, `"my_event"`) |
 | `from` | string | Source identifier — empty string for driver events |
 | `ts_ms` | integer | Timestamp in milliseconds (`millis()`) when the event was queued |
+| `channel` | string | Source discriminator, always present: `"app"` or `"runtime"` for wire-borne frames (both delivered here), `"driver"` for hardware/driver events and host-firmware `sendAppEvent` injections (unless the caller passed a channel) |
+| `src` | string? | The frame's `src` envelope field (e.g. `"server"`), only when present on the frame; `nil` for internal events |
+| `seq` | integer? | The frame's per-sender monotonic `seq`, only when present on the frame; `nil` for internal events |
 | *(driver fields)* | any | For **driver events**: extra fields are flattened directly onto the table (e.g. `event.id`, `event.state`) |
 | `data` | table | For **app events**: the JSON `data` object parsed into a subtable — strings (unescaped), integers, floats, booleans, and nested objects/arrays to 3 container levels (deeper containers are skipped with their key; JSON `null` leaves a hole at its array index). Unparseable or oversized (> `RESIDENT_EVENT_JSON_MAX`) data drops the whole event rather than delivering it garbled |
 

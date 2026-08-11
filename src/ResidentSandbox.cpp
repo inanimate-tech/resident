@@ -449,6 +449,10 @@ void Sandbox::onCourierMessage(const char* transportName,
   const char* channel = doc["channel"] | "";
   if (channel[0]) {
     if (strcmp(channel, "app") == 0)    { handleAppMessage(transportName, type, doc); return; }
+    // Runtime channel (framework events: heard, errors, agent status) rides
+    // the same queue as app frames — delivered to on_event with
+    // e.channel == "runtime". Reserved names will ride it later.
+    if (strcmp(channel, "runtime") == 0) { handleAppMessage(transportName, type, doc); return; }
     if (strcmp(channel, "system") == 0) { handleSystemMessage(transportName, type, doc); return; }
     MessageCallback* cb = lookupChannelSlot(channel);
     if (cb && *cb) { (*cb)(transportName, type, doc); return; }
@@ -498,7 +502,14 @@ void Sandbox::handleAppMessage(const char* transportName, const char* type,
     }
     serializeJson(doc["data"], dataJson, sizeof(dataJson));
   }
-  pushAppEvent(name, dataJson, from, doc["ts_ms"] | millis());
+  // Envelope fields carried through to Lua: channel ("app" or "runtime" —
+  // both route here), and src/seq only when the frame stamped them.
+  const char* channel = doc["channel"] | "app";
+  const char* src = doc["src"] | "";
+  bool hasSeq = doc["seq"].is<uint32_t>();
+  uint32_t seq = doc["seq"] | 0U;
+  pushAppEvent(name, dataJson, from, doc["ts_ms"] | millis(),
+               channel, src, hasSeq, seq);
 }
 
 bool Sandbox::isDuplicateNonce(const char* nonce)
@@ -610,9 +621,15 @@ bool Sandbox::publishEvent(const char* name, const char* dataJson)
     doc["data"].to<JsonObject>();
   }
   doc["from"] = _deviceId;
+  // Envelope source + per-sender monotonic sequence (per-boot, uint32). One
+  // counter for the device as sender; the nonce reuses the same count, so
+  // nonce suffix and seq stay in lockstep for a given frame.
+  uint32_t seq = (uint32_t)++_eventNonceCounter;
+  doc["src"] = "device";
+  doc["seq"] = seq;
   char nonce[64];
   snprintf(nonce, sizeof(nonce), "%s:%lu", _deviceId.c_str(),
-           (unsigned long)++_eventNonceCounter);
+           (unsigned long)seq);
   doc["nonce"] = nonce;
   doc["ts_ms"] = millis();
 
@@ -898,7 +915,9 @@ void Sandbox::dispatchMessage(const char* transportName,
     } else {
       strcpy(dataJson, "{}");
     }
-    if (name) sendAppEvent(name, dataJson);
+    // Legacy un-channelled wire path: still an app-plane frame, not a
+    // host-firmware injection — tag "app", not the "driver" default.
+    if (name) sendAppEvent(name, dataJson, "app");
     return;
   }
   if (strcmp(type, "forget") == 0) {
@@ -1448,10 +1467,11 @@ void Sandbox::loadShader(const ShaderFields& fields) {
 // are deferred — not dropped — though a long suspend can overflow the 8-slot
 // ring and lose the oldest. Gating on isAppRunning() (true while Suspended) is
 // deliberate: a suspended app is still loaded and will see the events.
-void Sandbox::sendAppEvent(const char* name, const char* dataJson)
+void Sandbox::sendAppEvent(const char* name, const char* dataJson,
+                           const char* channel)
 {
   if (!isAppRunning() || !_onEventFuncRef) return;
-  pushAppEvent(name, dataJson ? dataJson : "{}", "", millis());
+  pushAppEvent(name, dataJson ? dataJson : "{}", "", millis(), channel);
 }
 
 bool Sandbox::isAppRunning() const
@@ -1688,6 +1708,21 @@ void Sandbox::processNextEvent()
   lua_setfield(_lua, -2, "from");
   lua_pushinteger(_lua, e.ts_ms);
   lua_setfield(_lua, -2, "ts_ms");
+  // Envelope: channel always present (driver emissions and BUTTON slots are
+  // hardware-side → "driver"; wire-borne APP_EVENTs carry app/runtime, and
+  // host injections default "driver" via pushAppEvent). src/seq only when
+  // the frame stamped them.
+  lua_pushstring(_lua, (e.type == Event::APP_EVENT && e.channel[0])
+                           ? e.channel : "driver");
+  lua_setfield(_lua, -2, "channel");
+  if (e.src[0]) {
+    lua_pushstring(_lua, e.src);
+    lua_setfield(_lua, -2, "src");
+  }
+  if (e.hasSeq) {
+    lua_pushinteger(_lua, e.seq);
+    lua_setfield(_lua, -2, "seq");
+  }
 
   if (e.type == Event::DRIVER) {
     // Flatten driver event fields directly onto the event table
@@ -1765,7 +1800,9 @@ void Sandbox::processNextEvent()
   }
 }
 
-void Sandbox::pushAppEvent(const char* name, const char* dataJson, const char* from, uint32_t ts_ms)
+void Sandbox::pushAppEvent(const char* name, const char* dataJson, const char* from, uint32_t ts_ms,
+                           const char* channel, const char* src,
+                           bool hasSeq, uint32_t seq)
 {
   int nextHead = (_eventHead + 1) % SANDBOX_MAX_EVENTS;
   if (nextHead == _eventTail) {
@@ -1779,6 +1816,11 @@ void Sandbox::pushAppEvent(const char* name, const char* dataJson, const char* f
   strncpy(e.name, name, sizeof(e.name) - 1);
   strncpy(e.data, dataJson, sizeof(e.data) - 1);
   strncpy(e.from, from, sizeof(e.from) - 1);
+  strncpy(e.channel, (channel && channel[0]) ? channel : "driver",
+          sizeof(e.channel) - 1);
+  strncpy(e.src, src ? src : "", sizeof(e.src) - 1);
+  e.hasSeq = hasSeq;
+  e.seq = seq;
   _eventHead = nextHead;
 }
 
