@@ -490,6 +490,12 @@ void Sandbox::handleAppMessage(const char* transportName, const char* type,
   if (!isAppRunning() || !_onEventFuncRef) return;
   char dataJson[RESIDENT_EVENT_JSON_MAX] = "{}";
   if (doc["data"].is<JsonObject>()) {
+    // Drop, don't truncate: a cut-off payload must never reach the ring.
+    if (measureJson(doc["data"]) + 1 > sizeof(dataJson)) {
+      Serial.printf("Resident::Sandbox: incoming data exceeds RESIDENT_EVENT_JSON_MAX; "
+                    "app event '%s' dropped\n", name);
+      return;
+    }
     serializeJson(doc["data"], dataJson, sizeof(dataJson));
   }
   pushAppEvent(name, dataJson, from, doc["ts_ms"] | millis());
@@ -772,6 +778,60 @@ bool serializeLuaTableToJson(lua_State* L, int idx, char* buf, size_t cap) {
   return !w.overflow;
 }
 
+// ── JSON → Lua table (incoming app-channel event data) ───────────────────
+//
+// Mirror of the writer above, for processNextEvent's APP_EVENT delivery.
+// ArduinoJson does the parsing (so string unescaping — \" \\ \n \r \t
+// \u00XX — is correct); these helpers walk the parsed document onto the Lua
+// stack with the same value rules as the outgoing side: strings, integers
+// (lua_pushinteger), floats (lua_pushnumber), booleans, and nested
+// objects/arrays to LUA_JSON_MAX_DEPTH container levels (counting the
+// top-level data object). Deeper containers and JSON null have no
+// representation: an object member is skipped with its key; an array
+// element is left as a hole at its index — the incoming twin of the
+// outgoing null placeholder, so later elements keep their positions.
+
+void pushJsonObjectToLua(lua_State* L, JsonObjectConst obj, int depth);
+void pushJsonArrayToLua(lua_State* L, JsonArrayConst arr, int depth);
+
+// Pushes the JSON value as a Lua value and returns true, or pushes nothing
+// and returns false. `depth` is the depth of the CONTAINING container.
+bool pushJsonValueToLua(lua_State* L, JsonVariantConst v, int depth) {
+  if (v.is<bool>()) { lua_pushboolean(L, v.as<bool>()); return true; }
+  if (v.is<const char*>()) { lua_pushstring(L, v.as<const char*>()); return true; }
+  if (v.is<int64_t>()) { lua_pushinteger(L, (lua_Integer)v.as<int64_t>()); return true; }
+  if (v.is<double>()) { lua_pushnumber(L, v.as<double>()); return true; }
+  if (v.is<JsonObjectConst>()) {
+    if (depth >= LUA_JSON_MAX_DEPTH) return false;
+    pushJsonObjectToLua(L, v.as<JsonObjectConst>(), depth + 1);
+    return true;
+  }
+  if (v.is<JsonArrayConst>()) {
+    if (depth >= LUA_JSON_MAX_DEPTH) return false;
+    pushJsonArrayToLua(L, v.as<JsonArrayConst>(), depth + 1);
+    return true;
+  }
+  return false;  // null / unrepresentable
+}
+
+void pushJsonObjectToLua(lua_State* L, JsonObjectConst obj, int depth) {
+  lua_createtable(L, 0, (int)obj.size());
+  for (JsonPairConst kv : obj) {
+    if (pushJsonValueToLua(L, kv.value(), depth)) {
+      lua_setfield(L, -2, kv.key().c_str());
+    }
+  }
+}
+
+void pushJsonArrayToLua(lua_State* L, JsonArrayConst arr, int depth) {
+  lua_createtable(L, (int)arr.size(), 0);
+  lua_Integer i = 1;
+  for (JsonVariantConst v : arr) {
+    if (pushJsonValueToLua(L, v, depth)) lua_rawseti(L, -2, i);
+    i++;
+  }
+}
+
 }  // namespace
 
 // events.send(name [, data_table]) -> boolean. Defined here (not in
@@ -828,6 +888,12 @@ void Sandbox::dispatchMessage(const char* transportName,
     const char* name = doc["name"];
     char dataJson[RESIDENT_EVENT_JSON_MAX];
     if (doc["data"].is<JsonObject>()) {
+      // Same drop-don't-truncate guard as handleAppMessage.
+      if (measureJson(doc["data"]) + 1 > sizeof(dataJson)) {
+        Serial.printf("Resident::Sandbox: incoming data exceeds RESIDENT_EVENT_JSON_MAX; "
+                      "app event '%s' dropped\n", name ? name : "");
+        return;
+      }
       serializeJson(doc["data"], dataJson, sizeof(dataJson));
     } else {
       strcpy(dataJson, "{}");
@@ -1671,61 +1737,22 @@ void Sandbox::processNextEvent()
       }
     }
   } else {
-    // APP_EVENT: parse data into event.data subtable (existing behavior)
-    lua_newtable(_lua);
-    {
-      const char* json = e.data;
-      size_t len = strlen(json);
-
-      if (len >= 2 && json[0] == '{' && json[len - 1] == '}') {
-        size_t pos = 1;
-        while (pos < len - 1) {
-          while (pos < len - 1 && (json[pos] == ' ' || json[pos] == ',' || json[pos] == '\n' || json[pos] == '\r' || json[pos] == '\t'))
-            pos++;
-
-          if (pos >= len - 1) break;
-          if (json[pos] != '"') break;
-          pos++;
-
-          char key[64] = {0};
-          size_t keyLen = 0;
-          while (pos < len - 1 && json[pos] != '"' && keyLen < sizeof(key) - 1)
-            key[keyLen++] = json[pos++];
-          key[keyLen] = '\0';
-          if (pos >= len - 1) break;
-          pos++;
-
-          while (pos < len - 1 && (json[pos] == ':' || json[pos] == ' '))
-            pos++;
-
-          if (pos >= len - 1) break;
-
-          if (json[pos] == '"') {
-            pos++;
-            char val[128] = {0};
-            size_t valLen = 0;
-            while (pos < len - 1 && json[pos] != '"' && valLen < sizeof(val) - 1)
-              val[valLen++] = json[pos++];
-            val[valLen] = '\0';
-            if (pos < len - 1) pos++;
-            lua_pushstring(_lua, val);
-            lua_setfield(_lua, -2, key);
-          } else if (json[pos] == '-' || (json[pos] >= '0' && json[pos] <= '9')) {
-            char numStr[32] = {0};
-            size_t numLen = 0;
-            while (pos < len - 1 && numLen < sizeof(numStr) - 1 &&
-                   (json[pos] == '-' || json[pos] == '.' || (json[pos] >= '0' && json[pos] <= '9')))
-              numStr[numLen++] = json[pos++];
-            numStr[numLen] = '\0';
-            lua_pushnumber(_lua, atof(numStr));
-            lua_setfield(_lua, -2, key);
-          } else {
-            while (pos < len - 1 && json[pos] != ',' && json[pos] != '}')
-              pos++;
-          }
-        }
-      }
+    // APP_EVENT: parse data JSON into event.data subtable. Real JSON parsing
+    // (ArduinoJson) + the pushJson* mirror of the outgoing serializer —
+    // strings arrive unescaped, booleans as booleans, nested objects/arrays
+    // as tables to LUA_JSON_MAX_DEPTH. Same drop-don't-truncate discipline
+    // as the outgoing side: unparseable data (e.g. a payload that was cut
+    // off upstream) is never delivered garbled — the whole event is dropped.
+    JsonDocument dataDoc;
+    // const char* input → ArduinoJson copy mode (not zero-copy destructive).
+    if (deserializeJson(dataDoc, (const char*)e.data) ||
+        !dataDoc.is<JsonObjectConst>()) {
+      Serial.printf("Resident::Sandbox: unparseable data for app event '%s'; event dropped\n",
+                    e.name);
+      lua_pop(_lua, 3);  // on_event handler, ctx table, event table
+      return;
     }
+    pushJsonObjectToLua(_lua, dataDoc.as<JsonObjectConst>(), /*depth=*/1);
     lua_setfield(_lua, -2, "data");
   }
 

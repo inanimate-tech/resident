@@ -55,6 +55,57 @@ std::string serialize(const char* tableExpr, size_t cap = 512) {
   lua_close(L);
   return ok ? std::string(buf) : std::string("<overflow>");
 }
+
+// Incoming mirror: parse `json` with ArduinoJson, push via
+// Resident::pushJsonObjectToLua, and evaluate `predicate` — a Lua expression
+// over `d`, the resulting data table.
+bool parseCheck(const char* json, const char* predicate) {
+  lua_State* L = luaL_newstate();
+  luaL_openlibs(L);
+  JsonDocument doc;
+  if (deserializeJson(doc, json)) { lua_close(L); return false; }
+  std::string src = std::string("return function(d) return (") + predicate + ") end";
+  if (luaL_dostring(L, src.c_str()) != LUA_OK) { lua_close(L); return false; }
+  Resident::pushJsonObjectToLua(L, doc.as<JsonObjectConst>(), /*depth=*/1);
+  bool ok = lua_pcall(L, 1, 1, 0) == LUA_OK && lua_toboolean(L, -1);
+  lua_close(L);
+  return ok;
+}
+
+// Round-trip: build tableExpr in Lua, serialize with the outgoing writer,
+// parse back with the incoming reader, deep-compare against the original.
+bool roundTrips(const char* tableExpr) {
+  lua_State* L = luaL_newstate();
+  luaL_openlibs(L);
+  luaL_dostring(L,
+      "function deep_eq(a, b)\n"
+      "  if type(a) ~= type(b) then return false end\n"
+      "  if type(a) ~= 'table' then return a == b end\n"
+      "  for k, v in pairs(a) do if not deep_eq(v, b[k]) then return false end end\n"
+      "  for k in pairs(b) do if a[k] == nil then return false end end\n"
+      "  return true\n"
+      "end\n");
+  std::string src = std::string("return ") + tableExpr;
+  if (luaL_dostring(L, src.c_str()) != LUA_OK) { lua_close(L); return false; }
+  char buf[512];
+  if (!Resident::serializeLuaTableToJson(L, -1, buf, sizeof(buf))) { lua_close(L); return false; }
+  JsonDocument doc;
+  if (deserializeJson(doc, (const char*)buf)) { lua_close(L); return false; }
+  lua_getglobal(L, "deep_eq");
+  lua_pushvalue(L, -2);                                       // original table
+  Resident::pushJsonObjectToLua(L, doc.as<JsonObjectConst>(), /*depth=*/1);
+  bool ok = lua_pcall(L, 2, 1, 0) == LUA_OK && lua_toboolean(L, -1);
+  lua_close(L);
+  return ok;
+}
+
+void pump() { testMillis() += 200; sandbox->loop(); }
+
+constexpr const char* COUNTING_APP =
+    "cnt = 0\n"
+    "function init(ctx) end\n"
+    "function on_tick(ctx, dt) end\n"
+    "function on_event(ctx, event) cnt = cnt + 1 end\n";
 }  // namespace
 
 void setUp(void) { testMillis() = 0; }
@@ -228,6 +279,109 @@ void test_events_send_oversize_payload_dropped_not_truncated(void) {
   TEST_ASSERT_FALSE(sandbox->luaGlobalBoolForTest("ok"));    // send() -> false
 }
 
+// ── incoming path: pushJsonObjectToLua unit tests (mirror the outgoing) ───
+
+void test_parser_unescapes_strings(void) {
+  TEST_ASSERT_TRUE(parseCheck(
+      "{\"m\":\"say \\\"hi\\\"\",\"p\":\"a\\\\b\",\"nl\":\"l1\\nl2\\t.\\r\","
+      "\"c\":\"a\\u0001b\"}",
+      "d.m == 'say \"hi\"' and d.p == 'a\\\\b' and d.nl == 'l1\\nl2\\t.\\r' "
+      "and d.c == 'a\\1b'"));
+}
+
+void test_parser_booleans_and_numbers(void) {
+  TEST_ASSERT_TRUE(parseCheck(
+      "{\"t\":true,\"f\":false,\"n\":1,\"x\":1.5,\"neg\":-7}",
+      "d.t == true and d.f == false and d.n == 1 and "
+      "math.type(d.n) == 'integer' and d.x == 1.5 and d.neg == -7"));
+}
+
+void test_parser_nested_objects_to_depth_3(void) {
+  TEST_ASSERT_TRUE(parseCheck("{\"a\":{\"b\":{\"c\":1}}}", "d.a.b.c == 1"));
+  // A container that would sit at depth 4 is skipped with its key,
+  // mirroring the outgoing serializer.
+  TEST_ASSERT_TRUE(parseCheck("{\"a\":{\"b\":{\"c\":{\"deep\":1}}}}",
+                              "d.a.b.c == nil and d.a.b ~= nil"));
+}
+
+void test_parser_arrays(void) {
+  TEST_ASSERT_TRUE(parseCheck(
+      "{\"xs\":[1,true,\"a\"]}",
+      "d.xs[1] == 1 and d.xs[2] == true and d.xs[3] == 'a' and #d.xs == 3"));
+  // JSON null has no Lua value: a hole at its index, later elements keep
+  // their positions (the incoming twin of the outgoing null placeholder).
+  TEST_ASSERT_TRUE(parseCheck("{\"xs\":[1,null,3]}",
+                              "d.xs[1] == 1 and d.xs[2] == nil and d.xs[3] == 3"));
+}
+
+void test_serializer_parser_round_trip(void) {
+  TEST_ASSERT_TRUE(roundTrips("{n = 1, f = 1.5, neg = -7, tag = 'x'}"));
+  TEST_ASSERT_TRUE(roundTrips(
+      "{m = 'say \"hi\"', p = 'a\\\\b', nl = 'l1\\nl2\\t.\\r', c = 'a\\1b'}"));
+  TEST_ASSERT_TRUE(roundTrips("{ok = true, off = false}"));
+  TEST_ASSERT_TRUE(roundTrips("{a = {b = {c = 1}}, xs = {1, 'a', true}}"));
+  TEST_ASSERT_TRUE(roundTrips("{}"));
+}
+
+// ── incoming path: integration through the sandbox ────────────────────────
+
+// The live-bug repro: a server→device event whose string value contains
+// double quotes (plus booleans, a nested object, and an array) must reach
+// on_event intact.
+void test_incoming_quoted_string_reaches_lua_intact(void) {
+  build();
+  loadApp(
+      "ok = false\n"
+      "cnt = 0\n"
+      "function init(ctx) end\n"
+      "function on_tick(ctx, dt) end\n"
+      "function on_event(ctx, event)\n"
+      "  cnt = cnt + 1\n"
+      "  ok = event.data.msg == [[it's a \"good\" day]]\n"
+      "       and event.data.on == true\n"
+      "       and event.data.pos.x == 1\n"
+      "       and event.data.xs[2] == 'b'\n"
+      "end\n");
+  JsonDocument evt;
+  evt["channel"] = "app";
+  evt["type"] = "heard";
+  evt["from"] = "otherdev";
+  evt["data"]["msg"] = "it's a \"good\" day";
+  evt["data"]["on"] = true;
+  evt["data"]["pos"]["x"] = 1;
+  evt["data"]["xs"][0] = "a";
+  evt["data"]["xs"][1] = "b";
+  sandbox->injectMessage("test", "heard", evt);
+  pump();
+  TEST_ASSERT_EQUAL_INT(1, sandbox->luaGlobalIntForTest("cnt"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("ok"));
+}
+
+void test_incoming_unparseable_data_drops_event(void) {
+  build();
+  loadApp(COUNTING_APP);
+  sandbox->sendAppEvent("evt", "{\"broken");   // cut-off JSON via the C++ path
+  pump();
+  TEST_ASSERT_EQUAL_INT(0, sandbox->luaGlobalIntForTest("cnt"));
+  sandbox->sendAppEvent("evt", "{\"n\":1}");   // sanity: valid data delivers
+  pump();
+  TEST_ASSERT_EQUAL_INT(1, sandbox->luaGlobalIntForTest("cnt"));
+}
+
+void test_incoming_oversize_data_dropped(void) {
+  build();
+  loadApp(COUNTING_APP);
+  JsonDocument evt;
+  evt["channel"] = "app";
+  evt["type"] = "big";
+  evt["from"] = "otherdev";
+  std::string blob(RESIDENT_EVENT_JSON_MAX + 100, 'x');
+  evt["data"]["blob"] = blob.c_str();
+  sandbox->injectMessage("test", "big", evt);
+  pump();
+  TEST_ASSERT_EQUAL_INT(0, sandbox->luaGlobalIntForTest("cnt"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_events_send_builds_app_channel_envelope);
@@ -246,5 +400,13 @@ int main(int, char**) {
   RUN_TEST(test_serializer_overflow_returns_false);
   RUN_TEST(test_events_send_rich_payload_through_envelope);
   RUN_TEST(test_events_send_oversize_payload_dropped_not_truncated);
+  RUN_TEST(test_parser_unescapes_strings);
+  RUN_TEST(test_parser_booleans_and_numbers);
+  RUN_TEST(test_parser_nested_objects_to_depth_3);
+  RUN_TEST(test_parser_arrays);
+  RUN_TEST(test_serializer_parser_round_trip);
+  RUN_TEST(test_incoming_quoted_string_reaches_lua_intact);
+  RUN_TEST(test_incoming_unparseable_data_drops_event);
+  RUN_TEST(test_incoming_oversize_data_dropped);
   return UNITY_END();
 }

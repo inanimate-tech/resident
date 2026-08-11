@@ -742,7 +742,7 @@ All callbacks receive a `ctx` table. `on_tick` also receives `dt_ms` (integer, m
 | `from` | string | Source identifier — empty string for driver events |
 | `ts_ms` | integer | Timestamp in milliseconds (`millis()`) when the event was queued |
 | *(driver fields)* | any | For **driver events**: extra fields are flattened directly onto the table (e.g. `event.id`, `event.state`) |
-| `data` | table | For **app_events**: the JSON `data` object parsed into a subtable |
+| `data` | table | For **app events**: the JSON `data` object parsed into a subtable — strings (unescaped), integers, floats, booleans, and nested objects/arrays to 3 container levels (deeper containers are skipped with their key; JSON `null` leaves a hole at its array index). Unparseable or oversized (> `RESIDENT_EVENT_JSON_MAX`) data drops the whole event rather than delivering it garbled |
 
 ```lua
 function on_event(ctx, event)
