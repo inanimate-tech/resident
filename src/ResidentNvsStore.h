@@ -61,9 +61,47 @@ public:
     nvs_close(h);
   }
 
+  // Lua `store` KV blob — same NVS namespace, its own key, so the app
+  // source and the store slot never clobber each other. Writes arrive
+  // pre-debounced from StoreModule (once per ~2s of quiet / app unload).
+  bool saveStore(const char* json, size_t len) override {
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) return false;
+    esp_err_t err = nvs_set_blob(h, KEY_STORE, json, len);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err == ESP_OK;
+  }
+
+  String loadStore() override {
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return String();
+    size_t len = 0;
+    esp_err_t err = nvs_get_blob(h, KEY_STORE, nullptr, &len);
+    if (err != ESP_OK || len == 0) { nvs_close(h); return String(); }
+
+    String out;
+    char* buf = (char*)malloc(len + 1);
+    if (!buf) { nvs_close(h); return String(); }
+    err = nvs_get_blob(h, KEY_STORE, buf, &len);
+    if (err == ESP_OK) { buf[len] = '\0'; out = String(buf); }
+    free(buf);
+    nvs_close(h);
+    return out;
+  }
+
+  void clearStore() override {
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_erase_key(h, KEY_STORE);
+    nvs_commit(h);
+    nvs_close(h);
+  }
+
 private:
   static constexpr const char* NS  = "resident";
   static constexpr const char* KEY = "app";
+  static constexpr const char* KEY_STORE = "store";
 };
 
 } // namespace Resident

@@ -269,6 +269,13 @@ void Sandbox::initialize()
   }
   lua_setglobal(_lua, _eventsModule.name());
 
+  lua_newtable(_lua);
+  {
+    LuaModule m(_lua, &_storeModule);
+    _storeModule.registerModule(m);
+  }
+  lua_setglobal(_lua, _storeModule.name());
+
   _triggerResetTime = millis();
   _lastTickTime = millis();
 
@@ -367,6 +374,11 @@ void Sandbox::setup()
     if (s_defaultStore.begin()) _store = &s_defaultStore;
   }
 #endif
+
+  // 5. Lua `store` slot: hydrate RAM from the persisted blob (no-op without
+  // a store — the module still works RAM-only, it just won't survive reboot).
+  _storeModule.attach(_store);
+  _storeModule.loadPersisted();
 
   // Load any persisted app source. It is not armed here — the identity screen
   // and its countdown appear only once the device is ready to show them: on
@@ -536,7 +548,13 @@ void Sandbox::handleSystemMessage(const char* transportName, const char* type,
   if (_deferLoads && isLoad) { stashDeferredLoad(doc); return; }
   if (strcmp(type, "app") == 0) {
     const char* code = doc["code"];
-    if (code) loadApp(code);
+    if (code) {
+      // Store scoping: the server's app identity for the Lua store slot.
+      // Missing storeNs = shared default "app". A namespace different from
+      // the persisted one clears the slot (see StoreModule::setNamespace).
+      _storeModule.setNamespace(doc["storeNs"] | "app");
+      loadApp(code);
+    }
     return;
   }
   if (strcmp(type, "shader") == 0) {
@@ -896,7 +914,12 @@ void Sandbox::dispatchMessage(const char* transportName,
   // Reserved types — Resident handles internally; user callback never sees these.
   if (strcmp(type, "app") == 0) {
     const char* code = doc["code"];
-    if (code) loadApp(code);
+    if (code) {
+      // Same storeNs handling as the system channel — this path also
+      // applies stashed deferred loads, which carry the full original doc.
+      _storeModule.setNamespace(doc["storeNs"] | "app");
+      loadApp(code);
+    }
     return;
   }
   if (strcmp(type, "shader") == 0) {
@@ -1047,6 +1070,11 @@ void Sandbox::loop() {
   if (_courier.has_value()) {
     _courier->loop();
   }
+
+  // Debounced store write-through — runs even with no app loaded so a
+  // mutation made just before an unload/idle still reaches NVS.
+  _storeModule.updateDebounce(millis());
+
   if (!_lua) return;
 
   // Driver heartbeat — single de-duped walk, connectivity-independent.
@@ -1118,6 +1146,10 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
     _config.extensions.items[i]->onAppReset();
   }
   _eventsModule.onAppReset();
+  // The store slot deliberately does NOT reset here — surviving loadApp is
+  // its point. App unload is a flush boundary instead: any dirty state the
+  // outgoing app left is persisted now, not after the debounce quiet.
+  _storeModule.flush();
 
   // Generate new generation ID
   _generationId = String(millis(), HEX);

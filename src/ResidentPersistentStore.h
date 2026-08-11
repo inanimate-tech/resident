@@ -25,6 +25,18 @@ public:
   // Remove any stored source.
   virtual void clear() = 0;
 
+  // ── Second slot: the app-scoped Lua `store` KV blob (arc A4) ──────────
+  // A single JSON blob {"ns":"...","kv":{...}}, independent of the app
+  // source slot above. Defaults are inert so existing PersistentStore
+  // implementations keep compiling; without overrides the Lua store is
+  // RAM-only (works, but doesn't survive reboot).
+  virtual bool saveStore(const char* json, size_t len) {
+    (void)json; (void)len;
+    return false;
+  }
+  virtual String loadStore() { return String(); }
+  virtual void clearStore() {}
+
   virtual ~PersistentStore() = default;
 };
 

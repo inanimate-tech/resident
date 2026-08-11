@@ -798,6 +798,21 @@ Serialized into a bounded buffer of `RESIDENT_EVENT_JSON_MAX` bytes (default 102
 
 Rate-limited by a shared token bucket: 5 events/s sustained, burst of 10. Returns `false` (rather than raising a Lua error) when rate-limited, when the event name is empty, or when the underlying send fails — always check the return value if you need to know whether it went out.
 
+### `store` module
+
+An app-scoped **persistent** KV slot of scalars — state here survives `loadApp` (same identity) and reboot. RAM-backed with debounced write-through to the persistent store (NVS on device): at most one write per ~2 s of mutation quiet, plus a forced flush on app unload.
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `store.get(key)` | string \| number \| boolean \| nil | Value for `key`, `nil` if absent |
+| `store.set(key, value)` | boolean | Set a scalar (string/number/boolean). `nil` deletes. `false` if the value is non-scalar or the write would exceed the budget (rejected whole — no partial writes) |
+| `store.keys()` | array | All keys currently in the slot |
+| `store.clear()` | — | Empty the slot |
+
+**Scoping / reset policy:** the slot is namespaced by an app identity the server provides on the load message — `{channel:"system", type:"app", code:"...", storeNs:"<id ≤32 chars>"}`. Loading with the **same** `storeNs` preserves the slot; a **different** `storeNs` clears it first (persisted immediately); missing `storeNs` uses the shared default namespace `"app"`. The namespace is persisted alongside the data, so the policy holds across reboots. Direct C++ `loadApp()` calls leave the namespace unchanged.
+
+**Budget:** total persisted size (namespace + keys + values, serialized) is capped at `RESIDENT_STORE_JSON_MAX` (default 2048 bytes, build-flag overridable).
+
 ### `time` module
 
 Reads wall-clock time from NTP (via ezTime). Functions return UTC unless a timezone is set via `Sandbox::setTimezone`.

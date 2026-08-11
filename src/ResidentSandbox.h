@@ -14,6 +14,7 @@
 #include "ResidentSandboxConfig.h"
 #include "ResidentOverlay.h"
 #include "ResidentEvents.h"
+#include "ResidentStoreModule.h"
 
 // Maximum size (bytes, including the NUL terminator) of a serialized event
 // `data` JSON payload — used by the outgoing events.send serializer, the
@@ -323,6 +324,9 @@ private:
     // _eventsModule (not _events) — that name is already taken by the
     // Event ring buffer below.
     EventsModule _eventsModule;
+    // The Lua `store` KV slot — survives loadApp; namespaced by the app-load
+    // message's storeNs; debounced write-through to _store (arc A4).
+    StoreModule _storeModule;
     EventSink _eventSink;
     unsigned long _eventNonceCounter = 0;
 
