@@ -778,14 +778,17 @@ Publishes an event on the app data plane (`channel:"app"`) — the Lua-side entr
 | Function | Returns | Description |
 |----------|---------|-------------|
 | `events.send(name)` | boolean | Publish `name` with no data |
-| `events.send(name, data)` | boolean | Publish `name` with a flat table of string/number values as `event.data` |
+| `events.send(name, data)` | boolean | Publish `name` with a table of string/number/boolean/table values as `event.data` |
 
 ```lua
 events.send("turn")
 events.send("color_change", { hue = 180, label = "warm" })
+events.send("state", { on = true, pos = { x = 1, y = 2 }, tags = { "a", "b" } })
 ```
 
-`data` must be a **flat** table — string and number values only (booleans, nested tables, and other types are silently skipped per-key). Serialized to a bounded 256-byte JSON buffer; oversized payloads are truncated.
+`data` serializes to a JSON object. String keys and values are JSON-escaped (`"`, `\`, and control characters). Values may be strings, numbers, booleans, or tables nested up to 3 table levels (counting `data` itself): a string-keyed table becomes a JSON object; a table with a non-empty array part (`#t > 0`) becomes a JSON array of elements `1..#t` (don't mix array and string keys — string keys of an array-part table are ignored). Top-level integer keys, deeper tables, and other value types (functions, userdata) are silently skipped per-key; unsupported array *elements* serialize as `null` to hold their position.
+
+Serialized into a bounded buffer of `RESIDENT_EVENT_JSON_MAX` bytes (default 1024; override with a build flag, e.g. `-DRESIDENT_EVENT_JSON_MAX=2048`). An oversized payload is never truncated: the event is dropped, a line is logged to Serial, and `events.send` returns `false`.
 
 Rate-limited by a shared token bucket: 5 events/s sustained, burst of 10. Returns `false` (rather than raising a Lua error) when rate-limited, when the event name is empty, or when the underlying send fails — always check the return value if you need to know whether it went out.
 
@@ -1134,6 +1137,6 @@ ESP-IDF CMake component graph.
 | `Sandbox::TICK_INTERVAL` | `100 ms` | Lua `on_tick` interval (10 FPS) |
 | `Sandbox::SANDBOX_MAX_EVENTS` | `8` | Event ring buffer capacity; oldest event is dropped when full |
 | Event `name` max | `32 chars` | `Event::name` buffer size — driver event names longer than 31 bytes are truncated |
-| Event `data` max | `256 chars` | `Event::data` buffer — serialized driver event fields or `app_event` JSON |
+| Event `data` max | `RESIDENT_EVENT_JSON_MAX` (default `1024`) | `Event::data` buffer — serialized driver event fields or app-channel `data` JSON. Compile-time override via build flag; also bounds the outgoing `events.send` serializer |
 | `RUNTIME_ERROR_COOLDOWN` | `5000 ms` | Minimum interval between `runtime_error` telemetry emissions from `on_tick` |
 | `RUNTIME_ERROR_MAX_BURST` | `3` | Number of `runtime_error` telemetry events allowed before rate-limiting kicks in |

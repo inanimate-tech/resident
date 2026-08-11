@@ -488,7 +488,7 @@ void Sandbox::handleAppMessage(const char* transportName, const char* type,
   // or no on_event handler → drop. The event ring is not reset on app load, so
   // queueing here would leak stale events into whatever app loads next.
   if (!isAppRunning() || !_onEventFuncRef) return;
-  char dataJson[256] = "{}";
+  char dataJson[RESIDENT_EVENT_JSON_MAX] = "{}";
   if (doc["data"].is<JsonObject>()) {
     serializeJson(doc["data"], dataJson, sizeof(dataJson));
   }
@@ -615,74 +615,184 @@ bool Sandbox::publishEvent(const char* name, const char* dataJson)
   return false;
 }
 
+// ── Lua table → JSON serializer (outgoing events.send data) ──────────────
+//
+// Successor to the flat serializer ported from RoomModule::announce. Adds:
+//   - proper JSON string escaping (" \ and control chars) for keys AND values
+//   - booleans (Lua true/false → JSON true/false)
+//   - nested tables to LUA_JSON_MAX_DEPTH table levels: string-keyed tables
+//     become objects; tables with a non-empty array part (lua_rawlen > 0)
+//     become arrays of elements 1..rawlen (string keys of a mixed table are
+//     ignored — don't mix). The TOP level is always an object: the wire
+//     format is a JSON object in the envelope's `data` field, and top-level
+//     integer keys are skipped exactly as before.
+//   - overflow is an error, not a truncation: the writer sets a flag and the
+//     caller drops the event instead of sending a cut-off payload.
+//
+// Kept identical for existing flat string/number payloads (byte-for-byte,
+// escaping aside): pair order is lua_next order, integers print via %lld,
+// floats via %g, unsupported values (functions, userdata, nil, too-deep
+// tables) are skipped along with their key, no data → "{}".
+//
+// Test cases live in test/unit/test/test_events_module — serializer cases
+// call serializeLuaTableToJson directly on a bare lua_State.
+namespace {
+
+constexpr int LUA_JSON_MAX_DEPTH = 3;  // table levels, counting the top one
+
+// Bounded writer: never writes past cap, never truncates silently — once
+// `overflow` is set every subsequent write is a no-op and the caller must
+// discard the buffer.
+struct JsonWriter {
+  char* buf = nullptr;
+  size_t cap = 0;
+  size_t len = 0;
+  bool overflow = false;
+
+  void putc_(char c) {
+    if (overflow) return;
+    if (len + 1 >= cap) { overflow = true; return; }  // reserve NUL slot
+    buf[len++] = c;
+  }
+  void puts_(const char* s) { while (*s) putc_(*s++); }
+  void terminate() { buf[len < cap ? len : cap - 1] = '\0'; }
+};
+
+void writeJsonString(JsonWriter& w, const char* s) {
+  w.putc_('"');
+  for (const unsigned char* p = (const unsigned char*)s; *p; p++) {
+    unsigned char c = *p;
+    switch (c) {
+      case '"':  w.puts_("\\\""); break;
+      case '\\': w.puts_("\\\\"); break;
+      case '\n': w.puts_("\\n");  break;
+      case '\r': w.puts_("\\r");  break;
+      case '\t': w.puts_("\\t");  break;
+      default:
+        if (c < 0x20) {
+          char esc[8];
+          snprintf(esc, sizeof(esc), "\\u%04x", c);
+          w.puts_(esc);
+        } else {
+          w.putc_((char)c);
+        }
+    }
+  }
+  w.putc_('"');
+}
+
+void writeLuaObject(lua_State* L, int idx, JsonWriter& w, int depth);
+void writeLuaArray(lua_State* L, int idx, JsonWriter& w, int depth);
+
+// True iff the value at idx can be serialized. `depth` is the depth of the
+// CONTAINING table; a nested table is only supported while depth <
+// LUA_JSON_MAX_DEPTH. Checked BEFORE writing an object key so unsupported
+// values are skipped without leaving a dangling `"key":`.
+bool luaValueSupported(lua_State* L, int idx, int depth) {
+  switch (lua_type(L, idx)) {
+    case LUA_TSTRING:
+    case LUA_TNUMBER:
+    case LUA_TBOOLEAN: return true;
+    case LUA_TTABLE:   return depth < LUA_JSON_MAX_DEPTH;
+    default:           return false;
+  }
+}
+
+// Writes the (supported — see luaValueSupported) value at idx.
+void writeLuaValue(lua_State* L, int idx, JsonWriter& w, int depth) {
+  idx = lua_absindex(L, idx);
+  switch (lua_type(L, idx)) {
+    case LUA_TSTRING:
+      writeJsonString(w, lua_tostring(L, idx));
+      break;
+    case LUA_TNUMBER: {
+      char num[40];
+      if (lua_isinteger(L, idx)) {
+        snprintf(num, sizeof(num), "%lld", (long long)lua_tointeger(L, idx));
+      } else {
+        snprintf(num, sizeof(num), "%g", lua_tonumber(L, idx));
+      }
+      w.puts_(num);
+      break;
+    }
+    case LUA_TBOOLEAN:
+      w.puts_(lua_toboolean(L, idx) ? "true" : "false");
+      break;
+    case LUA_TTABLE:
+      if (lua_rawlen(L, idx) > 0) writeLuaArray(L, idx, w, depth + 1);
+      else                        writeLuaObject(L, idx, w, depth + 1);
+      break;
+    default:
+      break;  // unreachable — callers gate on luaValueSupported
+  }
+}
+
+void writeLuaObject(lua_State* L, int idx, JsonWriter& w, int depth) {
+  idx = lua_absindex(L, idx);
+  w.putc_('{');
+  bool first = true;
+  lua_pushnil(L);
+  while (lua_next(L, idx) != 0) {
+    // String keys only (as ever: lua_tostring on a non-string key would
+    // mutate it under lua_next). Traversal always runs to completion so the
+    // Lua stack stays balanced even after overflow.
+    if (lua_type(L, -2) == LUA_TSTRING && luaValueSupported(L, -1, depth)) {
+      if (!first) w.putc_(',');
+      writeJsonString(w, lua_tostring(L, -2));
+      w.putc_(':');
+      writeLuaValue(L, -1, w, depth);
+      first = false;
+    }
+    lua_pop(L, 1);  // pop value, keep key for next iteration
+  }
+  w.putc_('}');
+}
+
+void writeLuaArray(lua_State* L, int idx, JsonWriter& w, int depth) {
+  idx = lua_absindex(L, idx);
+  lua_Integer n = (lua_Integer)lua_rawlen(L, idx);
+  w.putc_('[');
+  for (lua_Integer i = 1; i <= n; i++) {
+    lua_rawgeti(L, idx, i);
+    if (i > 1) w.putc_(',');
+    if (luaValueSupported(L, -1, depth)) writeLuaValue(L, -1, w, depth);
+    else                                 w.puts_("null");  // hold the position
+    lua_pop(L, 1);
+  }
+  w.putc_(']');
+}
+
+// Serialize the Lua table at idx into buf as a JSON object. Returns false on
+// overflow — buf then holds a truncated (still NUL-terminated) string that
+// MUST NOT be sent.
+bool serializeLuaTableToJson(lua_State* L, int idx, char* buf, size_t cap) {
+  JsonWriter w{buf, cap};
+  writeLuaObject(L, idx, w, /*depth=*/1);
+  w.terminate();
+  return !w.overflow;
+}
+
+}  // namespace
+
 // events.send(name [, data_table]) -> boolean. Defined here (not in
 // ResidentEvents.h) because it needs Sandbox::publishEvent, i.e. Sandbox as
-// a complete type — see the linkage note atop ResidentEvents.h. The
-// flat-table -> JSON serializer is ported verbatim from RoomModule::announce
-// (lib/HawthornRoomDevice/src/modules/RoomModule.cpp in the parent repo).
+// a complete type — see the linkage note atop ResidentEvents.h.
 int EventsModule::send(lua_State* L)
 {
   // Arg 1: event name (string, required)
   const char* name = luaL_checkstring(L, 1);
 
   // Arg 2: data table (optional)
-  char dataJson[256] = "{}";
+  char dataJson[RESIDENT_EVENT_JSON_MAX] = "{}";
 
   if (lua_gettop(L) >= 2 && lua_istable(L, 2)) {
-    // Serialize flat Lua table to JSON
-    char* p = dataJson;
-    char* end = dataJson + sizeof(dataJson) - 2;
-    *p++ = '{';
-    bool first = true;
-
-    lua_pushnil(L);  // First key
-    while (lua_next(L, 2) != 0 && p < end) {
-      if (lua_type(L, -2) == LUA_TSTRING) {
-        const char* key = lua_tostring(L, -2);
-
-        if (!first && p < end) {
-          *p++ = ',';
-        }
-
-        int written = snprintf(p, end - p, "\"%s\":", key);
-        if (written > 0 && p + written < end) {
-          p += written;
-        } else {
-          lua_pop(L, 1);
-          break;
-        }
-
-        if (lua_type(L, -1) == LUA_TSTRING) {
-          const char* val = lua_tostring(L, -1);
-          written = snprintf(p, end - p, "\"%s\"", val);
-        } else if (lua_type(L, -1) == LUA_TNUMBER) {
-          if (lua_isinteger(L, -1)) {
-            written = snprintf(p, end - p, "%lld", (long long)lua_tointeger(L, -1));
-          } else {
-            written = snprintf(p, end - p, "%g", lua_tonumber(L, -1));
-          }
-        } else {
-          // Skip unsupported types - back out the key
-          if (!first) p--;
-          while (p > dataJson + 1 && *(p - 1) != '{' && *(p - 1) != ',') p--;
-          lua_pop(L, 1);
-          continue;
-        }
-
-        if (written > 0 && p + written < end) {
-          p += written;
-          first = false;
-        } else {
-          lua_pop(L, 1);
-          break;
-        }
-      }
-
-      lua_pop(L, 1);  // Pop value, keep key for next iteration
+    if (!serializeLuaTableToJson(L, 2, dataJson, sizeof(dataJson))) {
+      // Overflow: never send a cut-off payload — drop the event instead.
+      Serial.println("Resident::Sandbox: events.send data exceeds "
+                     "RESIDENT_EVENT_JSON_MAX; event dropped");
+      lua_pushboolean(L, false);
+      return 1;
     }
-
-    *p++ = '}';
-    *p = '\0';
   }
 
   bool sent = _sandbox && _sandbox->publishEvent(name, dataJson);
@@ -716,7 +826,7 @@ void Sandbox::dispatchMessage(const char* transportName,
   }
   if (strcmp(type, "app_event") == 0) {
     const char* name = doc["name"];
-    char dataJson[256];
+    char dataJson[RESIDENT_EVENT_JSON_MAX];
     if (doc["data"].is<JsonObject>()) {
       serializeJson(doc["data"], dataJson, sizeof(dataJson));
     } else {

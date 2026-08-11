@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`events.send` serializer upgrade.** The outgoing Lua-table → JSON serializer now JSON-escapes keys and values (`"`, `\`, `\n`, `\r`, `\t`, `\u00XX` for other control chars), supports booleans (`true`/`false`), and serializes nested tables to 3 table levels — string-keyed tables as objects, tables with a non-empty array part as arrays. Existing flat string/number payloads serialize byte-identically (escaping aside). The buffer is now `RESIDENT_EVENT_JSON_MAX` bytes (default 1024, build-flag overridable; was a fixed 256), and overflow **drops the event** (Serial log, `events.send` returns `false`) instead of truncating. The same constant now sizes the incoming app-channel `data` buffer and the event ring's per-slot `data` storage (RAM note: the 8-slot ring grows by 8× any increase — +6 KB at the default).
+
 ## v0.7.0
 
 Theme: channel-based message routing — an envelope `channel` field steers messages onto a data plane, a control plane, or a custom slot, replacing the single flat `onMessage`/reserved-type dispatch as the routing new senders should use. Also in this release: `SystemMic` becomes a standalone capture interface with a shipped M5 driver.

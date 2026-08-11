@@ -15,6 +15,16 @@
 #include "ResidentOverlay.h"
 #include "ResidentEvents.h"
 
+// Maximum size (bytes, including the NUL terminator) of a serialized event
+// `data` JSON payload — used by the outgoing events.send serializer, the
+// incoming app-channel data buffer, and the event ring's per-slot storage.
+// Override with a build flag, e.g. -DRESIDENT_EVENT_JSON_MAX=2048.
+// RAM note: the event ring holds SANDBOX_MAX_EVENTS (8) slots, so raising
+// this grows the Sandbox by 8x the increase.
+#ifndef RESIDENT_EVENT_JSON_MAX
+#define RESIDENT_EVENT_JSON_MAX 1024
+#endif
+
 namespace Resident {
 
 class Sandbox {
@@ -449,7 +459,7 @@ private:
     struct Event {
         enum Type { BUTTON, APP_EVENT, DRIVER } type;
         char name[32];
-        char data[256];
+        char data[RESIDENT_EVENT_JSON_MAX];
         char from[64];
         uint32_t ts_ms;
     };
