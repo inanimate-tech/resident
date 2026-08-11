@@ -1349,6 +1349,11 @@ bool Sandbox::startMicStream()
 {
   if (_micStreaming) return true;
   if (!_config.systemMic) return false;
+  // Boundary flush: the capture gesture often precedes a state change —
+  // and (found live) precedes the occasional codec-path crash. Persist
+  // the store slot NOW so the state being asked about is never the
+  // state that a crash loses.
+  _storeModule.flush();
   if (!_config.systemMic->begin()) return false;
   _micStreaming = true;
   return true;

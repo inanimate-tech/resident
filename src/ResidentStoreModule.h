@@ -43,6 +43,7 @@ namespace Resident {
 class StoreModule : public Extension {
 public:
   static constexpr unsigned long STORE_DEBOUNCE_MS = 2000;
+  static constexpr unsigned long STORE_MAX_FLUSH_MS = 30000;
   static constexpr size_t STORE_NS_MAX = 32;
 
   const char* name() const override { return "store"; }
@@ -94,9 +95,21 @@ public:
     flush();
   }
 
-  // Debounced write-through: called every Sandbox::loop().
+  // Debounced write-through: called every Sandbox::loop(). Quiet apps
+  // flush STORE_DEBOUNCE_MS after their last mutation; apps that NEVER
+  // go quiet (a ticking clock mutates continuously, so the quiet window
+  // never arrives) flush at least every STORE_MAX_FLUSH_MS while dirty —
+  // found live 2026-08-11: a crash mid-tick lost a clock's entire boot
+  // session because the quiet-only debounce had never fired. Worst-case
+  // wear stays ~2 writes/min.
   void updateDebounce(unsigned long now) {
-    if (_dirty && now - _lastMutationMs >= STORE_DEBOUNCE_MS) flush();
+    if (!_dirty) { _dirtySinceMs = 0; return; }
+    if (_dirtySinceMs == 0) _dirtySinceMs = now;
+    if (now - _lastMutationMs >= STORE_DEBOUNCE_MS ||
+        now - _dirtySinceMs >= STORE_MAX_FLUSH_MS) {
+      _dirtySinceMs = 0;
+      flush();
+    }
   }
 
   // Persist now if dirty. Called by the debounce, on namespace switches,
@@ -203,6 +216,7 @@ private:
   String _ns = "app";            // shared default namespace
   bool _dirty = false;
   unsigned long _lastMutationMs = 0;
+  unsigned long _dirtySinceMs = 0;   // first dirty moment (max-flush clock)
 
   void markDirty() {
     _dirty = true;
