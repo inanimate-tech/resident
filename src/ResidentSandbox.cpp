@@ -553,6 +553,8 @@ void Sandbox::handleSystemMessage(const char* transportName, const char* type,
       // Missing storeNs = shared default "app". A namespace different from
       // the persisted one clears the slot (see StoreModule::setNamespace).
       _storeModule.setNamespace(doc["storeNs"] | "app");
+      // Optional server-stamped generation id → ctx.generation_id in Lua.
+      _nextGenerationId = doc["generationId"] | "";
       loadApp(code);
     }
     return;
@@ -915,9 +917,11 @@ void Sandbox::dispatchMessage(const char* transportName,
   if (strcmp(type, "app") == 0) {
     const char* code = doc["code"];
     if (code) {
-      // Same storeNs handling as the system channel — this path also
-      // applies stashed deferred loads, which carry the full original doc.
+      // Same storeNs/generationId handling as the system channel — this
+      // path also applies stashed deferred loads, which carry the full
+      // original doc.
       _storeModule.setNamespace(doc["storeNs"] | "app");
+      _nextGenerationId = doc["generationId"] | "";
       loadApp(code);
     }
     return;
@@ -1151,8 +1155,17 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   // outgoing app left is persisted now, not after the debounce quiet.
   _storeModule.flush();
 
-  // Generate new generation ID
-  _generationId = String(millis(), HEX);
+  // Generation ID: server-stamped when the load message carried one
+  // (surfaced to Lua as ctx.generation_id), self-generated otherwise
+  // (telemetry correlation only; Lua then sees nil).
+  if (_nextGenerationId.length()) {
+    _generationId = _nextGenerationId;
+    _generationIdFromWire = true;
+  } else {
+    _generationId = String(millis(), HEX);
+    _generationIdFromWire = false;
+  }
+  _nextGenerationId = "";
   emitTelemetry("app_received");
 
   bool compiled = compileApp(luaCode);
@@ -1708,6 +1721,13 @@ bool Sandbox::compileApp(const char* code)
   return true;   // loadAppInternal logs + emits the app_compiled telemetry
 }
 
+void Sandbox::pushCtxGenerationId()
+{
+  if (!_generationIdFromWire) return;   // no wire id → ctx.generation_id is nil
+  lua_pushstring(_lua, _generationId.c_str());
+  lua_setfield(_lua, -2, "generation_id");
+}
+
 bool Sandbox::callInit()
 {
   if (!_lua || _initFuncRef == LUA_NOREF) return true;
@@ -1721,6 +1741,7 @@ bool Sandbox::callInit()
   lua_setfield(_lua, -2, "time_ms");
   lua_pushinteger(_lua, _triggerCount);
   lua_setfield(_lua, -2, "trigger_count");
+  pushCtxGenerationId();
 
   // Time-of-day fields
   pushLocalTimeFields();
@@ -1749,6 +1770,7 @@ void Sandbox::callOnTick(unsigned long dt_ms)
   lua_setfield(_lua, -2, "time_ms");
   lua_pushinteger(_lua, _triggerCount);
   lua_setfield(_lua, -2, "trigger_count");
+  pushCtxGenerationId();
 
   // Time-of-day fields
   pushLocalTimeFields();
@@ -1805,6 +1827,7 @@ void Sandbox::processNextEvent()
   lua_setfield(_lua, -2, "time_ms");
   lua_pushinteger(_lua, _triggerCount);
   lua_setfield(_lua, -2, "trigger_count");
+  pushCtxGenerationId();
 
   // Push event table
   lua_newtable(_lua);

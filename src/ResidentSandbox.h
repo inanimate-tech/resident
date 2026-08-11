@@ -515,6 +515,11 @@ private:
     void callOnTick(unsigned long dt_ms);
     void processNextEvent();
     void pushLocalTimeFields();  // pushes utc_h/utc_m/localtime_h/localtime_m onto the Lua table at stack top
+    // Sets ctx.generation_id on the table at stack top — only when the app
+    // load carried a server-stamped generationId (Lua sees nil otherwise).
+    void pushCtxGenerationId();
+    String _nextGenerationId;             // wire-provided id for the NEXT load
+    bool _generationIdFromWire = false;   // current _generationId came off the wire
     void pushAppEvent(const char* name, const char* dataJson, const char* from, uint32_t ts_ms,
                       const char* channel = "driver", const char* src = "",
                       bool hasSeq = false, uint32_t seq = 0);

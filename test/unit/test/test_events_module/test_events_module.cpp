@@ -467,6 +467,41 @@ void test_host_injected_event_defaults_driver_channel(void) {
   TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("saw_runtime"));
 }
 
+// ── ctx.generation_id ─────────────────────────────────────────────────────
+
+void test_ctx_generation_id_from_wire_in_all_callbacks(void) {
+  build();
+  JsonDocument doc;
+  doc["channel"] = "system";
+  doc["type"] = "app";
+  doc["generationId"] = "gen42";
+  doc["code"] =
+      "function init(ctx) init_ok = (ctx.generation_id == 'gen42') end\n"
+      "function on_tick(ctx, dt) tick_ok = (ctx.generation_id == 'gen42') end\n"
+      "function on_event(ctx, event) evt_ok = (ctx.generation_id == 'gen42') end\n";
+  sandbox->injectMessage("test", "app", doc);
+  pump();                                  // one on_tick
+  sandbox->sendAppEvent("poke", "{}");
+  pump();                                  // deliver to on_event
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("init_ok"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("tick_ok"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("evt_ok"));
+}
+
+void test_ctx_generation_id_nil_when_not_sent(void) {
+  build();
+  loadApp(
+      "function init(ctx) init_nil = (ctx.generation_id == nil) end\n"
+      "function on_tick(ctx, dt) tick_nil = (ctx.generation_id == nil) end\n"
+      "function on_event(ctx, event) evt_nil = (ctx.generation_id == nil) end\n");
+  pump();
+  sandbox->sendAppEvent("poke", "{}");
+  pump();
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("init_nil"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("tick_nil"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("evt_nil"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_events_send_builds_app_channel_envelope);
@@ -497,5 +532,7 @@ int main(int, char**) {
   RUN_TEST(test_incoming_app_frame_exposes_envelope_to_lua);
   RUN_TEST(test_incoming_runtime_frame_routed_to_on_event);
   RUN_TEST(test_host_injected_event_defaults_driver_channel);
+  RUN_TEST(test_ctx_generation_id_from_wire_in_all_callbacks);
+  RUN_TEST(test_ctx_generation_id_nil_when_not_sent);
   return UNITY_END();
 }

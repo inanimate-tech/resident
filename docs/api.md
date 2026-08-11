@@ -542,7 +542,7 @@ cfg.extensions = {&display, &button, &imu};
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `Extensions::MAX` | `8` | Maximum number of extensions per sandbox |
+| `Extensions::MAX` | `12` | Maximum number of extensions per sandbox |
 
 Extensions are stored in registration order. `begin()`, `registerModule()`, `update()`, and `onAppReset()` are all called in registration order.
 
@@ -730,6 +730,7 @@ All callbacks receive a `ctx` table. `on_tick` also receives `dt_ms` (integer, m
 |-------|------|-------------|
 | `time_ms` | integer | Milliseconds since the current app was loaded |
 | `trigger_count` | integer | Number of `"button"` driver events since the last app load |
+| `generation_id` | string? | The `generationId` the server stamped on the app load message — present in `init`/`on_tick`/`on_event`; `nil` when the load didn't carry one (direct C++ loads, NVS restores) |
 | `utc_h` | integer | Current UTC hour (0–23) |
 | `utc_m` | integer | Current UTC minute (0–59) |
 | `localtime_h` | integer | Local hour — equals `utc_h` unless a timezone has been set |
@@ -1181,7 +1182,7 @@ ESP-IDF CMake component graph.
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `Extensions::MAX` | `8` | Maximum extensions per sandbox |
+| `Extensions::MAX` | `12` | Maximum extensions per sandbox |
 | `Sandbox::TICK_INTERVAL` | `100 ms` | Lua `on_tick` interval (10 FPS) |
 | `Sandbox::SANDBOX_MAX_EVENTS` | `8` | Event ring buffer capacity; oldest event is dropped when full |
 | Event `name` max | `32 chars` | `Event::name` buffer size — driver event names longer than 31 bytes are truncated |

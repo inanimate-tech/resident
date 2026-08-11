@@ -274,6 +274,57 @@ void test_role_slots_begun_when_extensions_full_but_mic_waits_for_stream(void) {
   for (auto* f : fillers) delete f;
 }
 
+// Extensions::MAX went 8 → 12 (a fully loaded round device used all 8 and
+// the lgfx module needs a slot). A 9th extension must register its Lua
+// module AND update() while an app runs — under the old cap it was silently
+// dropped by the initializer-list constructor.
+void test_ninth_extension_registers_and_runs(void) {
+  TEST_ASSERT_TRUE(Resident::Extensions::MAX >= 12);
+
+  class NinthExt : public Resident::Driver {
+  public:
+    int updateCount = 0;
+    const char* name() const override { return "ninth"; }
+    void update() override { updateCount++; }
+    void registerModule(Resident::LuaModule& m) override {
+      m.constant("MARK", 9.0);
+    }
+  };
+
+  std::vector<FillerExt*> fillers;
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  for (int i = 0; i < 8; i++) {                 // the old cap, fully used
+    char namebuf[16];
+    snprintf(namebuf, sizeof(namebuf), "filler-%d", i);
+    FillerExt* f = new FillerExt(namebuf);
+    fillers.push_back(f);
+    cfg.extensions.items[cfg.extensions.count++] = f;
+  }
+  NinthExt ninth;
+  cfg.extensions.items[cfg.extensions.count++] = &ninth;   // slot 9
+  TEST_ASSERT_EQUAL_INT(9, cfg.extensions.count);
+
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setup();
+
+  JsonDocument doc;
+  doc["channel"] = "system";
+  doc["type"] = "app";
+  doc["code"] = "function init(ctx) ok9 = (ninth ~= nil and ninth.MARK == 9) end\n"
+                "function on_tick(ctx, dt) end\n";
+  sandbox->injectMessage("test", "app", doc);
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("ok9"));  // module registered
+
+  int before = ninth.updateCount;
+  testMillis() += 200;
+  sandbox->loop();
+  TEST_ASSERT_TRUE(ninth.updateCount > before);            // and it runs
+
+  delete sandbox; sandbox = nullptr;                       // before ninth dies
+  for (auto* f : fillers) delete f;
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_begin_once_when_in_both_list_and_slot);
@@ -284,6 +335,7 @@ int main(int, char**) {
   RUN_TEST(test_extension_driver_has_lua_global);
   RUN_TEST(test_driver_event_dropped_until_app_loaded);
   RUN_TEST(test_role_slots_begun_when_extensions_full_but_mic_waits_for_stream);
+  RUN_TEST(test_ninth_extension_registers_and_runs);
   UNITY_END();
   return 0;
 }
