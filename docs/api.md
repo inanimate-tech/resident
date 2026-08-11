@@ -798,6 +798,33 @@ Serialized into a bounded buffer of `RESIDENT_EVENT_JSON_MAX` bytes (default 102
 
 Rate-limited by a shared token bucket: 5 events/s sustained, burst of 10. Returns `false` (rather than raising a Lua error) when rate-limited, when the event name is empty, or when the underlying send fails — always check the return value if you need to know whether it went out.
 
+### `lgfx` module (optional)
+
+Idiomatic LovyanGFX drawing from Lua — present only when the firmware registers displays into an `LgfxModule` and lists it in `SandboxConfig::extensions`:
+
+```cpp
+#include <ResidentLgfxModule.h>
+Resident::LgfxLovyanTarget<M5Canvas> lgfxMain{&displayDriver.canvas(),
+                                              [] { displayDriver.repaint(); }};
+Resident::LgfxModule lgfxModule;
+// setup: lgfxModule.addDisplay("main", &lgfxMain);  cfg.extensions = {..., &lgfxModule};
+```
+
+The adapter is a duck-typed template — instantiate it with anything carrying LovyanGFX's drawing API (`LGFX_Device`, `LGFX_Sprite`, `M5Canvas`, `M5GFX`). Colors are 24-bit `0xRRGGBB` everywhere; LovyanGFX converts to the panel/sprite depth (it interprets `uint32_t` colors as RGB888).
+
+```lua
+local g = lgfx.bind("main")      -- raises a Lua error for unknown names
+g:fillScreen(0x000000)
+g:fillCircle(80, 60, 20, 0xFF5533)
+g:setTextColor(0xFFFFFF); g:setTextSize(2); g:setCursor(4, 4); g:print("hi")
+g:drawString("centered", g:width() // 2, 30)
+g:flip()                         -- present to the glass
+```
+
+Handle methods (colon-call), matching LovyanGFX names/argument orders: `fillScreen(c)` · `drawPixel(x,y,c)` · `drawLine(x0,y0,x1,y1,c)` · `drawRect/fillRect(x,y,w,h,c)` · `drawRoundRect/fillRoundRect(x,y,w,h,r,c)` · `drawCircle/fillCircle(x,y,r,c)` · `drawTriangle/fillTriangle(x0,y0,x1,y1,x2,y2,c)` · `setTextColor(fg[,bg])` · `setTextSize(s)` · `setTextDatum(d)` (constants on the module table: `lgfx.TL_DATUM`, `TC`, `TR`, `ML`, `MC`, `MR`, `BL`, `BC`, `BR`, `L_BASELINE`, `C_BASELINE`, `R_BASELINE`) · `setCursor(x,y)` · `print(text)` · `drawString(text,x,y)` · `width()` · `height()` · `flip()`.
+
+**Present semantics:** `g:flip()` runs the presenter the firmware supplied at registration (for sprite-backed displays: push the sprite — e.g. the driver's `repaint()`); with no presenter (direct-to-panel targets) `flip()` is a no-op and drawing is live. Deliberately small this pass: default font + size multiplier only — no font selection, images, or Lua-created sprites.
+
 ### `store` module
 
 An app-scoped **persistent** KV slot of scalars — state here survives `loadApp` (same identity) and reboot. RAM-backed with debounced write-through to the persistent store (NVS on device): at most one write per ~2 s of mutation quiet, plus a forced flush on app unload.
