@@ -122,7 +122,7 @@ void test_telemetry_queue_drops_oldest_when_unsendable(void) {
   TEST_ASSERT_EQUAL_INT(7, (int)frames->size());
 }
 
-void test_hello_carries_identity_features_limits_and_app(void) {
+void test_hello_carries_identity_limits_and_app(void) {
   build("m5stick@2");
   attachSink();
   loadApp("function on_tick(ctx, dt) end", "g1", "oracle");
@@ -135,16 +135,15 @@ void test_hello_carries_identity_features_limits_and_app(void) {
   TEST_ASSERT_TRUE(f->find("\"deviceType\":\"native-test\"") != std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"firmware\":\"9.9-test\"") != std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"profile\":\"m5stick@2\"") != std::string::npos);
-  TEST_ASSERT_TRUE(f->find("\"chunk\"") != std::string::npos);
-  TEST_ASSERT_TRUE(f->find("\"telemetry\"") != std::string::npos);
+  // No feature list: proto carries compatibility; capture announces itself
+  // via its bracket; telemetry needs no advance notice.
+  TEST_ASSERT_TRUE(f->find("\"features\"") == std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"eventBytes\":1024") != std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"storeBytes\":2048") != std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"storeNsChars\":32") != std::string::npos);
   // The running app: namespace + the wire-stamped generation id.
   TEST_ASSERT_TRUE(f->find("\"storeNs\":\"oracle\"") != std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"generationId\":\"g1\"") != std::string::npos);
-  // No mic configured: media is not claimed.
-  TEST_ASSERT_TRUE(f->find("\"media\"") == std::string::npos);
 }
 
 void test_hello_without_app_omits_app_field(void) {
@@ -243,7 +242,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_telemetry_rides_the_wire);
   RUN_TEST(test_telemetry_queue_drops_oldest_when_unsendable);
-  RUN_TEST(test_hello_carries_identity_features_limits_and_app);
+  RUN_TEST(test_hello_carries_identity_limits_and_app);
   RUN_TEST(test_hello_without_app_omits_app_field);
   RUN_TEST(test_hello_never_carries_authoring_facts);
   RUN_TEST(test_render_target_registry_merges_and_serves_bind);

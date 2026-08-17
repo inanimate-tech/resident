@@ -769,10 +769,11 @@ bool Sandbox::sendHello()
   if (_config.profileRef && _config.profileRef[0]) {
     d["profile"] = _config.profileRef;
   }
-  JsonArray features = d["features"].to<JsonArray>();
-  features.add("chunk");
-  features.add("telemetry");
-  if (_config.systemMic) features.add("media");
+  // Deliberately NO feature list: chunk support is part of proto 1 itself,
+  // telemetry needs no advance notice (hosts handle it as it arrives), and
+  // capture announces itself via its bracket. A genuinely optional
+  // capability introduces its own hello field when it exists — an empty
+  // extension point is a field with no consumer.
   JsonObject limits = d["limits"].to<JsonObject>();
   limits["eventBytes"] = RESIDENT_EVENT_JSON_MAX;
   limits["replyBytes"] = RESIDENT_EVENT_JSON_MAX;
