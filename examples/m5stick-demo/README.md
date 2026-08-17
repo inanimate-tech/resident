@@ -32,6 +32,13 @@ cd device
 pio run -e m5sticks3 -t upload
 ```
 
+For the optional retained-mode UI build (adds LVGL + luavgl and the Lua `lvgl` module — see `docs/api.md`'s lvgl section and `prompts/lvgl.md`):
+
+```bash
+cd device
+pio run -e m5stick-lvgl -t upload
+```
+
 The first time the device boots, it creates a Wi-Fi access point named **Resident Stick XXXX**. Connect to it and use the captive portal to give the device your local Wi-Fi credentials. (ESP32 only does 2.4 GHz.)
 
 Once connected to Wi-Fi, the device opens a WebSocket to `wss://resident.inanimate.tech/devices/<deviceId>` and displays its 8-character **device ID** on screen — something like `abc12345`. Note it down; you'll need it to push apps.

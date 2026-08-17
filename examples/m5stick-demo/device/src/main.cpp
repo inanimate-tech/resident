@@ -5,6 +5,10 @@
 #include "IMUDriver.h"
 #include "BuzzerDriver.h"
 #include "PushButtonsDriver.h"
+#ifdef HAS_LVGL
+#include <ResidentLvglModule.h>
+#include "LVGLDriver.h"
+#endif
 
 // Default endpoint: the canonical Resident relay. Devs can self-host by
 // changing RESIDENT_HOST below (or extending Courier with a config portal).
@@ -37,12 +41,25 @@ Resident::LgfxLovyanTarget<M5Canvas> lgfxMain{
     &displayDriver.canvas(), [] { displayDriver.repaint(); }};
 Resident::LgfxModule lgfxModule;
 
+#ifdef HAS_LVGL
+// Retained-mode UI (env:m5stick-lvgl): LVGLDriver is the display/flush/tick
+// glue; the Lua surface is Resident's LvglModule — apps call
+// lvgl.bind("main"). The panel is shared with the sprite-backed
+// screen.*/lgfx surface; last writer wins on the glass.
+LVGLDriver lvglDriver;
+Resident::LvglModule lvglModule;
+#endif
+
 Resident::SandboxConfig makeConfig() {
     Resident::SandboxConfig cfg;
     cfg.deviceType    = "stick";
     lgfxModule.addDisplay("main", &lgfxMain);
     cfg.extensions    = {&displayDriver, &imuDriver, &buzzerDriver,
-                         &buttonDriver, &lgfxModule};
+                         &buttonDriver, &lgfxModule,
+#ifdef HAS_LVGL
+                         &lvglDriver, &lvglModule,
+#endif
+    };
     cfg.systemDisplay = &displayDriver;
     cfg.systemButton  = &buttonDriver;   // front button: tap = load, hold = forget
 
@@ -65,6 +82,13 @@ void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
     M5.Display.setRotation(1);
+
+#ifdef HAS_LVGL
+    // The lv_display_t must exist before it can be registered by name.
+    // beginExtension is idempotent — the sandbox's own begin pass no-ops.
+    Resident::Extension::beginExtension(lvglDriver);
+    lvglModule.addDisplay("main", lvglDriver.display());
+#endif
 
     // Override the default /agents/<type>-agent/<deviceId> path with the
     // canonical /devices/<deviceId> path used by resident.inanimate.tech.

@@ -8,11 +8,36 @@
 #include <vector>
 
 #include "ResidentSandbox.cpp"
+#include "ResidentLgfxModule.h"
 
 namespace {
 
 Resident::Sandbox* sandbox = nullptr;
 std::vector<std::string>* frames = nullptr;
+
+// A do-nothing LgfxTarget with real geometry — enough to feed the
+// render-target registry via the lgfx module's addDisplay path.
+struct NullTarget : Resident::LgfxTarget {
+  void fillScreen(uint32_t) override {}
+  void drawPixel(int32_t, int32_t, uint32_t) override {}
+  void drawLine(int32_t, int32_t, int32_t, int32_t, uint32_t) override {}
+  void drawRect(int32_t, int32_t, int32_t, int32_t, uint32_t) override {}
+  void fillRect(int32_t, int32_t, int32_t, int32_t, uint32_t) override {}
+  void drawRoundRect(int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t) override {}
+  void fillRoundRect(int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t) override {}
+  void drawCircle(int32_t, int32_t, int32_t, uint32_t) override {}
+  void fillCircle(int32_t, int32_t, int32_t, uint32_t) override {}
+  void drawTriangle(int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t) override {}
+  void fillTriangle(int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t) override {}
+  void setTextColor(uint32_t, uint32_t, bool) override {}
+  void setTextSize(float) override {}
+  void setTextDatum(uint8_t) override {}
+  void setCursor(int32_t, int32_t) override {}
+  void print(const char*) override {}
+  void drawString(const char*, int32_t, int32_t) override {}
+  int32_t width() override { return 240; }
+  int32_t height() override { return 135; }
+};
 
 void build(const char* profileRef = nullptr) {
   Resident::SandboxConfig cfg;
@@ -64,6 +89,8 @@ void setUp(void) {
   testMillis() = 0;
   frames = new std::vector<std::string>();
   sandbox = nullptr;
+  // The registry is board-lifetime (static) — isolate tests from each other.
+  Resident::RenderTargets::clear();
 }
 
 void tearDown(void) {
@@ -140,6 +167,48 @@ void test_hello_without_app_omits_app_field(void) {
   TEST_ASSERT_TRUE(f->find("\"generationId\"") == std::string::npos);
 }
 
+void test_hello_omits_surfaces_when_registry_empty(void) {
+  build();
+  attachSink();
+  sandbox->requestHello();
+  pump();
+  const std::string* f = frameWith("\"type\":\"hello\"");
+  TEST_ASSERT_NOT_NULL(f);
+  TEST_ASSERT_TRUE(f->find("\"surfaces\"") == std::string::npos);
+}
+
+void test_hello_carries_surfaces_from_registered_displays(void) {
+  // A registered lgfx display reaches the hello through the render-target
+  // registry, with its geometry, shape, and module list.
+  NullTarget target;
+  Resident::LgfxModule lgfx;
+  lgfx.addDisplay("main", &target);            // default shape "rect"
+  lgfx.addDisplay("dial", &target, "round");   // shape override
+  // The lvgl module can't compile natively; feed its registry write directly
+  // to prove same-name entries merge module bits into one surface.
+  Resident::RenderTargets::add("main", 240, 135, nullptr,
+                               Resident::RenderTargets::MODULE_LVGL);
+
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  cfg.persistApps = false;
+  cfg.extensions = {&lgfx};
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setup();
+  attachSink();
+  sandbox->requestHello();
+  pump();
+
+  const std::string* f = frameWith("\"type\":\"hello\"");
+  TEST_ASSERT_NOT_NULL(f);
+  TEST_ASSERT_TRUE(f->find(
+      "\"surfaces\":["
+      "{\"name\":\"main\",\"w\":240,\"h\":135,\"shape\":\"rect\","
+      "\"modules\":[\"lgfx\",\"lvgl\"]},"
+      "{\"name\":\"dial\",\"w\":240,\"h\":135,\"shape\":\"round\","
+      "\"modules\":[\"lgfx\"]}]") != std::string::npos);
+}
+
 void test_host_hello_marks_seen(void) {
   build();
   TEST_ASSERT_FALSE(sandbox->hostHelloSeen());
@@ -174,6 +243,8 @@ int main(int, char**) {
   RUN_TEST(test_telemetry_queue_drops_oldest_when_unsendable);
   RUN_TEST(test_hello_carries_identity_features_limits_and_app);
   RUN_TEST(test_hello_without_app_omits_app_field);
+  RUN_TEST(test_hello_omits_surfaces_when_registry_empty);
+  RUN_TEST(test_hello_carries_surfaces_from_registered_displays);
   RUN_TEST(test_host_hello_marks_seen);
   RUN_TEST(test_on_event_ctx_has_wallclock_fields);
   return UNITY_END();

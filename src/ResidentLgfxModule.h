@@ -40,6 +40,7 @@
 #include <functional>
 #include "ResidentExtension.h"
 #include "ResidentLuaModule.h"
+#include "ResidentRenderTargets.h"
 
 extern "C" {
   #include "lua/lua.h"
@@ -153,13 +154,30 @@ public:
   const char* name() const override { return "lgfx"; }
 
   // Firmware setup: register a display under a bind name. Call before
-  // Sandbox::setup(). Returns false when the table is full.
-  bool addDisplay(const char* displayName, LgfxTarget* target) {
+  // Sandbox::setup(). Returns false when the table is full. Also declares
+  // the surface in the RenderTargets registry (geometry from the target,
+  // shape "rect" unless overridden) so the device hello can announce it.
+  bool addDisplay(const char* displayName, LgfxTarget* target,
+                  const char* shape = "rect") {
     if (_count >= MAX_DISPLAYS || !displayName || !target) return false;
     _slots[_count].name = displayName;
     _slots[_count].target = target;
+    _slots[_count].shape = shape;
     _count++;
+    RenderTargets::add(displayName, target->width(), target->height(), shape,
+                       RenderTargets::MODULE_LGFX);
     return true;
+  }
+
+  // Sprite-backed targets often have no geometry until the driver's begin()
+  // creates the framebuffer (addDisplay typically runs before setup()).
+  // Re-read it here: extension begin() runs before any hello can drain.
+  void begin() override {
+    for (int i = 0; i < _count; i++) {
+      RenderTargets::add(_slots[i].name, _slots[i].target->width(),
+                         _slots[i].target->height(), _slots[i].shape,
+                         RenderTargets::MODULE_LGFX);
+    }
   }
 
   void registerModule(LuaModule& m) override {
@@ -215,7 +233,11 @@ public:
   }
 
 private:
-  struct Slot { const char* name; LgfxTarget* target; };
+  struct Slot {
+    const char* name = nullptr;
+    LgfxTarget* target = nullptr;
+    const char* shape = "rect";
+  };
   Slot _slots[MAX_DISPLAYS] = {};
   int _count = 0;
 

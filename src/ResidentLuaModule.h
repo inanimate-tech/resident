@@ -74,6 +74,18 @@ public:
     return *this;
   }
 
+  // Give the module table a metatable whose __index is `indexFn` — for
+  // extensions whose global must resolve missing keys against a table owned
+  // elsewhere (e.g. ResidentLvglModule falling through to luavgl's own
+  // module table). The function receives (table, key) like any __index.
+  LuaModule& fallthrough(lua_CFunction indexFn) {
+    lua_createtable(_lua, 0, 1);
+    lua_pushcfunction(_lua, indexFn);
+    lua_setfield(_lua, -2, "__index");
+    lua_setmetatable(_lua, -2);
+    return *this;
+  }
+
   LuaModule& constant(const char* name, int value) {
     lua_pushinteger(_lua, value);
     lua_setfield(_lua, -2, name);

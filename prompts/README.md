@@ -11,11 +11,12 @@ Concatenate per what the board actually uses:
 1. `sandbox.md` — always. The universal sandbox surface: lifecycle, ctx,
    events, store, log, time, shader globals, limits.
 2. `lgfx.md` — when the board registers an `LgfxModule` display.
-3. `lvgl.md` — when the board registers the LVGL module. (Arrives with
-   `ResidentLvglModule`; not yet written.)
+3. `lvgl.md` — when the board registers an `LvglModule` display
+   (retained-mode UI via LVGL + luavgl).
 4. The board's `DEVICE-SKILL.md` — the board-specific driver surface
    (sensors, buttons, outputs). Lives in the board firmware project, not
-   here.
+   here. lvgl-capable boards append `lvgl.md` (layer 3) to their
+   DEVICE-SKILL composition, exactly as lgfx boards append `lgfx.md`.
 5. Any framework or device layer on top (a device family's authoring
    document: geometry guidance, taste rules, framework API sheets).
 

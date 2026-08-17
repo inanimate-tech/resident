@@ -528,6 +528,14 @@ m.staticMethod("now_ms", [](lua_State* L) -> int {
 
 `staticMethod` accepts any `lua_CFunction` (`int(*)(lua_State*)`).
 
+### Fallthrough
+
+```cpp
+m.fallthrough(&MyModule::l_index);   // any lua_CFunction, receives (table, key)
+```
+
+Gives the module table a metatable whose `__index` is the supplied function — for extensions whose global must resolve missing keys against a table owned elsewhere. `ResidentLvglModule` uses this to keep luavgl's constants and constructors reachable alongside `lvgl.bind`.
+
 ### Constants
 
 ```cpp
@@ -560,6 +568,28 @@ cfg.extensions = {&display, &button, &imu};
 Extensions are stored in registration order. `begin()`, `registerModule()`, `update()`, and `onAppReset()` are all called in registration order.
 
 The user owns the extension instances (typically global or static variables). The `Extensions` struct holds raw pointers and does not manage lifetime.
+
+---
+
+## Resident::RenderTargets
+
+The render-target registry — the single place a board's drawable surfaces are declared. Both graphics modules feed it as a side effect of `addDisplay` (`LgfxModule` and `LvglModule`), and the [device hello](#hello) reads it to announce a `surfaces` array. A static-capacity table (`RenderTargets::MAX` = 8), no allocation, board-lifetime (entries survive app loads; `clear()` exists for tests).
+
+```cpp
+#include <ResidentRenderTargets.h>   // also pulled in by Resident.h
+
+// Usually implicit via a module's addDisplay; direct registration works too:
+Resident::RenderTargets::add("dial", 240, 240, "round",
+                             Resident::RenderTargets::MODULE_LGFX);
+```
+
+| Member | Description |
+|--------|-------------|
+| `add(name, w, h, shape, module)` | Register or update a surface. Same name merges: geometry and shape refresh, module bit ORed in. `shape` is `"rect"` or `"round"` (`nullptr` keeps the existing/default). `module` is `MODULE_LGFX` or `MODULE_LVGL`. Returns `false` when full or `name` is null. |
+| `count()` / `entry(i)` | Iterate the registered entries (`{name, w, h, shape, modules}`). |
+| `clear()` | Tests only — surfaces are hardware, not app state. |
+
+Names and shapes are stored as pointers; the registrant keeps them alive (string literals in firmware). `LgfxModule::addDisplay(name, target, shape = "rect")` registers geometry from the target's `width()`/`height()` (re-read in the module's `begin()`, since sprite-backed targets often have no geometry until their driver's `begin()`); `LvglModule::addDisplay(name, disp, shape = "rect")` reads `lv_display_get_horizontal_resolution`/`_vertical_`.
 
 ---
 
@@ -837,6 +867,30 @@ Handle methods (colon-call), matching LovyanGFX names/argument orders: `fillScre
 
 **Present semantics:** `g:flip()` runs the presenter the firmware supplied at registration (for sprite-backed displays: push the sprite — e.g. the driver's `repaint()`); with no presenter (direct-to-panel targets) `flip()` is a no-op and drawing is live. Deliberately small this pass: default font + size multiplier only — no font selection, images, or Lua-created sprites.
 
+`addDisplay` also declares the surface in the [`RenderTargets`](#residentrendertargets) registry (shape via the optional third parameter, default `"rect"`), so the [hello](#hello) announces it.
+
+### `lvgl` module (optional)
+
+Retained-mode UI from Lua — LVGL 9 through the [luavgl arc fork](https://github.com/inanimate-tech/luavgl)'s display-scoped binding. Present only when the firmware registers displays into an `LvglModule` and lists it in `SandboxConfig::extensions`. Opt-in like the lgfx module, with an extra requirement: the board's own build must supply LVGL and luavgl (`lib_deps`), plus the display/flush/tick glue — Resident hosts the Lua surface, never the LVGL runtime. See `examples/m5stick-demo`'s `m5stick-lvgl` env for the full wiring (its `LVGLDriver` is the glue template).
+
+```cpp
+#include <ResidentLvglModule.h>   // not pulled in by Resident.h
+Resident::LvglModule lvglModule;
+// after the glue driver created its lv_display_t (begin it early if needed):
+lvglModule.addDisplay("main", disp);            // shape "rect" by default
+// cfg.extensions = {..., &glueDriver, &lvglModule};
+```
+
+```lua
+local h = lvgl.bind("main")    -- raises a Lua error for unknown names
+h.Label { text = "hi", align = lvgl.ALIGN.CENTER }
+h:set_theme { screen = { bg_color = "#0b0b10" } }
+```
+
+`lvgl.bind(name)` returns luavgl's display-scoped handle (idempotent per display): widget constructors parented to that display's active screen, `screen()`/`clean()`/`HOR_RES()`/`VER_RES()`/`mirror()`/`set_default()`/`set_theme{...}`, everything else falling through to the full luavgl module — see the fork's `docs/display-bind.md` for the handle contract and `prompts/lvgl.md` for the app-author surface. The `lvgl` global is Resident's module table (just `bind`), with a metatable falling through to luavgl's own module table — so `lvgl.Font`, `lvgl.ALIGN`, `lvgl.Anim` etc. resolve normally once the module has loaded, which happens on the first `bind` call. Two things follow: fallthrough keys are `nil` before any `bind` (bind first — apps always do), and Resident's name-based `bind` shadows luavgl's userdata-based `lvgl.bind(disp)` (use `lvgl.disp` functions if you truly need the raw form).
+
+Per-display ownership (last bind wins, C-side cleans invalidating Lua handles) is luavgl's business at the display level — Resident does not duplicate it. Themes are Lua's business too: glue drivers should bake none, and apps install their own via `h:set_theme{...}`. `addDisplay` also feeds the [`RenderTargets`](#residentrendertargets) registry, so lvgl surfaces appear in the hello's `surfaces` array.
+
 ### `store` module
 
 An app-scoped **persistent** KV slot of scalars — state here survives `loadApp` (same identity) and reboot. RAM-backed with debounced write-through to the persistent store (NVS on device): at most one write per ~2 s of mutation quiet, plus a forced flush on app unload.
@@ -1042,6 +1096,8 @@ On every transport connect the sandbox queues a device hello — the device anno
   "features": ["chunk", "telemetry", "media"],
   "limits": { "eventBytes": 1024, "replyBytes": 1024, "storeBytes": 2048,
               "storeNsChars": 32, "eventsPerSec": 5 },
+  "surfaces": [ { "name": "main", "w": 240, "h": 135, "shape": "rect",
+                  "modules": ["lgfx", "lvgl"] } ],
   "app": { "storeNs": "oracle", "generationId": "g1" }
 } }
 ```
@@ -1050,6 +1106,7 @@ On every transport connect the sandbox queues a device hello — the device anno
 - `firmware` / `profile` come from `SandboxConfig::firmwareVersion` / `profileRef` (omitted when unset).
 - `features`: `chunk` and `telemetry` always; `media` when a `systemMic` is configured.
 - `limits` are the build's actual constants — hosts should size payloads against them instead of assuming.
+- `surfaces` lists the board's drawable surfaces from the [`RenderTargets`](#residentrendertargets) registry — name, geometry, shape (`"rect"`/`"round"`), and which Lua modules can draw on each (`"lgfx"`, `"lvgl"`). Omitted entirely when no surface is registered.
 - `app` describes what is running (or persisted and awaiting the boot countdown): its store namespace, plus `generationId` only when the wire stamped one (a restored app's self-generated id is omitted).
 - `sandbox.requestHello()` re-queues it at any time.
 

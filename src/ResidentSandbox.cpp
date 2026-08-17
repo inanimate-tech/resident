@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include "chipstring.h"
 #include "ResidentNvsStore.h"   // device-only; no-op on native
+#include "ResidentRenderTargets.h"
 
 extern "C" {
   #include "lua/lua.h"
@@ -783,6 +784,23 @@ bool Sandbox::sendHello()
     fw["name"] = _fwName;
     fw["version"] = _fwVersion;
     fw["source"] = _fwSlotSource;
+  }
+  // Drawable surfaces, from the render-target registry the graphics modules
+  // feed (LgfxModule/LvglModule addDisplay). Omitted entirely when no
+  // surface is declared — boards without a drawable surface stay silent.
+  if (RenderTargets::count() > 0) {
+    JsonArray surfaces = d["surfaces"].to<JsonArray>();
+    for (int i = 0; i < RenderTargets::count(); i++) {
+      const RenderTargets::Entry& e = RenderTargets::entry(i);
+      JsonObject s = surfaces.add<JsonObject>();
+      s["name"] = e.name;
+      s["w"] = e.w;
+      s["h"] = e.h;
+      s["shape"] = e.shape;
+      JsonArray mods = s["modules"].to<JsonArray>();
+      if (e.modules & RenderTargets::MODULE_LGFX) mods.add("lgfx");
+      if (e.modules & RenderTargets::MODULE_LVGL) mods.add("lvgl");
+    }
   }
   // What the device is running: live app, or the persisted one awaiting the
   // boot countdown. generationId only when the wire stamped one — a restored
