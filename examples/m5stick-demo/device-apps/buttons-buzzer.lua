@@ -27,7 +27,7 @@ end
 
 function on_event(ctx, e)
   if e.name == "button" then
-    if e.index == 0 then
+    if e.data.index == 0 then
       mode = (mode + 1) % 3
       buzzer.beep(440, 80)
     else

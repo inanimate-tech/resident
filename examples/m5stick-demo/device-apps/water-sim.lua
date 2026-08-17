@@ -186,7 +186,7 @@ end
 
 function on_event(ctx, e)
   if e.name == "button" then
-    local c = e.index == 0 and floor(N * 0.3) or floor(N * 0.7)
+    local c = e.data.index == 0 and floor(N * 0.3) or floor(N * 0.7)
     splash(c)
     pending_splash = c
   end

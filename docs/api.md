@@ -395,28 +395,32 @@ All `Extension` methods (`name`, `registerModule`, `begin`, `update`, `onAppRese
 void sendEvent(const char* name, const EventField* fields, int fieldCount);
 ```
 
-Queues a driver event into the sandbox event ring. The event appears in Lua as `on_event(ctx, event)` with the event fields flattened directly onto the `event` table.
+Queues a driver event into the sandbox event ring. The event appears in Lua as `on_event(ctx, event)` with the fields as the `event.data` table — the same shape wire events use (since 0.8; fields were previously flattened onto the event table).
 
 ```cpp
 // In a button driver's ISR or debounce handler:
 EventField fields[] = {
     { "id",    EventField::INT,    { .i = buttonId } },
     { "state", EventField::STRING, { .s = "pressed" } },
+    { "mag",   EventField::FLOAT,  { .f = 1.5f } },
+    { "held",  EventField::BOOL,   { .b = true } },
 };
-sendEvent("button", fields, 2);
+sendEvent("button", fields, 4);
 ```
 
-The event name `"button"` is special: it increments `ctx.trigger_count` for every app tick until the next app load.
+The event name `"button"` is special: it increments `ctx.trigger_count`.
 
 ### EventField struct
 
 ```cpp
 struct EventField {
     const char* key;
-    enum Type { INT, STRING } type;
+    enum Type { INT, STRING, FLOAT, BOOL } type;
     union {
         int         i;
         const char* s;
+        float       f;
+        bool        b;
     };
 };
 ```
@@ -750,16 +754,13 @@ The table is IDENTICAL in every callback (since 0.8 — the wall-clock fields us
 | `channel` | string | Source discriminator, always present: `"app"` or `"runtime"` for wire-borne frames (both delivered here), `"driver"` for hardware/driver events and host-firmware `sendAppEvent` injections (unless the caller passed a channel) |
 | `src` | string? | The frame's `src` envelope field (e.g. `"server"`), only when present on the frame; `nil` for internal events |
 | `seq` | integer? | The frame's per-sender monotonic `seq`, only when present on the frame; `nil` for internal events |
-| *(driver fields)* | any | For **driver events**: extra fields are flattened directly onto the table (e.g. `event.id`, `event.state`) |
-| `data` | table | For **app events**: the JSON `data` object parsed into a subtable — strings (unescaped), integers, floats, booleans, and nested objects/arrays to 3 container levels (deeper containers are skipped with their key; JSON `null` leaves a hole at its array index). Unparseable or oversized (> `RESIDENT_EVENT_JSON_MAX`) data drops the whole event rather than delivering it garbled |
+| `data` | table | The payload, for EVERY event — driver and wire alike (one shape since 0.8; driver fields were previously flattened onto the event table). Parsed by one set of rules: strings (unescaped), integers, floats, booleans, and nested objects/arrays to 3 container levels (deeper containers are skipped with their key; JSON `null` leaves a hole at its array index). Unparseable or oversized (> `RESIDENT_EVENT_JSON_MAX`) data drops the whole event rather than delivering it garbled |
 
 ```lua
 function on_event(ctx, event)
     if event.name == "button" then
-        -- driver event: fields flattened directly
-        log.info("button " .. tostring(event.id))
+        log.info("button " .. tostring(event.data.id))
     elseif event.name == "update" then
-        -- app_event: data is a subtable
         log.info("color: " .. event.data.color)
     end
 end

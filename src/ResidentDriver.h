@@ -8,10 +8,12 @@ namespace Resident {
 
 struct EventField {
   const char* key;
-  enum Type { INT, STRING } type;
+  enum Type { INT, STRING, FLOAT, BOOL } type;
   union {
     int i;
     const char* s;
+    float f;
+    bool b;
   };
 };
 

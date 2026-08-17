@@ -40,18 +40,15 @@ behavior.
 
 ## Events in (`on_event`)
 
-Every event has `e.name`, `e.from` (empty for hardware), `e.ts_ms`, and
-`e.channel` (`"driver"` for hardware, `"app"`/`"runtime"` for the wire).
-
-- Hardware (driver) events carry their fields FLATTENED on `e` itself:
-  `e.index` for a button, etc. Field values are strings and numbers only.
-- Wire events carry a parsed `e.data` table: strings, numbers, booleans,
-  tables nested to depth 3.
+Every event has `e.name`, `e.from` (empty for hardware), `e.ts_ms`,
+`e.channel` (`"driver"` for hardware, `"app"`/`"runtime"` for the wire) —
+and its payload in `e.data`, ONE shape for every event: strings, numbers,
+booleans, tables nested to depth 3.
 
 ```lua
 function on_event(ctx, e)
   if e.name == "button" then
-    log.info("button " .. tostring(e.index))
+    log.info("button " .. tostring(e.data.index))
   elseif e.name == "note" then
     log.info("text: " .. tostring(e.data.text))
   end

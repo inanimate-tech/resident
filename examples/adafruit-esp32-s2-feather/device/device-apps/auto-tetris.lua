@@ -236,7 +236,7 @@ end
 
 function on_event(ctx, event)
   if event.name == "button" then
-    seed = ((event.count or 1) * 7919 + ctx.time_ms) % 2147483647
+    seed = ((event.data.count or 1) * 7919 + ctx.time_ms) % 2147483647
     if seed <= 0 then seed = 1 end
     reset()
     led.off()

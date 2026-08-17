@@ -167,7 +167,7 @@ end
 
 function on_event(ctx, e)
   if e.name == "button" then
-    if e.index == 0 then
+    if e.data.index == 0 then
       count = count + 1
       buzzer.beep(440, 50)
     else
@@ -210,7 +210,7 @@ end
 - Display orientation is landscape (240 wide × 135 tall). Authors who
   forget this draw vertical apps that look wrong.
 - Always call `screen.flip()` after a draw sequence — double-buffered.
-- Use `e.index` (0 or 1) to distinguish buttons in `on_event`.
+- Use `e.data.index` (0 or 1) to distinguish buttons in `on_event`.
 - Precompute lookup tables in `init()` to avoid math in hot paths.
 - For shake detection, threshold against magnitude, not individual axes.
 

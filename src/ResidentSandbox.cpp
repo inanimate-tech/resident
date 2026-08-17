@@ -1970,65 +1970,22 @@ void Sandbox::processNextEvent()
     lua_setfield(_lua, -2, "seq");
   }
 
-  if (e.type == Event::DRIVER) {
-    // Flatten driver event fields directly onto the event table
-    const char* json = e.data;
-    size_t len = strlen(json);
-    if (len >= 2 && json[0] == '{' && json[len - 1] == '}') {
-      size_t pos = 1;
-      while (pos < len - 1) {
-        while (pos < len - 1 && (json[pos] == ' ' || json[pos] == ',' || json[pos] == '\n' || json[pos] == '\r' || json[pos] == '\t'))
-          pos++;
-        if (pos >= len - 1) break;
-        if (json[pos] != '"') break;
-        pos++;
-        char key[64] = {0};
-        size_t keyLen = 0;
-        while (pos < len - 1 && json[pos] != '"' && keyLen < sizeof(key) - 1)
-          key[keyLen++] = json[pos++];
-        key[keyLen] = '\0';
-        if (pos >= len - 1) break;
-        pos++;
-        while (pos < len - 1 && (json[pos] == ':' || json[pos] == ' '))
-          pos++;
-        if (pos >= len - 1) break;
-        if (json[pos] == '"') {
-          pos++;
-          char val[128] = {0};
-          size_t valLen = 0;
-          while (pos < len - 1 && json[pos] != '"' && valLen < sizeof(val) - 1)
-            val[valLen++] = json[pos++];
-          val[valLen] = '\0';
-          if (pos < len - 1) pos++;
-          lua_pushstring(_lua, val);
-          lua_setfield(_lua, -2, key);
-        } else if (json[pos] == '-' || (json[pos] >= '0' && json[pos] <= '9')) {
-          char numStr[32] = {0};
-          size_t numLen = 0;
-          while (pos < len - 1 && numLen < sizeof(numStr) - 1 &&
-                 (json[pos] == '-' || json[pos] == '.' || (json[pos] >= '0' && json[pos] <= '9')))
-            numStr[numLen++] = json[pos++];
-          numStr[numLen] = '\0';
-          lua_pushnumber(_lua, atof(numStr));
-          lua_setfield(_lua, -2, key);
-        } else {
-          while (pos < len - 1 && json[pos] != ',' && json[pos] != '}')
-            pos++;
-        }
-      }
-    }
-  } else {
-    // APP_EVENT: parse data JSON into event.data subtable. Real JSON parsing
-    // (ArduinoJson) + the pushJson* mirror of the outgoing serializer —
-    // strings arrive unescaped, booleans as booleans, nested objects/arrays
-    // as tables to LUA_JSON_MAX_DEPTH. Same drop-don't-truncate discipline
-    // as the outgoing side: unparseable data (e.g. a payload that was cut
-    // off upstream) is never delivered garbled — the whole event is dropped.
+  // ONE payload shape (0.8): driver and wire events alike deliver their
+  // payload as event.data, through the same parse. (Driver fields used to be
+  // FLATTENED onto the event table by a hand-rolled parser that silently
+  // dropped booleans and nesting — the two-shapes split every consumer had
+  // to paper over, and the source of the shipped dropped-touch-coordinates
+  // bug.) Real JSON parsing (ArduinoJson) + the pushJson* mirror of the
+  // outgoing serializer — strings arrive unescaped, booleans as booleans,
+  // nested objects/arrays as tables to LUA_JSON_MAX_DEPTH. Drop-don't-
+  // truncate: unparseable data is never delivered garbled — the whole event
+  // is dropped.
+  {
     JsonDocument dataDoc;
     // const char* input → ArduinoJson copy mode (not zero-copy destructive).
     if (deserializeJson(dataDoc, (const char*)e.data) ||
         !dataDoc.is<JsonObjectConst>()) {
-      Serial.printf("Resident::Sandbox: unparseable data for app event '%s'; event dropped\n",
+      Serial.printf("Resident::Sandbox: unparseable data for event '%s'; event dropped\n",
                     e.name);
       lua_pop(_lua, 3);  // on_event handler, ctx table, event table
       return;
@@ -2098,17 +2055,20 @@ void Sandbox::driverEventHandler(void* ctx, const char* name,
   e.ts_ms = millis();
   strncpy(e.name, name, sizeof(e.name) - 1);
 
-  // Serialize EventField array into data as compact JSON
+  // Serialize EventField array into data as compact JSON. The same
+  // ArduinoJson parse that handles wire events delivers this (one payload
+  // shape since 0.8), so it must be a valid JSON object.
   char* p = e.data;
   char* end = e.data + sizeof(e.data) - 1;
   *p++ = '{';
   for (int i = 0; i < fieldCount && p < end - 20; i++) {
     if (i > 0 && p < end) *p++ = ',';
     p += snprintf(p, end - p, "\"%s\":", fields[i].key);
-    if (fields[i].type == EventField::INT) {
-      p += snprintf(p, end - p, "%d", fields[i].i);
-    } else {
-      p += snprintf(p, end - p, "\"%s\"", fields[i].s);
+    switch (fields[i].type) {
+      case EventField::INT:    p += snprintf(p, end - p, "%d", fields[i].i); break;
+      case EventField::FLOAT:  p += snprintf(p, end - p, "%g", (double)fields[i].f); break;
+      case EventField::BOOL:   p += snprintf(p, end - p, "%s", fields[i].b ? "true" : "false"); break;
+      case EventField::STRING: p += snprintf(p, end - p, "\"%s\"", fields[i].s); break;
     }
   }
   if (p < end) *p++ = '}';
