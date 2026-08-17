@@ -16,15 +16,15 @@ Concatenate per what the board actually uses:
 4. The board's `DEVICE-SKILL.md` — the board-specific driver surface
    (sensors, buttons, outputs). Lives in the board firmware project, not
    here.
-5. Any framework or device layer on top (e.g. arc's profile authoring
-   document: geometry guidance, taste rules).
+5. Any framework or device layer on top (a device family's authoring
+   document: geometry guidance, taste rules, framework API sheets).
 
 ## Consumers
 
 - The Resident agent plugin's `create-app` skill (its embedded copy carries a
   provenance banner pointing here).
-- hawthorn-worker and other hosts that prompt models to write Resident apps.
-- Arc hosts, as the base layers of the profile authoring document.
+- Any host that prompts models to write Resident apps, as the base layers of
+  a device's composed authoring document.
 
 ## Editing rules
 
