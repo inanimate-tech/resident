@@ -167,28 +167,13 @@ void test_hello_without_app_omits_app_field(void) {
   TEST_ASSERT_TRUE(f->find("\"generationId\"") == std::string::npos);
 }
 
-void test_hello_omits_surfaces_when_registry_empty(void) {
-  build();
-  attachSink();
-  sandbox->requestHello();
-  pump();
-  const std::string* f = frameWith("\"type\":\"hello\"");
-  TEST_ASSERT_NOT_NULL(f);
-  TEST_ASSERT_TRUE(f->find("\"surfaces\"") == std::string::npos);
-}
-
-void test_hello_carries_surfaces_from_registered_displays(void) {
-  // A registered lgfx display reaches the hello through the render-target
-  // registry, with its geometry, shape, and module list.
+void test_hello_never_carries_authoring_facts(void) {
+  // Surfaces, sensors, and driver modules are AUTHORING facts — their one
+  // authority is the document behind `profile`. Even with displays
+  // registered, the hello stays session-mechanics-only.
   NullTarget target;
   Resident::LgfxModule lgfx;
-  lgfx.addDisplay("main", &target);            // default shape "rect"
-  lgfx.addDisplay("dial", &target, "round");   // shape override
-  // The lvgl module can't compile natively; feed its registry write directly
-  // to prove same-name entries merge module bits into one surface.
-  Resident::RenderTargets::add("main", 240, 135, nullptr,
-                               Resident::RenderTargets::MODULE_LVGL);
-
+  lgfx.addDisplay("main", &target);
   Resident::SandboxConfig cfg;
   cfg.deviceType = "native-test";
   cfg.persistApps = false;
@@ -198,15 +183,32 @@ void test_hello_carries_surfaces_from_registered_displays(void) {
   attachSink();
   sandbox->requestHello();
   pump();
-
   const std::string* f = frameWith("\"type\":\"hello\"");
   TEST_ASSERT_NOT_NULL(f);
-  TEST_ASSERT_TRUE(f->find(
-      "\"surfaces\":["
-      "{\"name\":\"main\",\"w\":240,\"h\":135,\"shape\":\"rect\","
-      "\"modules\":[\"lgfx\",\"lvgl\"]},"
-      "{\"name\":\"dial\",\"w\":240,\"h\":135,\"shape\":\"round\","
-      "\"modules\":[\"lgfx\"]}]") != std::string::npos);
+  TEST_ASSERT_TRUE(f->find("\"surfaces\"") == std::string::npos);
+}
+
+void test_render_target_registry_merges_and_serves_bind(void) {
+  // The registry stays as INTERNAL machinery: both graphics modules feed
+  // it, same-name entries merge module bits, geometry comes from the
+  // target — it just doesn't broadcast.
+  NullTarget target;
+  Resident::LgfxModule lgfx;
+  lgfx.addDisplay("main", &target);            // default shape "rect"
+  lgfx.addDisplay("dial", &target, "round");   // shape override
+  Resident::RenderTargets::add("main", 240, 135, nullptr,
+                               Resident::RenderTargets::MODULE_LVGL);
+  TEST_ASSERT_EQUAL_INT(2, Resident::RenderTargets::count());
+  const auto& main0 = Resident::RenderTargets::entry(0);
+  TEST_ASSERT_EQUAL_STRING("main", main0.name);
+  TEST_ASSERT_EQUAL_INT(240, main0.w);
+  TEST_ASSERT_EQUAL_INT(135, main0.h);
+  TEST_ASSERT_EQUAL_STRING("rect", main0.shape);
+  TEST_ASSERT_TRUE(main0.modules & Resident::RenderTargets::MODULE_LGFX);
+  TEST_ASSERT_TRUE(main0.modules & Resident::RenderTargets::MODULE_LVGL);
+  const auto& dial = Resident::RenderTargets::entry(1);
+  TEST_ASSERT_EQUAL_STRING("round", dial.shape);
+  TEST_ASSERT_FALSE(dial.modules & Resident::RenderTargets::MODULE_LVGL);
 }
 
 void test_host_hello_marks_seen(void) {
@@ -243,8 +245,8 @@ int main(int, char**) {
   RUN_TEST(test_telemetry_queue_drops_oldest_when_unsendable);
   RUN_TEST(test_hello_carries_identity_features_limits_and_app);
   RUN_TEST(test_hello_without_app_omits_app_field);
-  RUN_TEST(test_hello_omits_surfaces_when_registry_empty);
-  RUN_TEST(test_hello_carries_surfaces_from_registered_displays);
+  RUN_TEST(test_hello_never_carries_authoring_facts);
+  RUN_TEST(test_render_target_registry_merges_and_serves_bind);
   RUN_TEST(test_host_hello_marks_seen);
   RUN_TEST(test_on_event_ctx_has_wallclock_fields);
   return UNITY_END();
