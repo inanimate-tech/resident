@@ -286,7 +286,60 @@ void Sandbox::initialize()
   _triggerResetTime = millis();
   _lastTickTime = millis();
 
+  // Snapshot the baseline global names (stdlib, math globals, log/time,
+  // driver + internal modules) — everything a fresh app environment keeps.
+  // Anything an app defines on top is cleared at the next load (R5).
+  snapshotBaselineGlobals();
+
   Serial.println("Resident::Sandbox initialized");
+}
+
+// Record the names present in _G right after environment setup: the
+// runtime-owned baseline a fresh app environment resets to.
+void Sandbox::snapshotBaselineGlobals()
+{
+  lua_newtable(_lua);                       // the baseline set
+  lua_pushglobaltable(_lua);
+  lua_pushnil(_lua);
+  while (lua_next(_lua, -2)) {
+    lua_pop(_lua, 1);                       // drop the value
+    lua_pushvalue(_lua, -1);                // key
+    lua_pushboolean(_lua, 1);
+    lua_settable(_lua, -5);                 // baseline[key] = true
+  }
+  lua_pop(_lua, 1);                         // _G
+  lua_setfield(_lua, LUA_REGISTRYINDEX, "resident_baseline_globals");
+}
+
+// Fresh app environment (R5): clear every global that is not in the
+// baseline. Runs at app LOAD only — chunks deliberately keep the running
+// environment (that is their point).
+void Sandbox::resetAppGlobals()
+{
+  lua_getfield(_lua, LUA_REGISTRYINDEX, "resident_baseline_globals");
+  if (!lua_istable(_lua, -1)) {
+    lua_pop(_lua, 1);
+    return;
+  }
+  lua_pushglobaltable(_lua);                // [baseline, _G]
+  lua_pushnil(_lua);
+  while (lua_next(_lua, -2)) {              // [baseline, _G, key, value]
+    lua_pop(_lua, 1);                       // [baseline, _G, key]
+    lua_pushvalue(_lua, -1);                // [baseline, _G, key, key]
+    lua_gettable(_lua, -4);                 // [baseline, _G, key, inBaseline]
+    bool inBaseline = lua_toboolean(_lua, -1);
+    lua_pop(_lua, 1);                       // [baseline, _G, key]
+    if (!inBaseline) {
+      // Clearing an EXISTING field during traversal is defined behavior
+      // (adding one is not — and we only ever remove).
+      lua_pushvalue(_lua, -1);              // key
+      lua_pushnil(_lua);
+      lua_settable(_lua, -4);               // _G[key] = nil
+    }
+  }
+  lua_pop(_lua, 2);                         // _G, baseline
+  lua_gc(_lua, LUA_GCCOLLECT, 0);
+  lua_gc(_lua, LUA_GCCOLLECT, 0);           // finalizers, then their garbage
 }
 
 void Sandbox::setupLuaEnvironment()
@@ -1928,7 +1981,13 @@ bool Sandbox::compileApp(const char* code)
   _lastRuntimeErrorMillis = 0;
   _lastInitOk = false;
 
-  // Clear old global functions
+  // Fresh app environment (R5): nothing from the previous app survives —
+  // every non-baseline global goes, not just the three lifecycle names.
+  // ("Fresh boot" finally means fresh.)
+  if (_config.freshAppEnvironment) resetAppGlobals();
+
+  // Clear old global functions (covered by the reset above, but explicit —
+  // and still required when freshAppEnvironment is off)
   lua_pushnil(_lua);
   lua_setglobal(_lua, "init");
   lua_pushnil(_lua);

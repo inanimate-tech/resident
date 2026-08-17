@@ -93,6 +93,12 @@ struct SandboxConfig {
   // whose apps predate the closed default).
   bool openUnsafeLibs = false;
 
+  // Fresh app environment (0.8): each loadApp resets the globals to the
+  // runtime baseline — nothing from the previous app survives except the
+  // store slot. Set false for builds whose apps relied on cross-load
+  // global leakage.
+  bool freshAppEnvironment = true;
+
   // Networking opt-in. Presence ⇒ Sandbox constructs a Courier::Client with
   // this config, drives WiFi/transports, fires onConnected/onMessage/etc.
   // Absence ⇒ standalone runtime, no WiFi pulled in.

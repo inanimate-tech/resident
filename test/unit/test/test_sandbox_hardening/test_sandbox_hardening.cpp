@@ -197,6 +197,43 @@ void test_legacy_paths_close_after_host_hello(void) {
   TEST_ASSERT_EQUAL_INT(1, sandbox->luaGlobalIntForTest("seen"));
 }
 
+void test_fresh_environment_clears_app_globals(void) {
+  build();
+  loadApp(
+      "leak = 42\n"
+      "function helper() return 1 end\n"
+      "function on_tick(ctx, dt) end\n");
+  TEST_ASSERT_EQUAL_INT(42, sandbox->luaGlobalIntForTest("leak"));
+  loadApp(
+      "gone = (leak == nil) and (helper == nil)\n"
+      "baseline_ok = (events ~= nil) and (store ~= nil) and (log ~= nil)\n"
+      "  and (rgb ~= nil) and (string ~= nil)\n"
+      "function on_tick(ctx, dt) end\n");
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("gone"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("baseline_ok"));
+}
+
+void test_fresh_environment_flag_off_keeps_leakage(void) {
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  cfg.persistApps = false;
+  cfg.freshAppEnvironment = false;
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setup();
+  loadApp("leak = 42\nfunction on_tick(ctx, dt) end\n");
+  loadApp("kept = (leak == 42)\nfunction on_tick(ctx, dt) end\n");
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("kept"));
+}
+
+void test_chunks_keep_the_running_environment(void) {
+  build();
+  loadApp("g = 1\nfunction on_tick(ctx, dt) end\n");
+  TEST_ASSERT_TRUE(sandbox->loadChunk("g = g + 1"));
+  TEST_ASSERT_EQUAL_INT(2, sandbox->luaGlobalIntForTest("g"));
+  loadApp("fresh = (g == nil)\nfunction on_tick(ctx, dt) end\n");
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("fresh"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_disconnected_device_still_ticks_and_dispatches);
@@ -206,5 +243,8 @@ int main(int, char**) {
   RUN_TEST(test_store_remaining_and_store_full_once_per_key);
   RUN_TEST(test_ring_overflow_reports_dropped_count);
   RUN_TEST(test_legacy_paths_close_after_host_hello);
+  RUN_TEST(test_fresh_environment_clears_app_globals);
+  RUN_TEST(test_fresh_environment_flag_off_keeps_leakage);
+  RUN_TEST(test_chunks_keep_the_running_environment);
   return UNITY_END();
 }

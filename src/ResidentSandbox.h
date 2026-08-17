@@ -427,6 +427,10 @@ private:
     // Active capture bracket (startCapture/endCapture).
     uint16_t _captureStream = 0;
 
+    // Fresh app environment (R5): baseline snapshot + per-load reset.
+    void snapshotBaselineGlobals();
+    void resetAppGlobals();
+
     // Description-on-load display (setShowDescriptions).
     bool _showDescriptions = true;
     void maybeShowDescription(JsonDocument& doc);
