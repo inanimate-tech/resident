@@ -48,6 +48,8 @@ void loop()  { sandbox.loop(); }
 | `gateTickOnConnection` | `bool` | `false` | Restore the pre-0.8 behavior of pausing `on_tick` and event dispatch while disconnected. The default is offline-first: the app keeps running; only network sends wait. |
 | `openUnsafeLibs` | `bool` | `false` | Give the app environment the full Lua stdlib. The default removes `os`/`io`/`package`/`require`/`load`/`dofile`/`loadstring`/`loadfile`/`debug`. |
 | `freshAppEnvironment` | `bool` | `true` | Reset app globals to the runtime baseline on every `loadApp` — nothing from the previous app survives except the store slot. Set `false` for builds whose apps relied on cross-load leakage. |
+| `executionBudget` | `uint32_t` | `2000000` | Lua instruction cap per dispatch (init / one tick / one event / one chunk / each framework hook). Over-budget aborts the dispatch with a `runtime_error`; the app survives. `0` = unlimited. |
+| `framework` | `std::optional<FrameworkConfig>` | unset | Embed a framework module: `{name, version, source}` — privileged Lua the sandbox hosts outside the app (see [Framework modules](#framework-modules)). |
 | `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
 | `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). On M5 boards use the shipped `Resident::M5Mic` (`#include <ResidentM5Mic.h>`); otherwise implement `Resident::SystemMic`. Not a `Driver` — the pump owns its `begin()`/`end()`. |
 | `persistentStore` | `Resident::PersistentStore*` | `nullptr` | Override the backing store for persistence. `nullptr` uses NVS on device; inject a fake in tests. |
@@ -1022,6 +1024,8 @@ Every telemetry emission goes out TWO ways:
 | `persist_load_failed` | A persisted app failed to load on boot and was discarded |
 | `persist_too_big` | An app was too large to save to the persistent store |
 | `store_full` | An over-budget `store.set` was rejected; `data.error` carries the key (once per key per app load) |
+| `framework_applied` | A framework (built-in or slot update) loaded successfully |
+| `framework_error` | A framework chunk failed to compile or run; `data.error` carries the message. A failing slot blob is discarded and the built-in runs |
 | `dropped` | The drop counter's periodic report; `data.count` = items silently dropped since boot (ring overflow, oversize payloads, rate limits, closed legacy paths). At most one report per minute, only when changed |
 
 The wire path makes the old forward-it-yourself callback wiring unnecessary; the callback remains for boards that want an additional sink.
@@ -1052,6 +1056,35 @@ On every transport connect the sandbox queues a device hello — the device anno
 A host hello may answer on the same channel: `{ "channel":"system", "type":"hello", "data": { "proto":1, "features":[...], "tz":"Europe/London" } }`. The sandbox applies `tz` and records receipt (`sandbox.hostHelloSeen()`). Nothing else gates on it yet — a host that never hellos gets today's behavior in full — but future defaults (framed media, legacy-path removal) will key on it.
 
 ---
+
+## Framework modules
+
+Privileged runtime code the sandbox hosts OUTSIDE the app — for board families that ship a Lua framework their apps program against. Resident is generic here: it hosts; it never interprets.
+
+```cpp
+Resident::SandboxConfig::FrameworkConfig fw;
+fw.name = "myfw";          // announced in the hello — data, not semantics
+fw.version = 3;
+fw.source = MYFW_LUA;      // the built-in copy (cold-start default)
+cfg.framework = fw;
+```
+
+**The environment boundary.** The framework chunk runs in a private environment whose `__index` is `_G`: it reads every baseline global, but its own assignments stay local — app code cannot reach them. Writing through `_G` is the explicit app-facing act: `_G.api = {...}` installs API for apps. The environment also holds the one capability apps never get: `runtime.send(name, data, opts?)` — the control-plane mirror of `events.send` (same queue, same three-state return), publishing on `channel:"runtime"`. Hosts can therefore trust runtime-channel traffic: no app-level code can forge it.
+
+**Lifecycle hooks** (all optional; looked up in the framework env after its chunk runs):
+
+| Hook | When | Contract |
+|------|------|----------|
+| `framework_install()` | Before each app chunk runs (after the fresh-environment reset) | (Re)install the framework's app-facing API into `_G` |
+| `framework_tick(ctx, dt_ms)` | Every tick, before the app's `on_tick` | Same ctx shape as app callbacks |
+| `framework_event(ctx, e)` | Every event, before the app's `on_event` | Return `true` to consume — the app never sees it |
+| `framework_app_loaded()` | After an app loads successfully | — |
+
+Under a framework, an app may define NO lifecycle globals (`init`/`on_tick`/`on_event`) — validity is the framework's business. Events are accepted and dispatched to the framework even when the app has no `on_event`.
+
+**The framework slot.** `{channel:"system", type:"framework", name, version, code}` installs a replacement, persisted via the `PersistentStore` framework-slot virtuals (NVS key `resident/framework`) and loaded at boot in preference to the built-in. Empty `code` clears the slot and reverts to the built-in. A slot blob that fails to load is discarded (`framework_error`) and the built-in runs. Because only the system channel can carry this message, no sandboxed code — app or framework — can replace the framework. Each hello announces `framework: {name, version, source: "builtin"|"slot"}`, which is how a host decides to push an update.
+
+Errors in framework hooks are contained like app errors (`runtime_error`, dispatch dies, everything survives), and every hook runs under the execution budget.
 
 ## Writing a Driver
 

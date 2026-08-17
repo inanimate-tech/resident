@@ -37,6 +37,19 @@ public:
   virtual String loadStore() { return String(); }
   virtual void clearStore() {}
 
+  // ── Third slot: the framework slot (0.8) ──────────────────────────────
+  // A single JSON blob {"name":"...","version":N,"code":"..."} holding an
+  // over-the-wire framework update, loaded at boot in preference to the
+  // firmware built-in. Independent of both slots above. Inert defaults:
+  // without overrides, framework updates apply for the session but do not
+  // survive reboot.
+  virtual bool saveFramework(const char* json, size_t len) {
+    (void)json; (void)len;
+    return false;
+  }
+  virtual String loadFramework() { return String(); }
+  virtual void clearFramework() {}
+
   virtual ~PersistentStore() = default;
 };
 

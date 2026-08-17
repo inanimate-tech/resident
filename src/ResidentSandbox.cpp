@@ -226,6 +226,11 @@ void Sandbox::initialize()
   _initFuncRef = LUA_NOREF;
   _onTickFuncRef = LUA_NOREF;
   _onEventFuncRef = LUA_NOREF;
+  _fwEnvRef = LUA_NOREF;
+  _fwInstallRef = LUA_NOREF;
+  _fwTickRef = LUA_NOREF;
+  _fwEventRef = LUA_NOREF;
+  _fwAppLoadedRef = LUA_NOREF;
 
   setupLuaEnvironment();
 
@@ -458,6 +463,10 @@ void Sandbox::setup()
   _storeModule.attach(_store);
   _storeModule.loadPersisted();
 
+  // Framework module (R16): the persistent slot wins over the built-in;
+  // a bad slot blob is discarded and the built-in runs.
+  setupFramework();
+
   // Load any persisted app source. It is not armed here — the identity screen
   // and its countdown appear only once the device is ready to show them: on
   // first connection (networked), or right below (standalone). A networked
@@ -594,9 +603,11 @@ void Sandbox::handleAppMessage(const char* transportName, const char* type,
   const char* nonce = doc["nonce"] | "";
   if (nonce[0] && isDuplicateNonce(nonce)) return;
   // Same gate as sendAppEvent (see its comment — "deliberate"): no app loaded,
-  // or no on_event handler → drop. The event ring is not reset on app load, so
+  // or nothing to dispatch to (neither an app on_event nor a framework
+  // event hook) → drop. The event ring is not reset on app load, so
   // queueing here would leak stale events into whatever app loads next.
-  if (!isAppRunning() || !_onEventFuncRef) return;
+  if (!isAppRunning()) return;
+  if (_onEventFuncRef == LUA_NOREF && !(frameworkActive() && _fwEventRef != LUA_NOREF)) return;
   char dataJson[RESIDENT_EVENT_JSON_MAX] = "{}";
   if (doc["data"].is<JsonObject>()) {
     // Drop, don't truncate: a cut-off payload must never reach the ring.
@@ -675,6 +686,7 @@ void Sandbox::handleSystemMessage(const char* transportName, const char* type,
     return;
   }
   if (strcmp(type, "forget") == 0) { clearPersistedApp(); return; }
+  if (strcmp(type, "framework") == 0) { handleFrameworkMessage(doc); return; }
   if (strcmp(type, "hello") == 0) {
     // The host's half of the handshake. Nothing GATES on it yet — per the
     // reverse-hello compatibility rule, a host that never hellos gets full
@@ -766,6 +778,12 @@ bool Sandbox::sendHello()
   limits["storeBytes"] = RESIDENT_STORE_JSON_MAX;
   limits["storeNsChars"] = (int)StoreModule::STORE_NS_MAX;
   limits["eventsPerSec"] = 5;   // EventsModule's refill rate (see takeToken)
+  if (frameworkActive()) {
+    JsonObject fw = d["framework"].to<JsonObject>();
+    fw["name"] = _fwName;
+    fw["version"] = _fwVersion;
+    fw["source"] = _fwSlotSource;
+  }
   // What the device is running: live app, or the persisted one awaiting the
   // boot countdown. generationId only when the wire stamped one — a restored
   // app's self-generated id means nothing to the host.
@@ -843,11 +861,12 @@ void Sandbox::maybeShowDescription(JsonDocument& doc)
 // sink/transport are available, queued otherwise and drained from loop().
 // Shared by events.send (EventsModule::send, below) and any C++ caller.
 Sandbox::SendResult Sandbox::publishEventEx(const char* name,
-                                            const char* dataJson, bool keep)
+                                            const char* dataJson, bool keep,
+                                            const char* channel)
 {
   if (!name || !name[0]) return SendResult::Dropped;
   JsonDocument doc;
-  doc["channel"] = "app";
+  doc["channel"] = (channel && channel[0]) ? channel : "app";
   doc["type"] = name;
   JsonDocument data;
   if (dataJson && dataJson[0] && !deserializeJson(data, dataJson)) {
@@ -928,6 +947,232 @@ void Sandbox::drainOutboundEvents()
                          : (_courier.has_value() && _courier->send(doc));
     if (!ok) return;                          // transport balked; retry next loop
     _eventQueue.erase(_eventQueue.begin());
+  }
+}
+
+// ── Execution budget (R8): a per-dispatch instruction cap ────────────────
+// Armed around every protected Lua call (init, one tick, one event, one
+// chunk, framework hooks): a runaway loop aborts THAT dispatch with a
+// runtime_error — the app and the device survive.
+void Sandbox::executionBudgetHook(lua_State* L, lua_Debug* ar)
+{
+  (void)ar;
+  lua_sethook(L, nullptr, 0, 0);   // one shot — disarm before raising
+  luaL_error(L, "execution budget exceeded");
+}
+
+void Sandbox::armExecutionBudget()
+{
+  if (!_lua || _config.executionBudget == 0) return;
+  lua_sethook(_lua, executionBudgetHook, LUA_MASKCOUNT,
+              (int)_config.executionBudget);
+}
+
+void Sandbox::disarmExecutionBudget()
+{
+  if (_lua) lua_sethook(_lua, nullptr, 0, 0);
+}
+
+// ── Framework module hosting (R16) ───────────────────────────────────────
+//
+// A framework module is privileged Lua the sandbox hosts OUTSIDE the app:
+// its chunk runs in a private environment (__index → _G, so it reads the
+// baseline but its own globals are unreachable from app code), it holds
+// the runtime-channel sender as a capability, and it intercepts the
+// lifecycle. Resident is generic here — `name` is data, never interpreted.
+
+bool Sandbox::loadFramework(const char* code, const char* name, int version,
+                            bool fromSlot)
+{
+  if (!_lua || !code || !code[0]) return false;
+
+  // Private environment: reads the baseline globals, writes stay local.
+  lua_newtable(_lua);                        // env
+  lua_newtable(_lua);                        // mt
+  lua_pushglobaltable(_lua);
+  lua_setfield(_lua, -2, "__index");
+  lua_setmetatable(_lua, -2);
+
+  // The capability table, reachable only from this env.
+  lua_newtable(_lua);                        // runtime
+  lua_pushlightuserdata(_lua, this);
+  lua_pushcclosure(_lua, luaRuntimeSend, 1);
+  lua_setfield(_lua, -2, "send");
+  lua_setfield(_lua, -2, "runtime");         // env.runtime = { send }
+
+  if (luaL_loadstring(_lua, code) != 0) {
+    const char* errMsg = lua_tostring(_lua, -1);
+    Serial.printf("Resident::Sandbox: framework compile failed: %s\n", errMsg);
+    emitTelemetry("framework_error", errMsg);
+    lua_pop(_lua, 2);                        // error + env
+    return false;
+  }
+  lua_pushvalue(_lua, -2);                   // env
+  lua_setupvalue(_lua, -2, 1);               // chunk _ENV = env
+  armExecutionBudget();
+  int r = lua_pcall(_lua, 0, 0, 0);
+  disarmExecutionBudget();
+  if (r != 0) {
+    const char* errMsg = lua_tostring(_lua, -1);
+    Serial.printf("Resident::Sandbox: framework execution failed: %s\n", errMsg);
+    emitTelemetry("framework_error", errMsg);
+    lua_pop(_lua, 2);                        // error + env
+    return false;
+  }
+
+  // Success: the new framework replaces the old one wholesale.
+  unloadFramework();
+  _fwEnvRef = luaL_ref(_lua, LUA_REGISTRYINDEX);   // pops env
+  _fwActive = true;
+  _fwName = name ? name : "";
+  _fwVersion = version;
+  _fwSlotSource = fromSlot ? "slot" : "builtin";
+  refreshFrameworkHooks();
+  emitTelemetry("framework_applied");
+  return true;
+}
+
+void Sandbox::unloadFramework()
+{
+  if (!_lua) return;
+  for (int* ref : {&_fwEnvRef, &_fwInstallRef, &_fwTickRef, &_fwEventRef,
+                   &_fwAppLoadedRef}) {
+    if (*ref != LUA_NOREF) {
+      luaL_unref(_lua, LUA_REGISTRYINDEX, *ref);
+      *ref = LUA_NOREF;
+    }
+  }
+  _fwActive = false;
+}
+
+void Sandbox::refreshFrameworkHooks()
+{
+  struct Hook { const char* name; int* ref; };
+  const Hook hooks[] = {
+      {"framework_install", &_fwInstallRef},
+      {"framework_tick", &_fwTickRef},
+      {"framework_event", &_fwEventRef},
+      {"framework_app_loaded", &_fwAppLoadedRef},
+  };
+  lua_rawgeti(_lua, LUA_REGISTRYINDEX, _fwEnvRef);
+  for (const Hook& h : hooks) {
+    lua_getfield(_lua, -1, h.name);
+    if (lua_isfunction(_lua, -1)) {
+      if (*h.ref != LUA_NOREF) luaL_unref(_lua, LUA_REGISTRYINDEX, *h.ref);
+      *h.ref = luaL_ref(_lua, LUA_REGISTRYINDEX);   // pops the function
+    } else {
+      lua_pop(_lua, 1);
+      if (*h.ref != LUA_NOREF) {
+        luaL_unref(_lua, LUA_REGISTRYINDEX, *h.ref);
+        *h.ref = LUA_NOREF;
+      }
+    }
+  }
+  lua_pop(_lua, 1);                          // env
+}
+
+void Sandbox::setupFramework()
+{
+  if (!_config.framework.has_value()) return;
+  const auto& cfg = *_config.framework;
+
+  // The slot wins over the built-in; a blob that fails to load is
+  // discarded (framework_error already emitted) and the built-in runs.
+  if (_store) {
+    String blob = _store->loadFramework();
+    if (blob.length() > 0) {
+      JsonDocument doc;
+      if (!deserializeJson(doc, blob)) {
+        const char* code = doc["code"] | "";
+        if (code[0] && loadFramework(code, doc["name"] | (cfg.name ? cfg.name : ""),
+                                     doc["version"] | 0, /*fromSlot=*/true)) {
+          return;
+        }
+      }
+      Serial.println("Resident::Sandbox: framework slot blob discarded");
+      _store->clearFramework();
+    }
+  }
+  if (cfg.source && cfg.source[0]) {
+    loadFramework(cfg.source, cfg.name ? cfg.name : "", cfg.version,
+                  /*fromSlot=*/false);
+  }
+}
+
+// {channel:"system", type:"framework", name, version, code} — install a
+// slot update; empty code reverts to the built-in. Only the system channel
+// reaches here, so no sandboxed code can replace the framework.
+void Sandbox::handleFrameworkMessage(JsonDocument& doc)
+{
+  const char* code = doc["code"] | (const char*)(doc["data"]["code"] | "");
+  const char* name = doc["name"] | (const char*)(doc["data"]["name"] | "");
+  int version = doc["version"] | (int)(doc["data"]["version"] | 0);
+
+  if (!code[0]) {
+    // Revert to the built-in.
+    if (_store) _store->clearFramework();
+    if (_config.framework.has_value() && _config.framework->source) {
+      loadFramework(_config.framework->source,
+                    _config.framework->name ? _config.framework->name : "",
+                    _config.framework->version, /*fromSlot=*/false);
+    } else {
+      unloadFramework();
+    }
+    return;
+  }
+
+  if (!loadFramework(code, name, version, /*fromSlot=*/true)) return;
+
+  // Persist for the next boot (best-effort; RAM-only stores just don't
+  // survive reboot).
+  if (_store) {
+    JsonDocument blob;
+    blob["name"] = name;
+    blob["version"] = version;
+    blob["code"] = code;
+    size_t need = measureJson(blob) + 1;
+    char* buf = (char*)malloc(need);
+    if (buf) {
+      serializeJson(blob, buf, need);
+      if (!_store->saveFramework(buf, need - 1)) {
+        emitTelemetry("persist_too_big", "framework slot");
+      }
+      free(buf);
+    }
+  }
+}
+
+bool Sandbox::callFrameworkNoArg(int ref, const char* what)
+{
+  if (!_lua || ref == LUA_NOREF) return true;
+  lua_rawgeti(_lua, LUA_REGISTRYINDEX, ref);
+  armExecutionBudget();
+  int r = lua_pcall(_lua, 0, 0, 0);
+  disarmExecutionBudget();
+  if (r != 0) {
+    const char* errMsg = lua_tostring(_lua, -1);
+    Serial.printf("Resident::Sandbox: %s error: %s\n", what, errMsg);
+    emitTelemetry("runtime_error", errMsg);
+    lua_pop(_lua, 1);
+    return false;
+  }
+  return true;
+}
+
+void Sandbox::callFrameworkTick(unsigned long dt_ms)
+{
+  if (!_lua || !frameworkActive() || _fwTickRef == LUA_NOREF) return;
+  lua_rawgeti(_lua, LUA_REGISTRYINDEX, _fwTickRef);
+  pushCtxTable();
+  lua_pushinteger(_lua, dt_ms);
+  armExecutionBudget();
+  int r = lua_pcall(_lua, 2, 0, 0);
+  disarmExecutionBudget();
+  if (r != 0) {
+    const char* errMsg = lua_tostring(_lua, -1);
+    Serial.printf("Resident::Sandbox: framework_tick error: %s\n", errMsg);
+    emitTelemetry("runtime_error", errMsg);
+    lua_pop(_lua, 1);
   }
 }
 
@@ -1187,6 +1432,36 @@ void pushJsonArrayToLua(lua_State* L, JsonArrayConst arr, int depth) {
 // events.send(name [, data_table]) -> boolean. Defined here (not in
 // ResidentEvents.h) because it needs Sandbox::publishEvent, i.e. Sandbox as
 // a complete type — see the linkage note atop ResidentEvents.h.
+// The runtime-channel sender: a C closure handed into the framework env.
+// Same signature and queue semantics as events.send, channel pinned to
+// "runtime". App code has no path to this function.
+int Sandbox::luaRuntimeSend(lua_State* L)
+{
+  Sandbox* self = (Sandbox*)lua_touserdata(L, lua_upvalueindex(1));
+  const char* name = luaL_checkstring(L, 1);
+  char dataJson[RESIDENT_EVENT_JSON_MAX] = "{}";
+  if (lua_gettop(L) >= 2 && lua_istable(L, 2)) {
+    if (!serializeLuaTableToJson(L, 2, dataJson, sizeof(dataJson))) {
+      if (self) self->countDrop();
+      lua_pushstring(L, "dropped");
+      return 1;
+    }
+  }
+  bool keep = false;
+  if (lua_gettop(L) >= 3 && lua_istable(L, 3)) {
+    lua_getfield(L, 3, "keep");
+    keep = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+  }
+  SendResult r = self ? self->publishEventEx(name, dataJson, keep, "runtime")
+                      : SendResult::Dropped;
+  lua_pushstring(L, r == SendResult::Sent     ? "sent"
+                 : r == SendResult::Queued    ? "queued"
+                                              : "dropped");
+  return 1;
+}
+
+
 int EventsModule::send(lua_State* L)
 {
   // Arg 1: event name (string, required)
@@ -1439,6 +1714,7 @@ void Sandbox::loop() {
   unsigned long now = millis();
   unsigned long elapsed = now - _lastTickTime;
   if (elapsed >= TICK_INTERVAL) {
+    callFrameworkTick(elapsed);
     callOnTick(elapsed);
     _lastTickTime = now;
   }
@@ -1515,6 +1791,9 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   // An app loaded while a dual-role overlay claim is held starts suspended
   // rather than ticking (and drawing) beneath the overlay.
   if (loadedOk) reconcileOverlaySuspension();
+  if (loadedOk && frameworkActive() && _fwAppLoadedRef != LUA_NOREF) {
+    callFrameworkNoArg(_fwAppLoadedRef, "framework_app_loaded");
+  }
 
   // Persist only an app we know loaded cleanly, and never re-persist a restore.
   if (persistOnSuccess && loadedOk && _config.persistApps && _store) {
@@ -1573,7 +1852,10 @@ bool Sandbox::loadChunk(const char* code)
     lua_pop(_lua, 1);
     return false;
   }
-  if (lua_pcall(_lua, 0, 0, 0) != 0) {
+  armExecutionBudget();
+  int chunkResult = lua_pcall(_lua, 0, 0, 0);
+  disarmExecutionBudget();
+  if (chunkResult != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: chunk execution failed: %s\n", errMsg);
     emitTelemetry("chunk_error", errMsg);
@@ -1928,7 +2210,8 @@ void Sandbox::loadShader(const ShaderFields& fields) {
 void Sandbox::sendAppEvent(const char* name, const char* dataJson,
                            const char* channel)
 {
-  if (!isAppRunning() || !_onEventFuncRef) return;
+  if (!isAppRunning()) return;
+  if (_onEventFuncRef == LUA_NOREF && !(frameworkActive() && _fwEventRef != LUA_NOREF)) return;
   pushAppEvent(name, dataJson ? dataJson : "{}", "", millis(), channel);
 }
 
@@ -1995,11 +2278,19 @@ bool Sandbox::compileApp(const char* code)
   lua_pushnil(_lua);
   lua_setglobal(_lua, "on_event");
 
+  // Framework install (R16): the framework (re)writes its app-facing API
+  // into the fresh environment BEFORE the app chunk runs.
+  if (frameworkActive() && _fwInstallRef != LUA_NOREF) {
+    callFrameworkNoArg(_fwInstallRef, "framework_install");
+  }
+
   // Load and execute the chunk
   int loadResult = luaL_loadstring(_lua, code);
 
   if (loadResult == 0) {
+    armExecutionBudget();
     int execResult = lua_pcall(_lua, 0, 0, 0);
+    disarmExecutionBudget();
     if (execResult != 0) {
       const char* errMsg = lua_tostring(_lua, -1);
       Serial.printf("Resident::Sandbox: execution failed: %s\n", errMsg);
@@ -2027,7 +2318,9 @@ bool Sandbox::compileApp(const char* code)
   bool hasOnEvent = lua_isfunction(_lua, -1);
   lua_pop(_lua, 1);
 
-  if (!hasInit && !hasOnTick && !hasOnEvent) {
+  if (!hasInit && !hasOnTick && !hasOnEvent && !frameworkActive()) {
+    // With a framework module hosting the lifecycle, apps legitimately
+    // define none of these — validity is the framework's business.
     Serial.println("Resident::Sandbox: no callbacks found (init, on_tick, or on_event required)");
     emitTelemetry("compile_error", "no callbacks found (init, on_tick, or on_event required)");
     return false;
@@ -2091,7 +2384,9 @@ bool Sandbox::callInit()
   // Time-of-day fields
   pushLocalTimeFields();
 
+  armExecutionBudget();
   int result = lua_pcall(_lua, 1, 0, 0);
+  disarmExecutionBudget();
   if (result != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: init() error: %s\n", errMsg);
@@ -2122,7 +2417,9 @@ void Sandbox::callOnTick(unsigned long dt_ms)
 
   lua_pushinteger(_lua, dt_ms);
 
+  armExecutionBudget();
   int result = lua_pcall(_lua, 2, 0, 0);
+  disarmExecutionBudget();
   if (result != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: on_tick() error: %s\n", errMsg);
@@ -2156,18 +2453,10 @@ void Sandbox::pushLocalTimeFields()
   lua_setfield(_lua, -2, "localtime_m");
 }
 
-void Sandbox::processNextEvent()
+// The uniform ctx table (0.8): identical in every callback and for
+// framework hooks.
+void Sandbox::pushCtxTable()
 {
-  if (_eventHead == _eventTail) return;
-  if (!_lua || _onEventFuncRef == LUA_NOREF) return;
-
-  Event& e = _events[_eventTail];
-  _eventTail = (_eventTail + 1) % SANDBOX_MAX_EVENTS;
-
-  lua_rawgeti(_lua, LUA_REGISTRYINDEX, _onEventFuncRef);
-
-  // Push ctx table — the SAME shape as init/on_tick (a handler reading
-  // ctx.localtime_h used to get nil only here; uniform since 0.8).
   lua_newtable(_lua);
   lua_pushinteger(_lua, millis() - _triggerResetTime);
   lua_setfield(_lua, -2, "time_ms");
@@ -2175,8 +2464,68 @@ void Sandbox::processNextEvent()
   lua_setfield(_lua, -2, "trigger_count");
   pushCtxGenerationId();
   pushLocalTimeFields();
+}
 
-  // Push event table
+void Sandbox::processNextEvent()
+{
+  if (_eventHead == _eventTail) return;
+  if (!_lua) return;
+  bool fwWants = frameworkActive() && _fwEventRef != LUA_NOREF;
+  bool appWants = _onEventFuncRef != LUA_NOREF;
+  if (!fwWants && !appWants) return;
+
+  Event& e = _events[_eventTail];
+  _eventTail = (_eventTail + 1) % SANDBOX_MAX_EVENTS;
+
+  // The framework sees every event FIRST and may consume it (return true):
+  // reply/patch-style control traffic never reaches the app raw.
+  if (fwWants) {
+    lua_rawgeti(_lua, LUA_REGISTRYINDEX, _fwEventRef);
+    pushCtxTable();
+    if (!pushEventTable(e)) {
+      lua_pop(_lua, 2);   // hook fn + ctx
+      return;
+    }
+    armExecutionBudget();
+    int r = lua_pcall(_lua, 2, 1, 0);
+    disarmExecutionBudget();
+    if (r != 0) {
+      const char* errMsg = lua_tostring(_lua, -1);
+      Serial.printf("Resident::Sandbox: framework_event error: %s\n", errMsg);
+      emitTelemetry("runtime_error", errMsg);
+      lua_pop(_lua, 1);
+    } else {
+      bool handled = lua_toboolean(_lua, -1);
+      lua_pop(_lua, 1);
+      if (handled) return;
+    }
+  }
+
+  if (!appWants) return;
+
+  lua_rawgeti(_lua, LUA_REGISTRYINDEX, _onEventFuncRef);
+  pushCtxTable();
+  if (!pushEventTable(e)) {
+    lua_pop(_lua, 2);     // handler + ctx
+    return;
+  }
+
+  armExecutionBudget();
+  int callResult = lua_pcall(_lua, 2, 0, 0);
+  disarmExecutionBudget();
+  if (callResult != 0) {
+    const char* errMsg = lua_tostring(_lua, -1);
+    Serial.printf("Resident::Sandbox: on_event() error: %s\n", errMsg);
+    emitTelemetry("runtime_error", errMsg);
+    lua_pop(_lua, 1);
+  }
+}
+
+// Push the event table for `e`: envelope fields, the parsed data payload,
+// and (driver events only) the deprecated flattened shadow. Pushes exactly
+// one value on success; nothing when the payload is unparseable.
+bool Sandbox::pushEventTable(const Event& e)
+{
   lua_newtable(_lua);
   lua_pushstring(_lua, e.name);
   lua_setfield(_lua, -2, "name");
@@ -2217,8 +2566,8 @@ void Sandbox::processNextEvent()
         !dataDoc.is<JsonObjectConst>()) {
       Serial.printf("Resident::Sandbox: unparseable data for event '%s'; event dropped\n",
                     e.name);
-      lua_pop(_lua, 3);  // on_event handler, ctx table, event table
-      return;
+      lua_pop(_lua, 1);  // the half-built event table
+      return false;
     }
     pushJsonObjectToLua(_lua, dataDoc.as<JsonObjectConst>(), /*depth=*/1);
     lua_setfield(_lua, -2, "data");
@@ -2249,13 +2598,7 @@ void Sandbox::processNextEvent()
     }
   }
 
-  int callResult = lua_pcall(_lua, 2, 0, 0);
-  if (callResult != 0) {
-    const char* errMsg = lua_tostring(_lua, -1);
-    Serial.printf("Resident::Sandbox: on_event() error: %s\n", errMsg);
-    emitTelemetry("runtime_error", errMsg);
-    lua_pop(_lua, 1);
-  }
+  return true;
 }
 
 void Sandbox::pushAppEvent(const char* name, const char* dataJson, const char* from, uint32_t ts_ms,

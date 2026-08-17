@@ -99,6 +99,25 @@ struct SandboxConfig {
   // global leakage.
   bool freshAppEnvironment = true;
 
+  // Per-dispatch Lua instruction budget (0.8): init, one tick, one event,
+  // or one chunk may execute at most this many VM instructions before the
+  // dispatch is aborted with a runtime_error (the app survives — a
+  // `while true do end` kills a dispatch, not the device). 0 = unlimited.
+  uint32_t executionBudget = 2000000;
+
+  // Framework module (0.8): privileged runtime code the sandbox hosts
+  // OUTSIDE the app — its own environment, the runtime-channel sender,
+  // lifecycle interception, and a persistent update slot written only by
+  // {channel:"system", type:"framework"} messages. Resident is generic
+  // here: `name` is whatever framework the board embeds; the sandbox
+  // never interprets it.
+  struct FrameworkConfig {
+    const char* name = nullptr;     // announced in the hello
+    int version = 0;                // built-in copy's version
+    const char* source = nullptr;   // built-in Lua source (the cold-start default)
+  };
+  std::optional<FrameworkConfig> framework;
+
   // Networking opt-in. Presence ⇒ Sandbox constructs a Courier::Client with
   // this config, drives WiFi/transports, fires onConnected/onMessage/etc.
   // Absence ⇒ standalone runtime, no WiFi pulled in.
