@@ -784,17 +784,15 @@ void Sandbox::maybeShowDescription(JsonDocument& doc)
   if (desc && desc[0]) systemDisplay()->displayText(desc);
 }
 
-// Data-plane emit: builds the app-channel envelope and hands it to the
-// event sink. Shared by events.send (EventsModule::send, below) and any
-// C++ caller (e.g. a wrapper's room.announce alias).
-bool Sandbox::publishEvent(const char* name, const char* dataJson)
+// Data-plane emit (R9): builds the app-channel envelope, stamps seq/nonce
+// at ENQUEUE time (ordering holds; retries are dedup-safe), and delivers
+// through the bounded outbound queue — sent immediately when a token and a
+// sink/transport are available, queued otherwise and drained from loop().
+// Shared by events.send (EventsModule::send, below) and any C++ caller.
+Sandbox::SendResult Sandbox::publishEventEx(const char* name,
+                                            const char* dataJson, bool keep)
 {
-  if (!name || !name[0]) return false;
-  if (!_eventsModule.takeToken()) {
-    countDrop();
-    Serial.println("Resident::Sandbox: publishEvent rate-limited; dropped");
-    return false;
-  }
+  if (!name || !name[0]) return SendResult::Dropped;
   JsonDocument doc;
   doc["channel"] = "app";
   doc["type"] = name;
@@ -817,9 +815,107 @@ bool Sandbox::publishEvent(const char* name, const char* dataJson)
   doc["nonce"] = nonce;
   doc["ts_ms"] = millis();
 
-  if (_eventSink) return _eventSink(doc);
-  if (_courier.has_value()) return _courier->send(doc);
-  return false;
+  // Enqueue (evicting if full), then drain — a message that can go now
+  // goes now, in order behind anything already waiting.
+  if ((int)_eventQueue.size() >= RESIDENT_EVENT_QUEUE_SIZE) {
+    bool evicted = false;
+    for (size_t i = 0; i < _eventQueue.size(); i++) {
+      if (!_eventQueue[i].keep) {
+        _eventQueue.erase(_eventQueue.begin() + i);
+        countDrop();
+        evicted = true;
+        break;
+      }
+    }
+    if (!evicted) {
+      if (!keep) {
+        countDrop();   // full of keepers and this one is droppable
+        return SendResult::Dropped;
+      }
+      _eventQueue.erase(_eventQueue.begin());   // keeper displaces oldest keeper
+      countDrop();
+    }
+  }
+  // Serialize via a sized buffer (the native String stub lacks the writer
+  // surface serializeJson(doc, String&) needs — stashDeferredLoad pattern).
+  size_t need = measureJson(doc) + 1;
+  char* buf = (char*)malloc(need);
+  if (!buf) {
+    countDrop();
+    return SendResult::Dropped;
+  }
+  serializeJson(doc, buf, need);
+  QueuedEvent q;
+  q.json = buf;
+  free(buf);
+  q.keep = keep;
+  q.seq = seq;
+  _eventQueue.push_back(std::move(q));
+
+  drainOutboundEvents();
+  for (auto& e : _eventQueue) {
+    if (e.seq == seq) return SendResult::Queued;
+  }
+  return SendResult::Sent;
+}
+
+// Drain the outbound queue in order: each send takes a rate-limit token;
+// no token, no sink, or a failed send stops the drain until the next loop.
+void Sandbox::drainOutboundEvents()
+{
+  if (!_eventSink && !(_courier.has_value() && isConnected())) return;
+  while (!_eventQueue.empty()) {
+    if (!_eventsModule.takeToken()) return;   // rate-limited; retry next loop
+    JsonDocument doc;
+    if (deserializeJson(doc, _eventQueue.front().json)) {
+      _eventQueue.erase(_eventQueue.begin());  // unparseable: impossible, but never wedge
+      continue;
+    }
+    bool ok = _eventSink ? _eventSink(doc)
+                         : (_courier.has_value() && _courier->send(doc));
+    if (!ok) return;                          // transport balked; retry next loop
+    _eventQueue.erase(_eventQueue.begin());
+  }
+}
+
+// ── Capture brackets (R11/R15): one dialect for media capture ────────────
+bool Sandbox::startCapture(uint16_t stream, uint16_t format)
+{
+  if (_micStreaming) return true;
+  JsonDocument doc;
+  doc["type"] = "capture";
+  JsonObject d = doc["data"].to<JsonObject>();
+  d["state"] = "start";
+  d["stream"] = stream;
+  d["format"] = format;
+  // The bracket must precede the first media frame — sent synchronously
+  // (callers are in the main loop, where sends are safe). No bracket, no
+  // capture: streaming into a void helps nobody.
+  if (!sendSystem(doc)) return false;
+  if (!startMicStream()) {
+    JsonDocument endDoc;
+    endDoc["type"] = "capture";
+    JsonObject e = endDoc["data"].to<JsonObject>();
+    e["state"] = "end";
+    e["stream"] = stream;
+    sendSystem(endDoc);   // close the bracket we opened
+    return false;
+  }
+  _captureStream = stream;
+  return true;
+}
+
+void Sandbox::endCapture()
+{
+  if (!_micStreaming) return;
+  stopMicStream();
+  JsonDocument doc;
+  doc["type"] = "capture";
+  JsonObject d = doc["data"].to<JsonObject>();
+  d["state"] = "end";
+  d["stream"] = _captureStream;
+  sendSystem(doc);
+  _captureStream = 0;
 }
 
 // ── Lua table → JSON serializer (outgoing events.send data) ──────────────
@@ -1052,13 +1148,30 @@ int EventsModule::send(lua_State* L)
       if (_sandbox) _sandbox->countDrop();
       Serial.println("Resident::Sandbox: events.send data exceeds "
                      "RESIDENT_EVENT_JSON_MAX; event dropped");
-      lua_pushboolean(L, false);
+      lua_pushstring(L, "dropped");
       return 1;
     }
   }
 
-  bool sent = _sandbox && _sandbox->publishEvent(name, dataJson);
-  lua_pushboolean(L, sent);
+  // Arg 3: opts table (optional): { keep = true } marks a message that must
+  // never be evicted by queue overflow (escalations that suspend a
+  // coroutine, e.g.).
+  bool keep = false;
+  if (lua_gettop(L) >= 3 && lua_istable(L, 3)) {
+    lua_getfield(L, 3, "keep");
+    keep = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+  }
+
+  // Three-state return (0.8): "sent" | "queued" | "dropped". Both success
+  // states are truthy; callers that only care whether the event will go
+  // can still treat the result as a boolean.
+  Sandbox::SendResult r = _sandbox
+      ? _sandbox->publishEventEx(name, dataJson, keep)
+      : Sandbox::SendResult::Dropped;
+  lua_pushstring(L, r == Sandbox::SendResult::Sent     ? "sent"
+                 : r == Sandbox::SendResult::Queued    ? "queued"
+                                                       : "dropped");
   return 1;
 }
 
@@ -1255,6 +1368,7 @@ void Sandbox::loop() {
   updateOverlays();
   updateMicStream();
   drainOutboundSystem();
+  drainOutboundEvents();
 
   if (_runState == RunState::Pending) {
     updateBootCountdown();

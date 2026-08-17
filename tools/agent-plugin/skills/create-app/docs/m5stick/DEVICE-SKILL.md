@@ -18,8 +18,10 @@ Gyro is in degrees/second.
 
 **Buzzer:** Piezo. Frequency range 100–8000 Hz, duration 10–5000 ms.
 
-**Buttons:** Two physical buttons, indexed 0 and 1. Surface as `button` events
-with an `index` field.
+**Buttons:** Two physical buttons, indexed 0 and 1. Surface as recognized
+gestures: `tap` events (release under the hold threshold) and `hold` events
+(`e.data.held` true at the threshold, false on release), each with
+`e.data.index`. (A legacy `button` event still fires alongside `tap`.)
 
 ## Lua Modules
 
@@ -95,8 +97,10 @@ Frequency 100–8000 Hz; duration 10–5000 ms. Tone is stopped on app reset.
 local count = button.press_count()  -- total presses since boot
 ```
 
-Best practice: handle button presses in `on_event(ctx, e)` rather than
-polling. The event has a `name == "button"` and an `index` field (0 or 1).
+Best practice: handle gestures in `on_event(ctx, e)` rather than polling.
+A press is `e.name == "tap"` with `e.data.index` (0 or 1); a long press is
+`e.name == "hold"` with `e.data.held` true at the threshold and false on
+release.
 
 ## Examples
 

@@ -275,7 +275,9 @@ sandbox.onSystemButtonHold(cb);        // cb(true) on hold (past threshold), cb(
 sandbox.addOverlay(&ov, &surface, prio); // register a claim on a display surface, with priority
 sandbox.requestOverlay(&ov, show);       // request show/hide; per-surface arbitration picks winners
 sandbox.removeOverlay(&ov);              // deregister (tears the overlay down, resumes app if it suspended)
-sandbox.startMicStream();              // stream systemMic frames (default sink: ws().sendBinary)
+sandbox.startCapture(stream, format);  // {system, capture} bracket + mic stream (0.8 dialect)
+sandbox.endCapture();                  // stop the stream, close the bracket
+sandbox.startMicStream();              // stream systemMic frames, no brackets (board owns control frames)
 sandbox.stopMicStream();               // stop streaming
 sandbox.isMicStreaming();              // true while streaming
 sandbox.setMicStreamSink(fn);          // override the binary frame sink
@@ -803,7 +805,7 @@ events.send("state", { on = true, pos = { x = 1, y = 2 }, tags = { "a", "b" } })
 
 Serialized into a bounded buffer of `RESIDENT_EVENT_JSON_MAX` bytes (default 1024; override with a build flag, e.g. `-DRESIDENT_EVENT_JSON_MAX=2048`). An oversized payload is never truncated: the event is dropped, a line is logged to Serial, and `events.send` returns `false`.
 
-Rate-limited by a shared token bucket: 5 events/s sustained, burst of 10. Returns `false` (rather than raising a Lua error) when rate-limited, when the event name is empty, or when the underlying send fails — always check the return value if you need to know whether it went out.
+Delivery (0.8): `events.send(name, data, opts?)` returns `"sent" | "queued" | "dropped"` (both success states truthy). Sends over the rate limit (shared token bucket: 5 events/s sustained, burst of 10) or while offline QUEUE into a bounded outbound queue (`RESIDENT_EVENT_QUEUE_SIZE`, default 16) and drain in order from `loop()` as tokens and connectivity allow. Envelopes are stamped (`seq`/`nonce`) at enqueue, so ordering holds and retries are dedup-safe. `opts.keep = true` marks a message overflow eviction never removes (eviction prefers the oldest non-keeper and feeds the drop counter). `"dropped"` means the event will never go: empty name, oversize payload, or evicted while the queue was full of keepers.
 
 ### `lgfx` module (optional)
 

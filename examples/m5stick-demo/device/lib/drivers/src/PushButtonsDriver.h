@@ -41,6 +41,10 @@ public:
 private:
   static constexpr uint8_t MAX_BUTTONS = 4;
   static constexpr unsigned long DEBOUNCE_MS = 50;
+  // Hold recognition threshold when no firmware long-press callback set a
+  // custom one — `hold` events are emitted either way (recognition belongs
+  // to the driver).
+  static constexpr unsigned long DEFAULT_HOLD_MS = 500;
 
   const PushButtonsConfig& _config;
 

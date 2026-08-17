@@ -70,11 +70,15 @@ event (never truncated).
 ## Events out (`events` module)
 
 ```lua
-events.send("report", { level = 3, note = "ok" })   -- -> boolean
+events.send("report", { level = 3, note = "ok" })
+-- -> "sent" | "queued" | "dropped"  (sent and queued are both truthy)
+events.send("must_arrive", { id = 7 }, { keep = true })
 ```
 
-- Publishes to the server on the app channel. Returns `false` when
-  rate-limited, oversize, or offline — nothing is sent then.
+- Publishes to the server on the app channel. Rate-limited or offline sends
+  are QUEUED and go later, in order — treat `"queued"` as success.
+  `"dropped"` means it will never go (oversize payload, or the queue was
+  full). `keep = true` protects a message from queue-overflow eviction.
 - Rate limit: 5 events/s sustained, burst of 10.
 - `data` values: strings, numbers, booleans, tables to depth 3. Serialized
   size cap 1024 bytes; oversize is dropped, never truncated.

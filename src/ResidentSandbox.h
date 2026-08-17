@@ -8,6 +8,7 @@
 #include <map>
 #include <functional>
 #include <optional>
+#include <vector>
 #include <Courier.h>
 #include "ResidentDriver.h"
 #include "ResidentLuaModule.h"
@@ -36,6 +37,12 @@
 // RAM note: each slot holds RESIDENT_EVENT_JSON_MAX bytes of data.
 #ifndef RESIDENT_EVENT_RING_SIZE
 #define RESIDENT_EVENT_RING_SIZE 8
+#endif
+
+// Outbound event queue depth (rate-limited / offline sends wait here and
+// drain in order on capacity or reconnect).
+#ifndef RESIDENT_EVENT_QUEUE_SIZE
+#define RESIDENT_EVENT_QUEUE_SIZE 16
 #endif
 
 namespace Resident {
@@ -132,6 +139,15 @@ public:
     bool startMicStream();
     void stopMicStream();
     bool isMicStreaming() const { return _micStreaming; }
+
+    // Capture brackets (0.8) — the one dialect for media capture: sends
+    // {channel:"system", type:"capture", data:{state:"start", stream,
+    // format}} BEFORE the first media frame (payloads stay raw; the bracket
+    // carries the metadata), starts the mic pump, and reverses on end.
+    // Format 1 = PCM16 mono 16 kHz. Call from the main loop only (a send
+    // from the receive context is silently dropped by the transport).
+    bool startCapture(uint16_t stream = 1, uint16_t format = 1);
+    void endCapture();
 
     // Overlay support. Register an overlay as a claim on the display surface
     // it draws to (nullptr = a dedicated surface: never contends, never
@@ -251,12 +267,19 @@ public:
     void setShowDescriptions(bool show) { _showDescriptions = show; }
 
     // ── Data-plane emit ──
-    // Builds {channel:"app", type:name, data, from, nonce, ts_ms} and hands
-    // it to the event sink (default: courier().send on the default
-    // transport). Rate-limited (5/s, burst 10). Returns false on rate limit,
-    // no sink, or sink failure. Shared by the Lua path (events.send) and the
-    // C++ path (wrapper aliases, e.g. HRD's room.announce).
-    bool publishEvent(const char* name, const char* dataJson);
+    // Builds {channel:"app", type:name, data, from, nonce, ts_ms} and
+    // delivers it through the outbound event queue: sent immediately when
+    // under the rate limit (5/s, burst 10) and a sink/transport is up;
+    // otherwise queued (bounded; oldest non-keeper evicted on overflow)
+    // and drained in order from loop(). Shared by the Lua path
+    // (events.send) and the C++ path (wrapper aliases).
+    enum class SendResult { Sent, Queued, Dropped };
+    SendResult publishEventEx(const char* name, const char* dataJson,
+                              bool keep = false);
+    // Legacy boolean shape: true = the event will go (sent or queued).
+    bool publishEvent(const char* name, const char* dataJson) {
+      return publishEventEx(name, dataJson) != SendResult::Dropped;
+    }
 
     using EventSink = std::function<bool(JsonDocument&)>;
     void setEventSink(EventSink sink) { _eventSink = std::move(sink); }
@@ -392,6 +415,17 @@ private:
     uint32_t _dropCount = 0;
     uint32_t _lastReportedDrops = 0;
     unsigned long _lastDropReportMs = 0;
+
+    // ── Outbound event queue (R9): rate-limited/offline sends wait here ──
+    // Envelopes are stamped (seq/nonce) at enqueue so retries are dedup-safe
+    // and ordering holds; the drain takes rate-limit tokens as it sends.
+    // keep=true entries (asks) are never evicted by overflow.
+    struct QueuedEvent { String json; bool keep = false; uint32_t seq = 0; };
+    std::vector<QueuedEvent> _eventQueue;
+    void drainOutboundEvents();
+
+    // Active capture bracket (startCapture/endCapture).
+    uint16_t _captureStream = 0;
 
     // Description-on-load display (setShowDescriptions).
     bool _showDescriptions = true;
