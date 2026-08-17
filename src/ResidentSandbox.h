@@ -26,6 +26,11 @@
 #define RESIDENT_EVENT_JSON_MAX 1024
 #endif
 
+// The wire-protocol version announced in the device hello. Bumped only on
+// incompatible envelope changes; feature additions ride the hello's
+// `features` list instead.
+#define RESIDENT_PROTO_VERSION 1
+
 namespace Resident {
 
 class Sandbox {
@@ -249,6 +254,23 @@ public:
     using EventSink = std::function<bool(JsonDocument&)>;
     void setEventSink(EventSink sink) { _eventSink = std::move(sink); }
 
+    // ── Control-plane emit seam ──
+    // When set, sendSystem() hands the stamped doc here instead of the
+    // transport — the system-plane mirror of setEventSink (native tests, or
+    // a platform wrapper that owns its own delivery).
+    using SystemSink = std::function<bool(JsonDocument&)>;
+    void setSystemSink(SystemSink sink) { _systemSink = std::move(sink); }
+
+    // ── Hello (see docs/api.md "Hello") ──
+    // Queue the device hello for the next loop() drain. Called internally on
+    // every transport connect; public so boards and tests can re-announce.
+    void requestHello() { _helloPending = true; }
+    // True once a host hello has been received this boot. Nothing gates on
+    // it yet — it exists so future behavior (framed media, legacy-path
+    // removal) can key on "the host speaks hello" per the reverse-hello
+    // compatibility rule.
+    bool hostHelloSeen() const { return _hostHelloSeen; }
+
     // ── Identity / status accessors ──
     const String& getDeviceId() const { return _deviceId; }
     const String& getAPName() const { return _apName; }
@@ -328,7 +350,25 @@ private:
     // message's storeNs; debounced write-through to _store (arc A4).
     StoreModule _storeModule;
     EventSink _eventSink;
+    SystemSink _systemSink;
     unsigned long _eventNonceCounter = 0;
+
+    // ── Outbound control-plane queue (hello + wire telemetry) ──
+    // Sends must never happen from the receive context (a reentrant WS send
+    // is silently dropped), and telemetry fires from paths that RUN in the
+    // receive context (loadApp → emitTelemetry). So control-plane emissions
+    // queue here and drain from loop(). Bounded; overflow drops the oldest.
+    bool _helloPending = false;
+    bool _hostHelloSeen = false;
+    String _bootId;
+    struct PendingTelemetry { String name; String generationId; String error; };
+    static constexpr int TELEMETRY_QUEUE_SIZE = 8;
+    PendingTelemetry _pendingTelemetry[TELEMETRY_QUEUE_SIZE];
+    int _telemetryHead = 0;
+    int _telemetryTail = 0;
+    void queueTelemetryWire(const char* name, const char* error);
+    void drainOutboundSystem();
+    bool sendHello();
 
     // Description-on-load display (setShowDescriptions).
     bool _showDescriptions = true;

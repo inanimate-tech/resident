@@ -338,6 +338,10 @@ void Sandbox::setup()
   // even in standalone (networkless) mode.
   _deviceId = ::getDeviceId();
 
+  // Per-boot identity for the hello: distinguishes reconnects from reboots.
+  // esp_random() on device; the native stub returns 0, which tests accept.
+  _bootId = String((uint32_t)esp_random(), HEX);
+
   if (_courier.has_value()) {
     // 1. User's onConfigureNetwork — first; lets them register transports,
     //    set certs, etc., before any Courier setup runs.
@@ -581,6 +585,23 @@ void Sandbox::handleSystemMessage(const char* transportName, const char* type,
     return;
   }
   if (strcmp(type, "forget") == 0) { clearPersistedApp(); return; }
+  if (strcmp(type, "hello") == 0) {
+    // The host's half of the handshake. Nothing GATES on it yet — per the
+    // reverse-hello compatibility rule, a host that never hellos gets full
+    // legacy behavior — but the timezone lands now, and hostHelloSeen() is
+    // the hook future feature gating keys on.
+    _hostHelloSeen = true;
+    const char* tz = doc["data"]["tz"] | "";
+    if (tz[0]) setTimezone(tz);
+    // data.time_ms deliberately unapplied: Courier owns time sync today;
+    // hello-driven clock seeding lands with the Courier integration.
+    return;
+  }
+  if (strcmp(type, "goodbye") == 0) {
+    Serial.printf("Resident::Sandbox: host goodbye (%s)\n",
+                  (const char*)(doc["data"]["reason"] | "no reason"));
+    return;
+  }
 
   MessageCallback* cb = lookupChannelSlot("system");
   if (cb && *cb) { (*cb)(transportName, type, doc); return; }
@@ -616,8 +637,93 @@ void Sandbox::onMessageWithChannel(const char* channel, MessageCallback cb)
 bool Sandbox::sendSystem(JsonDocument& doc)
 {
   doc["channel"] = "system";
+  if (_systemSink) return _systemSink(doc);
   if (!_courier.has_value()) return false;
   return _courier->send(doc);
+}
+
+// ── Outbound control plane: hello + wire telemetry ──────────────────────
+//
+// Both are QUEUED and drained from loop(): emitTelemetry fires from paths
+// that run in the receive context (loadApp → compile_error) and
+// onCourierConnected is a connect callback — a send from either would be a
+// reentrant WS write, which the transport silently drops.
+
+// The device hello (docs/api.md "Hello"): the device announces itself —
+// protocol version, identity, features, its own limits, and what it is
+// running — so the host never has to assume any of it.
+bool Sandbox::sendHello()
+{
+  JsonDocument doc;
+  doc["type"] = "hello";
+  JsonObject d = doc["data"].to<JsonObject>();
+  d["proto"] = RESIDENT_PROTO_VERSION;
+  d["deviceType"] = getDeviceType();
+  if (_config.firmwareVersion && _config.firmwareVersion[0]) {
+    d["firmware"] = _config.firmwareVersion;
+  }
+  d["bootId"] = _bootId;
+  if (_config.profileRef && _config.profileRef[0]) {
+    d["profile"] = _config.profileRef;
+  }
+  JsonArray features = d["features"].to<JsonArray>();
+  features.add("chunk");
+  features.add("telemetry");
+  if (_config.systemMic) features.add("media");
+  JsonObject limits = d["limits"].to<JsonObject>();
+  limits["eventBytes"] = RESIDENT_EVENT_JSON_MAX;
+  limits["replyBytes"] = RESIDENT_EVENT_JSON_MAX;
+  limits["storeBytes"] = RESIDENT_STORE_JSON_MAX;
+  limits["storeNsChars"] = (int)StoreModule::STORE_NS_MAX;
+  limits["eventsPerSec"] = 5;   // EventsModule's refill rate (see takeToken)
+  // What the device is running: live app, or the persisted one awaiting the
+  // boot countdown. generationId only when the wire stamped one — a restored
+  // app's self-generated id means nothing to the host.
+  if (isAppRunning() || _runState == RunState::Pending) {
+    JsonObject app = d["app"].to<JsonObject>();
+    app["storeNs"] = _storeModule.storeNamespace();
+    if (isAppRunning() && _generationIdFromWire) {
+      app["generationId"] = _generationId;
+    }
+  }
+  return sendSystem(doc);
+}
+
+// Wire copy of every telemetry emission. Bounded ring; overflow drops the
+// oldest (telemetry is a report, not a ledger).
+void Sandbox::queueTelemetryWire(const char* name, const char* error)
+{
+  int nextHead = (_telemetryHead + 1) % TELEMETRY_QUEUE_SIZE;
+  if (nextHead == _telemetryTail) {
+    _telemetryTail = (_telemetryTail + 1) % TELEMETRY_QUEUE_SIZE;
+  }
+  PendingTelemetry& t = _pendingTelemetry[_telemetryHead];
+  t.name = name;
+  t.generationId = _generationId;
+  t.error = error ? error : "";
+  _telemetryHead = nextHead;
+}
+
+void Sandbox::drainOutboundSystem()
+{
+  // A system sink (tests, platform wrappers) counts as deliverable even
+  // networkless; otherwise wait for the transport.
+  if (!_systemSink && !isConnected()) return;
+  if (_helloPending) {
+    if (!sendHello()) return;   // transport balked; retry next loop
+    _helloPending = false;
+  }
+  while (_telemetryTail != _telemetryHead) {
+    PendingTelemetry& t = _pendingTelemetry[_telemetryTail];
+    JsonDocument doc;
+    doc["type"] = "telemetry";
+    JsonObject d = doc["data"].to<JsonObject>();
+    d["name"] = t.name;
+    if (t.generationId.length()) d["generationId"] = t.generationId;
+    if (t.error.length()) d["error"] = t.error;
+    if (!sendSystem(doc)) return;
+    _telemetryTail = (_telemetryTail + 1) % TELEMETRY_QUEUE_SIZE;
+  }
 }
 
 // App/shader "description" field -> systemDisplay on load receipt. Called
@@ -1006,6 +1112,9 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
 }
 
 void Sandbox::onCourierConnected() {
+  // Announce on every (re)connect. Queued, not sent: this callback runs in
+  // the receive/connect context where a WS send is unsafe — loop() drains.
+  requestHello();
   if (_onConnected) _onConnected();
 }
 
@@ -1094,6 +1203,7 @@ void Sandbox::loop() {
   updateSystemButtonHold();
   updateOverlays();
   updateMicStream();
+  drainOutboundSystem();
 
   if (_runState == RunState::Pending) {
     updateBootCountdown();
@@ -1826,13 +1936,15 @@ void Sandbox::processNextEvent()
 
   lua_rawgeti(_lua, LUA_REGISTRYINDEX, _onEventFuncRef);
 
-  // Push ctx table
+  // Push ctx table — the SAME shape as init/on_tick (a handler reading
+  // ctx.localtime_h used to get nil only here; uniform since 0.8).
   lua_newtable(_lua);
   lua_pushinteger(_lua, millis() - _triggerResetTime);
   lua_setfield(_lua, -2, "time_ms");
   lua_pushinteger(_lua, _triggerCount);
   lua_setfield(_lua, -2, "trigger_count");
   pushCtxGenerationId();
+  pushLocalTimeFields();
 
   // Push event table
   lua_newtable(_lua);
@@ -2017,6 +2129,11 @@ void Sandbox::notifyAppRunning(bool running) {
 
 void Sandbox::emitTelemetry(const char* name, const char* error)
 {
+  // Every emission gets a wire copy ({channel:"system", type:"telemetry"},
+  // queued — drained by loop() when deliverable). The board callback below
+  // keeps its legacy flat format unchanged.
+  queueTelemetryWire(name, error);
+
   if (!_telemetryCb) return;
 
   char buf[768];

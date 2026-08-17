@@ -38,6 +38,14 @@ struct SandboxConfig {
   // defaults). Stays at top-level — it labels the device, not the network.
   const char* deviceType = nullptr;
 
+  // Optional self-description carried in the device hello (see docs/api.md
+  // "Hello"). firmwareVersion is the BOARD build's version string (not
+  // Resident's); profileRef names the out-of-band authoring document for
+  // this device type, with its version (e.g. "m5stick@2"). Both omitted
+  // from the hello when null.
+  const char* firmwareVersion = nullptr;
+  const char* profileRef = nullptr;
+
   // Hardware bindings exposed to Lua, plus shader-expression template.
   Extensions extensions;
   ShaderTemplateFn shaderTemplate = nullptr;

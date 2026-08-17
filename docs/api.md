@@ -35,6 +35,8 @@ void loop()  { sandbox.loop(); }
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `deviceType` | `const char*` | `nullptr` | Device type string — used for the WiFiManager AP name and the default `/agents/<type>-agent/<deviceId>` WS path |
+| `firmwareVersion` | `const char*` | `nullptr` | The board build's version string, announced in the device hello (see [Hello](#hello)). Omitted from the hello when null. |
+| `profileRef` | `const char*` | `nullptr` | Name+version of this device type's out-of-band authoring document (e.g. `"m5stick@2"`), announced in the device hello. Omitted when null. |
 | `extensions` | `Extensions` | `{}` | Drivers and extensions registered with the sandbox (registration order is preserved across `begin()` / `registerModule()` / `update()` / `onAppReset()`) |
 | `shaderTemplate` | `ShaderTemplateFn` | `nullptr` | Function that converts shader fields into Lua source (see [Message Protocol](#message-protocol)) |
 | `telemetry` | `TelemetryCallback` | `nullptr` | Called with outgoing telemetry JSON strings (also settable later via `sandbox.setTelemetryCallback`) |
@@ -729,14 +731,14 @@ All callbacks receive a `ctx` table. `on_tick` also receives `dt_ms` (integer, m
 | Field | Type | Description |
 |-------|------|-------------|
 | `time_ms` | integer | Milliseconds since the current app was loaded |
-| `trigger_count` | integer | Number of `"button"` driver events since the last app load |
-| `generation_id` | string? | The `generationId` the server stamped on the app load message — present in `init`/`on_tick`/`on_event`; `nil` when the load didn't carry one (direct C++ loads, NVS restores) |
+| `trigger_count` | integer | Number of `"button"` driver events since BOOT (not reset by app loads; kept for shader compatibility) |
+| `generation_id` | string? | The `generationId` the server stamped on the app load message — `nil` when the load didn't carry one (direct C++ loads, NVS restores) |
 | `utc_h` | integer | Current UTC hour (0–23) |
 | `utc_m` | integer | Current UTC minute (0–59) |
 | `localtime_h` | integer | Local hour — equals `utc_h` unless a timezone has been set |
 | `localtime_m` | integer | Local minute — equals `utc_m` unless a timezone has been set |
 
-`localtime_h` / `localtime_m` reflect local time only after `Sandbox::setTimezone` succeeds. Otherwise they are equal to `utc_h` / `utc_m`.
+The table is IDENTICAL in every callback (since 0.8 — the wall-clock fields used to be absent from `on_event`'s ctx). `localtime_h` / `localtime_m` reflect local time only after `Sandbox::setTimezone` succeeds; otherwise they equal `utc_h` / `utc_m`.
 
 ### `event` table
 
@@ -977,7 +979,24 @@ Send `{"type":"forget"}` (or call `clearPersistedApp()`) to wipe the saved app.
 
 ### Telemetry (outgoing)
 
-The sandbox emits telemetry events via `TelemetryCallback`. Format:
+Every telemetry emission goes out TWO ways:
+
+1. **On the wire, by default** (since 0.8): a channelled control-plane frame,
+   queued and drained from `loop()` (emissions often happen in the receive
+   context, where a direct send would be a reentrant WS write):
+
+```json
+{ "channel": "system", "type": "telemetry",
+  "data": { "name": "compile_error", "generationId": "1a2b3c", "error": "..." } }
+```
+
+   The queue is a bounded ring (8 slots, 7 usable); while unsendable
+   (offline), overflow drops the oldest. Sends route through the system sink
+   when one is set (`setSystemSink` — the control-plane mirror of
+   `setEventSink`), else the transport.
+
+2. **Via `TelemetryCallback`**, when one is set — the legacy flat format,
+   unchanged, for boards that route telemetry themselves:
 
 ```json
 { "type": "telemetry", "generationId": "1a2b3c", "name": "app_compiled", "data": {} }
@@ -995,13 +1014,32 @@ The sandbox emits telemetry events via `TelemetryCallback`. Format:
 | `persist_load_failed` | A persisted app failed to load on boot and was discarded |
 | `persist_too_big` | An app was too large to save to the persistent store |
 
-Wire the callback up before `setup()` to forward telemetry over the connected WebSocket transport:
+The wire path makes the old forward-it-yourself callback wiring unnecessary; the callback remains for boards that want an additional sink.
 
-```cpp
-sandbox.setTelemetryCallback([](const char* json) {
-    sandbox.ws().sendText(json);
-});
+### Hello
+
+On every transport connect the sandbox queues a device hello — the device announcing itself so the host never has to assume its shape — drained by `loop()` (never sent from the connect context):
+
+```json
+{ "channel": "system", "type": "hello", "data": {
+  "proto": 1,
+  "deviceType": "m5stick", "firmware": "1.4.0", "bootId": "9f2c11a0",
+  "profile": "m5stick@2",
+  "features": ["chunk", "telemetry", "media"],
+  "limits": { "eventBytes": 1024, "replyBytes": 1024, "storeBytes": 2048,
+              "storeNsChars": 32, "eventsPerSec": 5 },
+  "app": { "storeNs": "oracle", "generationId": "g1" }
+} }
 ```
+
+- `proto` is `RESIDENT_PROTO_VERSION` (envelope compatibility; features ride the list).
+- `firmware` / `profile` come from `SandboxConfig::firmwareVersion` / `profileRef` (omitted when unset).
+- `features`: `chunk` and `telemetry` always; `media` when a `systemMic` is configured.
+- `limits` are the build's actual constants — hosts should size payloads against them instead of assuming.
+- `app` describes what is running (or persisted and awaiting the boot countdown): its store namespace, plus `generationId` only when the wire stamped one (a restored app's self-generated id is omitted).
+- `sandbox.requestHello()` re-queues it at any time.
+
+A host hello may answer on the same channel: `{ "channel":"system", "type":"hello", "data": { "proto":1, "features":[...], "tz":"Europe/London" } }`. The sandbox applies `tz` and records receipt (`sandbox.hostHelloSeen()`). Nothing else gates on it yet — a host that never hellos gets today's behavior in full — but future defaults (framed media, legacy-path removal) will key on it.
 
 ---
 
