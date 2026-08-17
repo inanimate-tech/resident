@@ -754,7 +754,8 @@ The table is IDENTICAL in every callback (since 0.8 — the wall-clock fields us
 | `channel` | string | Source discriminator, always present: `"app"` or `"runtime"` for wire-borne frames (both delivered here), `"driver"` for hardware/driver events and host-firmware `sendAppEvent` injections (unless the caller passed a channel) |
 | `src` | string? | The frame's `src` envelope field (e.g. `"server"`), only when present on the frame; `nil` for internal events |
 | `seq` | integer? | The frame's per-sender monotonic `seq`, only when present on the frame; `nil` for internal events |
-| `data` | table | The payload, for EVERY event — driver and wire alike (one shape since 0.8; driver fields were previously flattened onto the event table). Parsed by one set of rules: strings (unescaped), integers, floats, booleans, and nested objects/arrays to 3 container levels (deeper containers are skipped with their key; JSON `null` leaves a hole at its array index). Unparseable or oversized (> `RESIDENT_EVENT_JSON_MAX`) data drops the whole event rather than delivering it garbled |
+| `data` | table | The payload, for EVERY event — driver and wire alike (one shape since 0.8). Parsed by one set of rules: strings (unescaped), integers, floats, booleans, and nested objects/arrays to 3 container levels (deeper containers are skipped with their key; JSON `null` leaves a hole at its array index). Unparseable or oversized (> `RESIDENT_EVENT_JSON_MAX`) data drops the whole event rather than delivering it garbled |
+| *(deprecated shadow)* | scalar | DRIVER events additionally mirror their top-level scalars onto the event table (`event.index`) — the historical flattened shape, kept for one deprecation window so existing apps survive a firmware bump. Envelope keys always win over a colliding field. New code reads `event.data.*`; the shadow goes with the next major |
 
 ```lua
 function on_event(ctx, event)

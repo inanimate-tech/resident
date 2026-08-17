@@ -1992,6 +1992,31 @@ void Sandbox::processNextEvent()
     }
     pushJsonObjectToLua(_lua, dataDoc.as<JsonObjectConst>(), /*depth=*/1);
     lua_setfield(_lua, -2, "data");
+
+    // DEPRECATED compatibility shadow: driver events historically flattened
+    // their fields onto the event table (event.index), and apps in the field
+    // — including NVS-persisted ones — still read that shape. Mirror the
+    // top-level scalars there too, envelope keys excepted, so a firmware
+    // bump breaks nothing. New code reads event.data; the shadow goes with
+    // the next major.
+    if (e.type == Event::DRIVER) {
+      for (JsonPairConst kv : dataDoc.as<JsonObjectConst>()) {
+        const char* key = kv.key().c_str();
+        if (strcmp(key, "name") == 0 || strcmp(key, "from") == 0 ||
+            strcmp(key, "ts_ms") == 0 || strcmp(key, "channel") == 0 ||
+            strcmp(key, "src") == 0 || strcmp(key, "seq") == 0 ||
+            strcmp(key, "data") == 0) {
+          continue;   // the envelope always wins
+        }
+        JsonVariantConst v = kv.value();
+        if (v.is<bool>())                lua_pushboolean(_lua, v.as<bool>());
+        else if (v.is<const char*>())    lua_pushstring(_lua, v.as<const char*>());
+        else if (v.is<int64_t>())        lua_pushinteger(_lua, (lua_Integer)v.as<int64_t>());
+        else if (v.is<double>())         lua_pushnumber(_lua, v.as<double>());
+        else continue;                   // scalars only, like the old shape
+        lua_setfield(_lua, -2, key);
+      }
+    }
   }
 
   int callResult = lua_pcall(_lua, 2, 0, 0);
