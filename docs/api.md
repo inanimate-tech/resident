@@ -45,6 +45,8 @@ void loop()  { sandbox.loop(); }
 | `systemLED` | `SystemLED*` | `nullptr` | Optional LED indicator; Resident's internal handler calls `solidColor()` automatically on connection state changes |
 | `network` | `std::optional<Courier::Config>` | unset | Networking opt-in. Set ⇒ Sandbox constructs an internal `Courier::Client`, drives WiFi / transports, fires connection callbacks. Unset ⇒ standalone runtime, no WiFi pulled in. |
 | `persistApps` | `bool` | `true` | Save the last successfully-loaded app to flash and restore it on boot. Set to `false` to disable for a build. |
+| `gateTickOnConnection` | `bool` | `false` | Restore the pre-0.8 behavior of pausing `on_tick` and event dispatch while disconnected. The default is offline-first: the app keeps running; only network sends wait. |
+| `openUnsafeLibs` | `bool` | `false` | Give the app environment the full Lua stdlib. The default removes `os`/`io`/`package`/`require`/`load`/`dofile`/`loadstring`/`loadfile`/`debug`. |
 | `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
 | `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). On M5 boards use the shipped `Resident::M5Mic` (`#include <ResidentM5Mic.h>`); otherwise implement `Resident::SystemMic`. Not a `Driver` — the pump owns its `begin()`/`end()`. |
 | `persistentStore` | `Resident::PersistentStore*` | `nullptr` | Override the backing store for persistence. `nullptr` uses NVS on device; inject a fake in tests. |
@@ -840,6 +842,7 @@ An app-scoped **persistent** KV slot of scalars — state here survives `loadApp
 | `store.set(key, value)` | boolean | Set a scalar (string/number/boolean). `nil` deletes. `false` if the value is non-scalar or the write would exceed the budget (rejected whole — no partial writes) |
 | `store.keys()` | array | All keys currently in the slot |
 | `store.clear()` | — | Empty the slot |
+| `store.remaining()` | integer | Bytes left in the persisted budget (0 when at/over) |
 
 **Scoping / reset policy:** the slot is namespaced by an app identity the server provides on the load message — `{channel:"system", type:"app", code:"...", storeNs:"<id ≤32 chars>"}`. Loading with the **same** `storeNs` preserves the slot; a **different** `storeNs` clears it first (persisted immediately); missing `storeNs` uses the shared default namespace `"app"`. The namespace is persisted alongside the data, so the policy holds across reboots. Direct C++ `loadApp()` calls leave the namespace unchanged.
 
@@ -1015,6 +1018,8 @@ Every telemetry emission goes out TWO ways:
 | `app_restored` | A persisted app was successfully restored on boot |
 | `persist_load_failed` | A persisted app failed to load on boot and was discarded |
 | `persist_too_big` | An app was too large to save to the persistent store |
+| `store_full` | An over-budget `store.set` was rejected; `data.error` carries the key (once per key per app load) |
+| `dropped` | The drop counter's periodic report; `data.count` = items silently dropped since boot (ring overflow, oversize payloads, rate limits, closed legacy paths). At most one report per minute, only when changed |
 
 The wire path makes the old forward-it-yourself callback wiring unnecessary; the callback remains for boards that want an additional sink.
 

@@ -31,6 +31,13 @@
 // `features` list instead.
 #define RESIDENT_PROTO_VERSION 1
 
+// Event ring depth (slots; one is kept free, so usable depth is one less).
+// Override with a build flag, e.g. -DRESIDENT_EVENT_RING_SIZE=16.
+// RAM note: each slot holds RESIDENT_EVENT_JSON_MAX bytes of data.
+#ifndef RESIDENT_EVENT_RING_SIZE
+#define RESIDENT_EVENT_RING_SIZE 8
+#endif
+
 namespace Resident {
 
 class Sandbox {
@@ -265,11 +272,17 @@ public:
     // Queue the device hello for the next loop() drain. Called internally on
     // every transport connect; public so boards and tests can re-announce.
     void requestHello() { _helloPending = true; }
-    // True once a host hello has been received this boot. Nothing gates on
-    // it yet — it exists so future behavior (framed media, legacy-path
-    // removal) can key on "the host speaks hello" per the reverse-hello
-    // compatibility rule.
+    // True once a host hello has been received this boot. The legacy
+    // un-channelled path and the app_event wrapper close when it is true
+    // (the reverse-hello rule from the receiving side); future defaults
+    // key on it the same way.
     bool hostHelloSeen() const { return _hostHelloSeen; }
+
+    // Count a silently-dropped item (ring overflow, oversize payload,
+    // rate limit, closed legacy path). Public so internal modules
+    // (EventsModule) can report through the same counter; reported
+    // upstream as throttled `dropped` telemetry.
+    void countDrop() { _dropCount++; }
 
     // ── Identity / status accessors ──
     const String& getDeviceId() const { return _deviceId; }
@@ -361,14 +374,24 @@ private:
     bool _helloPending = false;
     bool _hostHelloSeen = false;
     String _bootId;
-    struct PendingTelemetry { String name; String generationId; String error; };
+    struct PendingTelemetry { String name; String generationId; String error; long count = -1; };
     static constexpr int TELEMETRY_QUEUE_SIZE = 8;
     PendingTelemetry _pendingTelemetry[TELEMETRY_QUEUE_SIZE];
     int _telemetryHead = 0;
     int _telemetryTail = 0;
-    void queueTelemetryWire(const char* name, const char* error);
+    void queueTelemetryWire(const char* name, const char* error, long count = -1);
     void drainOutboundSystem();
     bool sendHello();
+
+    // ── Drop accounting (loss is reported, never silent) ──
+    // One counter for every silent-loss site: ring overflow, oversize
+    // payloads (both directions), rate-limited publishes, closed legacy
+    // paths. Reported as `dropped` telemetry (count = cumulative since
+    // boot), throttled to one report per interval and only when changed.
+    static constexpr unsigned long DROP_REPORT_INTERVAL_MS = 60000;
+    uint32_t _dropCount = 0;
+    uint32_t _lastReportedDrops = 0;
+    unsigned long _lastDropReportMs = 0;
 
     // Description-on-load display (setShowDescriptions).
     bool _showDescriptions = true;
@@ -528,7 +551,7 @@ private:
         uint32_t seq;
         bool hasSeq;
     };
-    static constexpr int SANDBOX_MAX_EVENTS = 8;
+    static constexpr int SANDBOX_MAX_EVENTS = RESIDENT_EVENT_RING_SIZE;
     Event _events[SANDBOX_MAX_EVENTS];
     int _eventHead = 0;
     int _eventTail = 0;

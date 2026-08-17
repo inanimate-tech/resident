@@ -82,6 +82,17 @@ struct SandboxConfig {
   bool persistApps = true;
   PersistentStore* persistentStore = nullptr;
 
+  // Offline-first (0.8): ticking and event dispatch no longer gate on
+  // connectivity — a disconnected device keeps running its app; only
+  // network sends wait. Set true to restore the old gated behavior.
+  bool gateTickOnConnection = false;
+
+  // Sandbox hardening (0.8): by default the app environment does NOT get
+  // os / io / package / require / load / dofile / loadstring / loadfile /
+  // debug. Set true to open the full standard library (trusted builds
+  // whose apps predate the closed default).
+  bool openUnsafeLibs = false;
+
   // Networking opt-in. Presence ⇒ Sandbox constructs a Courier::Client with
   // this config, drives WiFi/transports, fires onConnected/onMessage/etc.
   // Absence ⇒ standalone runtime, no WiFi pulled in.

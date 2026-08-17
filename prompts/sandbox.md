@@ -20,8 +20,13 @@ function on_event(ctx, e)       -- once per queued event
 end
 ```
 
-The app keeps running across disconnects. Errors in a callback are contained:
-that dispatch dies (and is reported), the app survives.
+The app keeps running across disconnects — timers fire and input dispatches
+offline; only network sends wait. Errors in a callback are contained: that
+dispatch dies (and is reported), the app survives.
+
+The environment is a sandbox: there is no `os`, `io`, `require`, `load`,
+`dofile`, or `debug`. The pure libraries (`string`, `table`, `math`,
+`coroutine`) are all present.
 
 ## ctx table
 
@@ -83,6 +88,7 @@ local n = store.get("count") or 0    -- string | number | boolean | nil
 store.set("count", n + 1)            -- -> boolean; nil value deletes
 store.keys()                          -- array of key strings
 store.clear()
+store.remaining()                     -- bytes left in the budget
 ```
 
 - `store.set` returns `false` (and changes nothing) for non-scalar values or

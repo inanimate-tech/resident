@@ -276,6 +276,13 @@ void Sandbox::initialize()
   }
   lua_setglobal(_lua, _storeModule.name());
 
+  // Budget rejections surface as telemetry (once per key per load) — an
+  // app can no longer run for days believing state persists and lose it
+  // all at reboot.
+  _storeModule.onBudgetReject([this](const char* key) {
+    emitTelemetry("store_full", key);
+  });
+
   _triggerResetTime = millis();
   _lastTickTime = millis();
 
@@ -311,6 +318,20 @@ void Sandbox::setupLuaEnvironment()
   lua_pushcfunction(_lua, lua_log_error);
   lua_setfield(_lua, -2, "error");
   lua_setglobal(_lua, "log");
+
+  // Sandbox hardening (0.8): the app environment does not get the unsafe
+  // stdlib unless the board opts in — it is a sandbox. collectgarbage and
+  // the pure libraries (string/table/math/coroutine/utf8) stay.
+  if (!_config.openUnsafeLibs) {
+    static const char* const kUnsafeGlobals[] = {
+        "os", "io", "package", "require", "dofile",
+        "load", "loadstring", "loadfile", "debug",
+    };
+    for (const char* g : kUnsafeGlobals) {
+      lua_pushnil(_lua);
+      lua_setglobal(_lua, g);
+    }
+  }
 
   // time module
   lua_newtable(_lua);
@@ -478,6 +499,15 @@ void Sandbox::onCourierMessage(const char* transportName,
   }
 
   // ── Legacy un-channelled path (deprecated) ──
+  // CLOSED once the host speaks hello (the reverse-hello rule, from the
+  // receiving side): a hello-speaking host has no business sending
+  // un-channelled frames, so they are dropped and counted rather than
+  // routed through the legacy filter.
+  if (_hostHelloSeen) {
+    countDrop();
+    Serial.printf("Resident::Sandbox: un-channelled '%s' dropped (host speaks hello; legacy path closed)\n", type);
+    return;
+  }
   Serial.printf("[deprecated] un-channelled '%s' message; sender should stamp channel\n", type);
   if (_messageFilter && !_messageFilter(transportName, type, doc)) return;
   bool isLoad = strcmp(type, "app") == 0 || strcmp(type, "shader") == 0;
@@ -495,7 +525,13 @@ void Sandbox::handleAppMessage(const char* transportName, const char* type,
   (void)transportName;
   const char* name = type;
   if (strcmp(type, "app_event") == 0) {
-    // Legacy envelope on the data plane — removed when the shims retire.
+    // Legacy envelope on the data plane — closed once the host speaks
+    // hello (same rule as the un-channelled path), dropped-and-counted.
+    if (_hostHelloSeen) {
+      countDrop();
+      Serial.println("Resident::Sandbox: app_event wrapper dropped (host speaks hello; legacy path closed)");
+      return;
+    }
     Serial.println("[deprecated] app_event wrapper; send channel:\"app\" with type=<event name>");
     name = doc["name"] | "";
     if (!name[0]) return;
@@ -512,6 +548,7 @@ void Sandbox::handleAppMessage(const char* transportName, const char* type,
   if (doc["data"].is<JsonObject>()) {
     // Drop, don't truncate: a cut-off payload must never reach the ring.
     if (measureJson(doc["data"]) + 1 > sizeof(dataJson)) {
+      countDrop();
       Serial.printf("Resident::Sandbox: incoming data exceeds RESIDENT_EVENT_JSON_MAX; "
                     "app event '%s' dropped\n", name);
       return;
@@ -691,7 +728,7 @@ bool Sandbox::sendHello()
 
 // Wire copy of every telemetry emission. Bounded ring; overflow drops the
 // oldest (telemetry is a report, not a ledger).
-void Sandbox::queueTelemetryWire(const char* name, const char* error)
+void Sandbox::queueTelemetryWire(const char* name, const char* error, long count)
 {
   int nextHead = (_telemetryHead + 1) % TELEMETRY_QUEUE_SIZE;
   if (nextHead == _telemetryTail) {
@@ -701,11 +738,21 @@ void Sandbox::queueTelemetryWire(const char* name, const char* error)
   t.name = name;
   t.generationId = _generationId;
   t.error = error ? error : "";
+  t.count = count;
   _telemetryHead = nextHead;
 }
 
 void Sandbox::drainOutboundSystem()
 {
+  // The periodic drop report: cumulative since boot, queued only when the
+  // count changed and the interval passed — loss is reported, never silent.
+  if (_dropCount != _lastReportedDrops &&
+      millis() - _lastDropReportMs >= DROP_REPORT_INTERVAL_MS) {
+    queueTelemetryWire("dropped", nullptr, (long)_dropCount);
+    _lastReportedDrops = _dropCount;
+    _lastDropReportMs = millis();
+  }
+
   // A system sink (tests, platform wrappers) counts as deliverable even
   // networkless; otherwise wait for the transport.
   if (!_systemSink && !isConnected()) return;
@@ -721,6 +768,7 @@ void Sandbox::drainOutboundSystem()
     d["name"] = t.name;
     if (t.generationId.length()) d["generationId"] = t.generationId;
     if (t.error.length()) d["error"] = t.error;
+    if (t.count >= 0) d["count"] = t.count;
     if (!sendSystem(doc)) return;
     _telemetryTail = (_telemetryTail + 1) % TELEMETRY_QUEUE_SIZE;
   }
@@ -743,6 +791,7 @@ bool Sandbox::publishEvent(const char* name, const char* dataJson)
 {
   if (!name || !name[0]) return false;
   if (!_eventsModule.takeToken()) {
+    countDrop();
     Serial.println("Resident::Sandbox: publishEvent rate-limited; dropped");
     return false;
   }
@@ -1000,6 +1049,7 @@ int EventsModule::send(lua_State* L)
   if (lua_gettop(L) >= 2 && lua_istable(L, 2)) {
     if (!serializeLuaTableToJson(L, 2, dataJson, sizeof(dataJson))) {
       // Overflow: never send a cut-off payload — drop the event instead.
+      if (_sandbox) _sandbox->countDrop();
       Serial.println("Resident::Sandbox: events.send data exceeds "
                      "RESIDENT_EVENT_JSON_MAX; event dropped");
       lua_pushboolean(L, false);
@@ -1049,6 +1099,7 @@ void Sandbox::dispatchMessage(const char* transportName,
     if (doc["data"].is<JsonObject>()) {
       // Same drop-don't-truncate guard as handleAppMessage.
       if (measureJson(doc["data"]) + 1 > sizeof(dataJson)) {
+        countDrop();
         Serial.printf("Resident::Sandbox: incoming data exceeds RESIDENT_EVENT_JSON_MAX; "
                       "app event '%s' dropped\n", name ? name : "");
         return;
@@ -1212,8 +1263,11 @@ void Sandbox::loop() {
 
   if (_runState != RunState::Running) return;
 
-  // Networked apps tick only once connected (unchanged); standalone always.
-  if (_courier.has_value() && !isConnected()) return;
+  // Offline-first (0.8): ticking and event dispatch never gate on
+  // connectivity — the reflex tier keeps running through a WiFi blip; only
+  // network sends wait (their drains gate themselves). Boards that relied
+  // on the old gated behavior opt back in via gateTickOnConnection.
+  if (_config.gateTickOnConnection && _courier.has_value() && !isConnected()) return;
 
   unsigned long now = millis();
   unsigned long elapsed = now - _lastTickTime;
@@ -1263,7 +1317,10 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   // The store slot deliberately does NOT reset here — surviving loadApp is
   // its point. App unload is a flush boundary instead: any dirty state the
   // outgoing app left is persisted now, not after the debounce quiet.
+  // (The once-per-key store_full gate does reset: a new app gets fresh
+  // rejection reports.)
   _storeModule.flush();
+  _storeModule.resetRejections();
 
   // Generation ID: server-stamped when the load message carried one
   // (surfaced to Lua as ctx.generation_id), self-generated otherwise
@@ -2034,6 +2091,7 @@ void Sandbox::pushAppEvent(const char* name, const char* dataJson, const char* f
 {
   int nextHead = (_eventHead + 1) % SANDBOX_MAX_EVENTS;
   if (nextHead == _eventTail) {
+    countDrop();   // ring full — the oldest queued event is overwritten
     _eventTail = (_eventTail + 1) % SANDBOX_MAX_EVENTS;
   }
 
@@ -2071,6 +2129,7 @@ void Sandbox::driverEventHandler(void* ctx, const char* name,
   int nextHead = (self->_eventHead + 1) % SANDBOX_MAX_EVENTS;
   if (nextHead == self->_eventTail) {
     // Ring buffer full — drop oldest
+    self->countDrop();
     self->_eventTail = (self->_eventTail + 1) % SANDBOX_MAX_EVENTS;
   }
 
