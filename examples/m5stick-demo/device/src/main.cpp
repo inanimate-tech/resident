@@ -1,5 +1,6 @@
 #include <M5Unified.h>
 #include <Resident.h>
+#include <ResidentLgfxModule.h>
 #include "DisplayDriver.h"
 #include "IMUDriver.h"
 #include "BuzzerDriver.h"
@@ -29,10 +30,19 @@ IMUDriver imuDriver;
 BuzzerDriver buzzerDriver{255};
 PushButtonsDriver buttonDriver{buttonConfig};
 
+// lgfx: idiomatic LovyanGFX drawing from Lua (local g = lgfx.bind("main")).
+// Shares the DisplayDriver's off-screen sprite; g:flip() presents it via the
+// driver's repaint() path, same as screen.flip().
+Resident::LgfxLovyanTarget<M5Canvas> lgfxMain{
+    &displayDriver.canvas(), [] { displayDriver.repaint(); }};
+Resident::LgfxModule lgfxModule;
+
 Resident::SandboxConfig makeConfig() {
     Resident::SandboxConfig cfg;
     cfg.deviceType    = "stick";
-    cfg.extensions    = {&displayDriver, &imuDriver, &buzzerDriver, &buttonDriver};
+    lgfxModule.addDisplay("main", &lgfxMain);
+    cfg.extensions    = {&displayDriver, &imuDriver, &buzzerDriver,
+                         &buttonDriver, &lgfxModule};
     cfg.systemDisplay = &displayDriver;
     cfg.systemButton  = &buttonDriver;   // front button: tap = load, hold = forget
 

@@ -14,6 +14,17 @@
 #include "ResidentSandboxConfig.h"
 #include "ResidentOverlay.h"
 #include "ResidentEvents.h"
+#include "ResidentStoreModule.h"
+
+// Maximum size (bytes, including the NUL terminator) of a serialized event
+// `data` JSON payload — used by the outgoing events.send serializer, the
+// incoming app-channel data buffer, and the event ring's per-slot storage.
+// Override with a build flag, e.g. -DRESIDENT_EVENT_JSON_MAX=2048.
+// RAM note: the event ring holds SANDBOX_MAX_EVENTS (8) slots, so raising
+// this grows the Sandbox by 8x the increase.
+#ifndef RESIDENT_EVENT_JSON_MAX
+#define RESIDENT_EVENT_JSON_MAX 1024
+#endif
 
 namespace Resident {
 
@@ -54,8 +65,22 @@ public:
     // Load a shader from fields (uses shader template)
     void loadShader(const ShaderFields& fields);
 
-    // Send an app event to the running app
-    void sendAppEvent(const char* name, const char* dataJson);
+    // Run a Lua chunk in the RUNNING app's lua_State — the update lattice's
+    // middle rung: the app's globals, timers, and event flow survive, and
+    // the chunk's re-registrations take effect through the app's own
+    // last-registration-wins registries. init() is NOT re-called. Never
+    // persisted (chunks are ephemeral; the server re-sends them after a
+    // reboot). Returns false — with the app left running and untouched — on
+    // compile error, runtime error, no app loaded, or during a
+    // deferAppLoads window (chunks are DROPPED with a log, not stashed).
+    // Wire entry: system-channel {type:"chunk", code:"..."}.
+    bool loadChunk(const char* code);
+
+    // Send an app event to the running app. Host-firmware injections are
+    // tagged channel "driver" by default (delivered as e.channel in Lua);
+    // pass "app"/"runtime" to impersonate a wire channel deliberately.
+    void sendAppEvent(const char* name, const char* dataJson,
+                      const char* channel = "driver");
 
     // Forget any persisted app (so the next boot has nothing to restore).
     void clearPersistedApp();
@@ -299,6 +324,9 @@ private:
     // _eventsModule (not _events) — that name is already taken by the
     // Event ring buffer below.
     EventsModule _eventsModule;
+    // The Lua `store` KV slot — survives loadApp; namespaced by the app-load
+    // message's storeNs; debounced write-through to _store (arc A4).
+    StoreModule _storeModule;
     EventSink _eventSink;
     unsigned long _eventNonceCounter = 0;
 
@@ -449,9 +477,16 @@ private:
     struct Event {
         enum Type { BUTTON, APP_EVENT, DRIVER } type;
         char name[32];
-        char data[256];
+        char data[RESIDENT_EVENT_JSON_MAX];
         char from[64];
         uint32_t ts_ms;
+        // Envelope fields (APP_EVENT): channel discriminates source
+        // (app/runtime for wire-borne frames, driver for host-firmware
+        // injections); src/seq are surfaced only when the frame carried them.
+        char channel[16];
+        char src[16];
+        uint32_t seq;
+        bool hasSeq;
     };
     static constexpr int SANDBOX_MAX_EVENTS = 8;
     Event _events[SANDBOX_MAX_EVENTS];
@@ -472,11 +507,22 @@ private:
     // Lua setup
     void setupLuaEnvironment();
     bool compileApp(const char* code);
+    // Re-take the registry ref for a lifecycle global (init/on_tick/on_event)
+    // iff it currently holds a function — used by loadChunk so a chunk's
+    // redefinition reaches the dispatchers, which call cached refs.
+    void refreshLifecycleRef(const char* global, int& ref);
     bool callInit();  // true if init ran without error (or no init function)
     void callOnTick(unsigned long dt_ms);
     void processNextEvent();
     void pushLocalTimeFields();  // pushes utc_h/utc_m/localtime_h/localtime_m onto the Lua table at stack top
-    void pushAppEvent(const char* name, const char* dataJson, const char* from, uint32_t ts_ms);
+    // Sets ctx.generation_id on the table at stack top — only when the app
+    // load carried a server-stamped generationId (Lua sees nil otherwise).
+    void pushCtxGenerationId();
+    String _nextGenerationId;             // wire-provided id for the NEXT load
+    bool _generationIdFromWire = false;   // current _generationId came off the wire
+    void pushAppEvent(const char* name, const char* dataJson, const char* from, uint32_t ts_ms,
+                      const char* channel = "driver", const char* src = "",
+                      bool hasSeq = false, uint32_t seq = 0);
     void notifyAppRunning(bool running);
     static void driverEventHandler(void* ctx, const char* name,
                                    const EventField* fields, int fieldCount);

@@ -120,7 +120,7 @@ Math globals registered without the `math.` prefix:
 |-------|-------|
 | `on_tick` rate | 10 FPS (100 ms interval) |
 | Event ring buffer | 8 events; oldest dropped when full |
-| `event.data` (app_event JSON) | 256 bytes |
+| `event.data` (app-channel JSON) | `RESIDENT_EVENT_JSON_MAX` bytes (default 1024) |
 | Driver event field name | 32 chars |
 | Runtime-error rate limit | 3 errors then cooldown of 5 s |
 

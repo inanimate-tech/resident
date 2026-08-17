@@ -46,6 +46,11 @@ public:
   // init(); tick-driven apps would otherwise redraw on their next on_tick.
   void repaint();
 
+  // The off-screen sprite, for sharing with the lgfx module: register it as
+  // an LgfxLovyanTarget with repaint() as the presenter and both drawing
+  // surfaces (screen.* verbs and lgfx) hit the same framebuffer.
+  M5Canvas& canvas() { return _canvas; }
+
 protected:
   M5Canvas _canvas{&M5.Display};
 

@@ -269,6 +269,13 @@ void Sandbox::initialize()
   }
   lua_setglobal(_lua, _eventsModule.name());
 
+  lua_newtable(_lua);
+  {
+    LuaModule m(_lua, &_storeModule);
+    _storeModule.registerModule(m);
+  }
+  lua_setglobal(_lua, _storeModule.name());
+
   _triggerResetTime = millis();
   _lastTickTime = millis();
 
@@ -368,6 +375,11 @@ void Sandbox::setup()
   }
 #endif
 
+  // 5. Lua `store` slot: hydrate RAM from the persisted blob (no-op without
+  // a store — the module still works RAM-only, it just won't survive reboot).
+  _storeModule.attach(_store);
+  _storeModule.loadPersisted();
+
   // Load any persisted app source. It is not armed here — the identity screen
   // and its countdown appear only once the device is ready to show them: on
   // first connection (networked), or right below (standalone). A networked
@@ -449,6 +461,10 @@ void Sandbox::onCourierMessage(const char* transportName,
   const char* channel = doc["channel"] | "";
   if (channel[0]) {
     if (strcmp(channel, "app") == 0)    { handleAppMessage(transportName, type, doc); return; }
+    // Runtime channel (framework events: heard, errors, agent status) rides
+    // the same queue as app frames — delivered to on_event with
+    // e.channel == "runtime". Reserved names will ride it later.
+    if (strcmp(channel, "runtime") == 0) { handleAppMessage(transportName, type, doc); return; }
     if (strcmp(channel, "system") == 0) { handleSystemMessage(transportName, type, doc); return; }
     MessageCallback* cb = lookupChannelSlot(channel);
     if (cb && *cb) { (*cb)(transportName, type, doc); return; }
@@ -488,11 +504,24 @@ void Sandbox::handleAppMessage(const char* transportName, const char* type,
   // or no on_event handler → drop. The event ring is not reset on app load, so
   // queueing here would leak stale events into whatever app loads next.
   if (!isAppRunning() || !_onEventFuncRef) return;
-  char dataJson[256] = "{}";
+  char dataJson[RESIDENT_EVENT_JSON_MAX] = "{}";
   if (doc["data"].is<JsonObject>()) {
+    // Drop, don't truncate: a cut-off payload must never reach the ring.
+    if (measureJson(doc["data"]) + 1 > sizeof(dataJson)) {
+      Serial.printf("Resident::Sandbox: incoming data exceeds RESIDENT_EVENT_JSON_MAX; "
+                    "app event '%s' dropped\n", name);
+      return;
+    }
     serializeJson(doc["data"], dataJson, sizeof(dataJson));
   }
-  pushAppEvent(name, dataJson, from, doc["ts_ms"] | millis());
+  // Envelope fields carried through to Lua: channel ("app" or "runtime" —
+  // both route here), and src/seq only when the frame stamped them.
+  const char* channel = doc["channel"] | "app";
+  const char* src = doc["src"] | "";
+  bool hasSeq = doc["seq"].is<uint32_t>();
+  uint32_t seq = doc["seq"] | 0U;
+  pushAppEvent(name, dataJson, from, doc["ts_ms"] | millis(),
+               channel, src, hasSeq, seq);
 }
 
 bool Sandbox::isDuplicateNonce(const char* nonce)
@@ -519,7 +548,15 @@ void Sandbox::handleSystemMessage(const char* transportName, const char* type,
   if (_deferLoads && isLoad) { stashDeferredLoad(doc); return; }
   if (strcmp(type, "app") == 0) {
     const char* code = doc["code"];
-    if (code) loadApp(code);
+    if (code) {
+      // Store scoping: the server's app identity for the Lua store slot.
+      // Missing storeNs = shared default "app". A namespace different from
+      // the persisted one clears the slot (see StoreModule::setNamespace).
+      _storeModule.setNamespace(doc["storeNs"] | "app");
+      // Optional server-stamped generation id → ctx.generation_id in Lua.
+      _nextGenerationId = doc["generationId"] | "";
+      loadApp(code);
+    }
     return;
   }
   if (strcmp(type, "shader") == 0) {
@@ -532,6 +569,15 @@ void Sandbox::handleSystemMessage(const char* transportName, const char* type,
       }
     }
     loadShader(fields);
+    return;
+  }
+  if (strcmp(type, "chunk") == 0) {
+    // In-sandbox chunk load (update lattice A6). Deliberately OUTSIDE the
+    // app/shader stash-deferral above: a chunk during a deferred-load
+    // window is dropped inside loadChunk (see its comment), never stashed,
+    // and never persisted.
+    const char* code = doc["code"];
+    if (code) loadChunk(code);
     return;
   }
   if (strcmp(type, "forget") == 0) { clearPersistedApp(); return; }
@@ -604,9 +650,15 @@ bool Sandbox::publishEvent(const char* name, const char* dataJson)
     doc["data"].to<JsonObject>();
   }
   doc["from"] = _deviceId;
+  // Envelope source + per-sender monotonic sequence (per-boot, uint32). One
+  // counter for the device as sender; the nonce reuses the same count, so
+  // nonce suffix and seq stay in lockstep for a given frame.
+  uint32_t seq = (uint32_t)++_eventNonceCounter;
+  doc["src"] = "device";
+  doc["seq"] = seq;
   char nonce[64];
   snprintf(nonce, sizeof(nonce), "%s:%lu", _deviceId.c_str(),
-           (unsigned long)++_eventNonceCounter);
+           (unsigned long)seq);
   doc["nonce"] = nonce;
   doc["ts_ms"] = millis();
 
@@ -615,74 +667,238 @@ bool Sandbox::publishEvent(const char* name, const char* dataJson)
   return false;
 }
 
+// ── Lua table → JSON serializer (outgoing events.send data) ──────────────
+//
+// Successor to the flat serializer ported from RoomModule::announce. Adds:
+//   - proper JSON string escaping (" \ and control chars) for keys AND values
+//   - booleans (Lua true/false → JSON true/false)
+//   - nested tables to LUA_JSON_MAX_DEPTH table levels: string-keyed tables
+//     become objects; tables with a non-empty array part (lua_rawlen > 0)
+//     become arrays of elements 1..rawlen (string keys of a mixed table are
+//     ignored — don't mix). The TOP level is always an object: the wire
+//     format is a JSON object in the envelope's `data` field, and top-level
+//     integer keys are skipped exactly as before.
+//   - overflow is an error, not a truncation: the writer sets a flag and the
+//     caller drops the event instead of sending a cut-off payload.
+//
+// Kept identical for existing flat string/number payloads (byte-for-byte,
+// escaping aside): pair order is lua_next order, integers print via %lld,
+// floats via %g, unsupported values (functions, userdata, nil, too-deep
+// tables) are skipped along with their key, no data → "{}".
+//
+// Test cases live in test/unit/test/test_events_module — serializer cases
+// call serializeLuaTableToJson directly on a bare lua_State.
+namespace {
+
+constexpr int LUA_JSON_MAX_DEPTH = 3;  // table levels, counting the top one
+
+// Bounded writer: never writes past cap, never truncates silently — once
+// `overflow` is set every subsequent write is a no-op and the caller must
+// discard the buffer.
+struct JsonWriter {
+  char* buf = nullptr;
+  size_t cap = 0;
+  size_t len = 0;
+  bool overflow = false;
+
+  void putc_(char c) {
+    if (overflow) return;
+    if (len + 1 >= cap) { overflow = true; return; }  // reserve NUL slot
+    buf[len++] = c;
+  }
+  void puts_(const char* s) { while (*s) putc_(*s++); }
+  void terminate() { buf[len < cap ? len : cap - 1] = '\0'; }
+};
+
+void writeJsonString(JsonWriter& w, const char* s) {
+  w.putc_('"');
+  for (const unsigned char* p = (const unsigned char*)s; *p; p++) {
+    unsigned char c = *p;
+    switch (c) {
+      case '"':  w.puts_("\\\""); break;
+      case '\\': w.puts_("\\\\"); break;
+      case '\n': w.puts_("\\n");  break;
+      case '\r': w.puts_("\\r");  break;
+      case '\t': w.puts_("\\t");  break;
+      default:
+        if (c < 0x20) {
+          char esc[8];
+          snprintf(esc, sizeof(esc), "\\u%04x", c);
+          w.puts_(esc);
+        } else {
+          w.putc_((char)c);
+        }
+    }
+  }
+  w.putc_('"');
+}
+
+void writeLuaObject(lua_State* L, int idx, JsonWriter& w, int depth);
+void writeLuaArray(lua_State* L, int idx, JsonWriter& w, int depth);
+
+// True iff the value at idx can be serialized. `depth` is the depth of the
+// CONTAINING table; a nested table is only supported while depth <
+// LUA_JSON_MAX_DEPTH. Checked BEFORE writing an object key so unsupported
+// values are skipped without leaving a dangling `"key":`.
+bool luaValueSupported(lua_State* L, int idx, int depth) {
+  switch (lua_type(L, idx)) {
+    case LUA_TSTRING:
+    case LUA_TNUMBER:
+    case LUA_TBOOLEAN: return true;
+    case LUA_TTABLE:   return depth < LUA_JSON_MAX_DEPTH;
+    default:           return false;
+  }
+}
+
+// Writes the (supported — see luaValueSupported) value at idx.
+void writeLuaValue(lua_State* L, int idx, JsonWriter& w, int depth) {
+  idx = lua_absindex(L, idx);
+  switch (lua_type(L, idx)) {
+    case LUA_TSTRING:
+      writeJsonString(w, lua_tostring(L, idx));
+      break;
+    case LUA_TNUMBER: {
+      char num[40];
+      if (lua_isinteger(L, idx)) {
+        snprintf(num, sizeof(num), "%lld", (long long)lua_tointeger(L, idx));
+      } else {
+        snprintf(num, sizeof(num), "%g", lua_tonumber(L, idx));
+      }
+      w.puts_(num);
+      break;
+    }
+    case LUA_TBOOLEAN:
+      w.puts_(lua_toboolean(L, idx) ? "true" : "false");
+      break;
+    case LUA_TTABLE:
+      if (lua_rawlen(L, idx) > 0) writeLuaArray(L, idx, w, depth + 1);
+      else                        writeLuaObject(L, idx, w, depth + 1);
+      break;
+    default:
+      break;  // unreachable — callers gate on luaValueSupported
+  }
+}
+
+void writeLuaObject(lua_State* L, int idx, JsonWriter& w, int depth) {
+  idx = lua_absindex(L, idx);
+  w.putc_('{');
+  bool first = true;
+  lua_pushnil(L);
+  while (lua_next(L, idx) != 0) {
+    // String keys only (as ever: lua_tostring on a non-string key would
+    // mutate it under lua_next). Traversal always runs to completion so the
+    // Lua stack stays balanced even after overflow.
+    if (lua_type(L, -2) == LUA_TSTRING && luaValueSupported(L, -1, depth)) {
+      if (!first) w.putc_(',');
+      writeJsonString(w, lua_tostring(L, -2));
+      w.putc_(':');
+      writeLuaValue(L, -1, w, depth);
+      first = false;
+    }
+    lua_pop(L, 1);  // pop value, keep key for next iteration
+  }
+  w.putc_('}');
+}
+
+void writeLuaArray(lua_State* L, int idx, JsonWriter& w, int depth) {
+  idx = lua_absindex(L, idx);
+  lua_Integer n = (lua_Integer)lua_rawlen(L, idx);
+  w.putc_('[');
+  for (lua_Integer i = 1; i <= n; i++) {
+    lua_rawgeti(L, idx, i);
+    if (i > 1) w.putc_(',');
+    if (luaValueSupported(L, -1, depth)) writeLuaValue(L, -1, w, depth);
+    else                                 w.puts_("null");  // hold the position
+    lua_pop(L, 1);
+  }
+  w.putc_(']');
+}
+
+// Serialize the Lua table at idx into buf as a JSON object. Returns false on
+// overflow — buf then holds a truncated (still NUL-terminated) string that
+// MUST NOT be sent.
+bool serializeLuaTableToJson(lua_State* L, int idx, char* buf, size_t cap) {
+  JsonWriter w{buf, cap};
+  writeLuaObject(L, idx, w, /*depth=*/1);
+  w.terminate();
+  return !w.overflow;
+}
+
+// ── JSON → Lua table (incoming app-channel event data) ───────────────────
+//
+// Mirror of the writer above, for processNextEvent's APP_EVENT delivery.
+// ArduinoJson does the parsing (so string unescaping — \" \\ \n \r \t
+// \u00XX — is correct); these helpers walk the parsed document onto the Lua
+// stack with the same value rules as the outgoing side: strings, integers
+// (lua_pushinteger), floats (lua_pushnumber), booleans, and nested
+// objects/arrays to LUA_JSON_MAX_DEPTH container levels (counting the
+// top-level data object). Deeper containers and JSON null have no
+// representation: an object member is skipped with its key; an array
+// element is left as a hole at its index — the incoming twin of the
+// outgoing null placeholder, so later elements keep their positions.
+
+void pushJsonObjectToLua(lua_State* L, JsonObjectConst obj, int depth);
+void pushJsonArrayToLua(lua_State* L, JsonArrayConst arr, int depth);
+
+// Pushes the JSON value as a Lua value and returns true, or pushes nothing
+// and returns false. `depth` is the depth of the CONTAINING container.
+bool pushJsonValueToLua(lua_State* L, JsonVariantConst v, int depth) {
+  if (v.is<bool>()) { lua_pushboolean(L, v.as<bool>()); return true; }
+  if (v.is<const char*>()) { lua_pushstring(L, v.as<const char*>()); return true; }
+  if (v.is<int64_t>()) { lua_pushinteger(L, (lua_Integer)v.as<int64_t>()); return true; }
+  if (v.is<double>()) { lua_pushnumber(L, v.as<double>()); return true; }
+  if (v.is<JsonObjectConst>()) {
+    if (depth >= LUA_JSON_MAX_DEPTH) return false;
+    pushJsonObjectToLua(L, v.as<JsonObjectConst>(), depth + 1);
+    return true;
+  }
+  if (v.is<JsonArrayConst>()) {
+    if (depth >= LUA_JSON_MAX_DEPTH) return false;
+    pushJsonArrayToLua(L, v.as<JsonArrayConst>(), depth + 1);
+    return true;
+  }
+  return false;  // null / unrepresentable
+}
+
+void pushJsonObjectToLua(lua_State* L, JsonObjectConst obj, int depth) {
+  lua_createtable(L, 0, (int)obj.size());
+  for (JsonPairConst kv : obj) {
+    if (pushJsonValueToLua(L, kv.value(), depth)) {
+      lua_setfield(L, -2, kv.key().c_str());
+    }
+  }
+}
+
+void pushJsonArrayToLua(lua_State* L, JsonArrayConst arr, int depth) {
+  lua_createtable(L, (int)arr.size(), 0);
+  lua_Integer i = 1;
+  for (JsonVariantConst v : arr) {
+    if (pushJsonValueToLua(L, v, depth)) lua_rawseti(L, -2, i);
+    i++;
+  }
+}
+
+}  // namespace
+
 // events.send(name [, data_table]) -> boolean. Defined here (not in
 // ResidentEvents.h) because it needs Sandbox::publishEvent, i.e. Sandbox as
-// a complete type — see the linkage note atop ResidentEvents.h. The
-// flat-table -> JSON serializer is ported verbatim from RoomModule::announce
-// (lib/HawthornRoomDevice/src/modules/RoomModule.cpp in the parent repo).
+// a complete type — see the linkage note atop ResidentEvents.h.
 int EventsModule::send(lua_State* L)
 {
   // Arg 1: event name (string, required)
   const char* name = luaL_checkstring(L, 1);
 
   // Arg 2: data table (optional)
-  char dataJson[256] = "{}";
+  char dataJson[RESIDENT_EVENT_JSON_MAX] = "{}";
 
   if (lua_gettop(L) >= 2 && lua_istable(L, 2)) {
-    // Serialize flat Lua table to JSON
-    char* p = dataJson;
-    char* end = dataJson + sizeof(dataJson) - 2;
-    *p++ = '{';
-    bool first = true;
-
-    lua_pushnil(L);  // First key
-    while (lua_next(L, 2) != 0 && p < end) {
-      if (lua_type(L, -2) == LUA_TSTRING) {
-        const char* key = lua_tostring(L, -2);
-
-        if (!first && p < end) {
-          *p++ = ',';
-        }
-
-        int written = snprintf(p, end - p, "\"%s\":", key);
-        if (written > 0 && p + written < end) {
-          p += written;
-        } else {
-          lua_pop(L, 1);
-          break;
-        }
-
-        if (lua_type(L, -1) == LUA_TSTRING) {
-          const char* val = lua_tostring(L, -1);
-          written = snprintf(p, end - p, "\"%s\"", val);
-        } else if (lua_type(L, -1) == LUA_TNUMBER) {
-          if (lua_isinteger(L, -1)) {
-            written = snprintf(p, end - p, "%lld", (long long)lua_tointeger(L, -1));
-          } else {
-            written = snprintf(p, end - p, "%g", lua_tonumber(L, -1));
-          }
-        } else {
-          // Skip unsupported types - back out the key
-          if (!first) p--;
-          while (p > dataJson + 1 && *(p - 1) != '{' && *(p - 1) != ',') p--;
-          lua_pop(L, 1);
-          continue;
-        }
-
-        if (written > 0 && p + written < end) {
-          p += written;
-          first = false;
-        } else {
-          lua_pop(L, 1);
-          break;
-        }
-      }
-
-      lua_pop(L, 1);  // Pop value, keep key for next iteration
+    if (!serializeLuaTableToJson(L, 2, dataJson, sizeof(dataJson))) {
+      // Overflow: never send a cut-off payload — drop the event instead.
+      Serial.println("Resident::Sandbox: events.send data exceeds "
+                     "RESIDENT_EVENT_JSON_MAX; event dropped");
+      lua_pushboolean(L, false);
+      return 1;
     }
-
-    *p++ = '}';
-    *p = '\0';
   }
 
   bool sent = _sandbox && _sandbox->publishEvent(name, dataJson);
@@ -700,7 +916,14 @@ void Sandbox::dispatchMessage(const char* transportName,
   // Reserved types — Resident handles internally; user callback never sees these.
   if (strcmp(type, "app") == 0) {
     const char* code = doc["code"];
-    if (code) loadApp(code);
+    if (code) {
+      // Same storeNs/generationId handling as the system channel — this
+      // path also applies stashed deferred loads, which carry the full
+      // original doc.
+      _storeModule.setNamespace(doc["storeNs"] | "app");
+      _nextGenerationId = doc["generationId"] | "";
+      loadApp(code);
+    }
     return;
   }
   if (strcmp(type, "shader") == 0) {
@@ -716,13 +939,21 @@ void Sandbox::dispatchMessage(const char* transportName,
   }
   if (strcmp(type, "app_event") == 0) {
     const char* name = doc["name"];
-    char dataJson[256];
+    char dataJson[RESIDENT_EVENT_JSON_MAX];
     if (doc["data"].is<JsonObject>()) {
+      // Same drop-don't-truncate guard as handleAppMessage.
+      if (measureJson(doc["data"]) + 1 > sizeof(dataJson)) {
+        Serial.printf("Resident::Sandbox: incoming data exceeds RESIDENT_EVENT_JSON_MAX; "
+                      "app event '%s' dropped\n", name ? name : "");
+        return;
+      }
       serializeJson(doc["data"], dataJson, sizeof(dataJson));
     } else {
       strcpy(dataJson, "{}");
     }
-    if (name) sendAppEvent(name, dataJson);
+    // Legacy un-channelled wire path: still an app-plane frame, not a
+    // host-firmware injection — tag "app", not the "driver" default.
+    if (name) sendAppEvent(name, dataJson, "app");
     return;
   }
   if (strcmp(type, "forget") == 0) {
@@ -843,6 +1074,11 @@ void Sandbox::loop() {
   if (_courier.has_value()) {
     _courier->loop();
   }
+
+  // Debounced store write-through — runs even with no app loaded so a
+  // mutation made just before an unload/idle still reaches NVS.
+  _storeModule.updateDebounce(millis());
+
   if (!_lua) return;
 
   // Driver heartbeat — single de-duped walk, connectivity-independent.
@@ -914,9 +1150,22 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
     _config.extensions.items[i]->onAppReset();
   }
   _eventsModule.onAppReset();
+  // The store slot deliberately does NOT reset here — surviving loadApp is
+  // its point. App unload is a flush boundary instead: any dirty state the
+  // outgoing app left is persisted now, not after the debounce quiet.
+  _storeModule.flush();
 
-  // Generate new generation ID
-  _generationId = String(millis(), HEX);
+  // Generation ID: server-stamped when the load message carried one
+  // (surfaced to Lua as ctx.generation_id), self-generated otherwise
+  // (telemetry correlation only; Lua then sees nil).
+  if (_nextGenerationId.length()) {
+    _generationId = _nextGenerationId;
+    _generationIdFromWire = true;
+  } else {
+    _generationId = String(millis(), HEX);
+    _generationIdFromWire = false;
+  }
+  _nextGenerationId = "";
   emitTelemetry("app_received");
 
   bool compiled = compileApp(luaCode);
@@ -947,6 +1196,71 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   }
 
   return loadedOk;
+}
+
+// The update lattice's middle rung (arc A6): run `code` in the CURRENT
+// lua_State with the running app's globals intact — that is the point.
+// Replacing one component means re-running a small chunk; the app's own
+// last-registration-wins registries (named timers/recognizers, done in
+// arc-core) make the swap surgical. Contrast loadApp: full teardown +
+// lifecycle reboot.
+//
+// Semantics:
+// - init() is NOT re-called; timers/events keep flowing. _runState, the
+//   generation ID, overlay claims, persistence, and the runtime-error rate
+//   limiter are all untouched.
+// - If the chunk (re)defines init/on_tick/on_event as functions, the cached
+//   registry refs are refreshed so the redefinition takes effect on the
+//   next dispatch; lifecycle globals the chunk doesn't set keep their refs.
+// - Never persisted: NVS keeps the base generation; the server re-sends
+//   chunks after a reboot via its own assembly.
+// - DROPPED (not stashed) during a deferAppLoads window: applying a stale
+//   surgical patch minutes later — possibly onto a different generation —
+//   is worse than asking the server to re-send. Logged, returns false.
+// - Failure reporting matches the compile path's mechanism (Serial +
+//   telemetry) under its own name, "chunk_error", so a failed chunk is not
+//   mistaken for a failed generation; a failed chunk leaves the app running.
+bool Sandbox::loadChunk(const char* code)
+{
+  if (!code || !code[0]) return false;
+  if (!_lua || !isAppRunning()) {
+    Serial.println("Resident::Sandbox: chunk with no app loaded; dropped");
+    return false;
+  }
+  if (_deferLoads) {
+    Serial.println("Resident::Sandbox: chunk during deferred-load window; dropped");
+    return false;
+  }
+
+  if (luaL_loadstring(_lua, code) != 0) {
+    const char* errMsg = lua_tostring(_lua, -1);
+    Serial.printf("Resident::Sandbox: chunk compile failed: %s\n", errMsg);
+    emitTelemetry("chunk_error", errMsg);
+    lua_pop(_lua, 1);
+    return false;
+  }
+  if (lua_pcall(_lua, 0, 0, 0) != 0) {
+    const char* errMsg = lua_tostring(_lua, -1);
+    Serial.printf("Resident::Sandbox: chunk execution failed: %s\n", errMsg);
+    emitTelemetry("chunk_error", errMsg);
+    lua_pop(_lua, 1);
+    return false;
+  }
+
+  refreshLifecycleRef("init", _initFuncRef);
+  refreshLifecycleRef("on_tick", _onTickFuncRef);
+  refreshLifecycleRef("on_event", _onEventFuncRef);
+
+  emitTelemetry("chunk_applied");
+  return true;
+}
+
+void Sandbox::refreshLifecycleRef(const char* global, int& ref)
+{
+  lua_getglobal(_lua, global);
+  if (!lua_isfunction(_lua, -1)) { lua_pop(_lua, 1); return; }
+  if (ref != LUA_NOREF) luaL_unref(_lua, LUA_REGISTRYINDEX, ref);
+  ref = luaL_ref(_lua, LUA_REGISTRYINDEX);  // pops the function
 }
 
 void Sandbox::updateBootCountdown()
@@ -1035,6 +1349,11 @@ bool Sandbox::startMicStream()
 {
   if (_micStreaming) return true;
   if (!_config.systemMic) return false;
+  // Boundary flush: the capture gesture often precedes a state change —
+  // and (found live) precedes the occasional codec-path crash. Persist
+  // the store slot NOW so the state being asked about is never the
+  // state that a crash loses.
+  _storeModule.flush();
   if (!_config.systemMic->begin()) return false;
   _micStreaming = true;
   return true;
@@ -1272,10 +1591,11 @@ void Sandbox::loadShader(const ShaderFields& fields) {
 // are deferred — not dropped — though a long suspend can overflow the 8-slot
 // ring and lose the oldest. Gating on isAppRunning() (true while Suspended) is
 // deliberate: a suspended app is still loaded and will see the events.
-void Sandbox::sendAppEvent(const char* name, const char* dataJson)
+void Sandbox::sendAppEvent(const char* name, const char* dataJson,
+                           const char* channel)
 {
   if (!isAppRunning() || !_onEventFuncRef) return;
-  pushAppEvent(name, dataJson ? dataJson : "{}", "", millis());
+  pushAppEvent(name, dataJson ? dataJson : "{}", "", millis(), channel);
 }
 
 bool Sandbox::isAppRunning() const
@@ -1406,6 +1726,13 @@ bool Sandbox::compileApp(const char* code)
   return true;   // loadAppInternal logs + emits the app_compiled telemetry
 }
 
+void Sandbox::pushCtxGenerationId()
+{
+  if (!_generationIdFromWire) return;   // no wire id → ctx.generation_id is nil
+  lua_pushstring(_lua, _generationId.c_str());
+  lua_setfield(_lua, -2, "generation_id");
+}
+
 bool Sandbox::callInit()
 {
   if (!_lua || _initFuncRef == LUA_NOREF) return true;
@@ -1419,6 +1746,7 @@ bool Sandbox::callInit()
   lua_setfield(_lua, -2, "time_ms");
   lua_pushinteger(_lua, _triggerCount);
   lua_setfield(_lua, -2, "trigger_count");
+  pushCtxGenerationId();
 
   // Time-of-day fields
   pushLocalTimeFields();
@@ -1447,6 +1775,7 @@ void Sandbox::callOnTick(unsigned long dt_ms)
   lua_setfield(_lua, -2, "time_ms");
   lua_pushinteger(_lua, _triggerCount);
   lua_setfield(_lua, -2, "trigger_count");
+  pushCtxGenerationId();
 
   // Time-of-day fields
   pushLocalTimeFields();
@@ -1503,6 +1832,7 @@ void Sandbox::processNextEvent()
   lua_setfield(_lua, -2, "time_ms");
   lua_pushinteger(_lua, _triggerCount);
   lua_setfield(_lua, -2, "trigger_count");
+  pushCtxGenerationId();
 
   // Push event table
   lua_newtable(_lua);
@@ -1512,6 +1842,21 @@ void Sandbox::processNextEvent()
   lua_setfield(_lua, -2, "from");
   lua_pushinteger(_lua, e.ts_ms);
   lua_setfield(_lua, -2, "ts_ms");
+  // Envelope: channel always present (driver emissions and BUTTON slots are
+  // hardware-side → "driver"; wire-borne APP_EVENTs carry app/runtime, and
+  // host injections default "driver" via pushAppEvent). src/seq only when
+  // the frame stamped them.
+  lua_pushstring(_lua, (e.type == Event::APP_EVENT && e.channel[0])
+                           ? e.channel : "driver");
+  lua_setfield(_lua, -2, "channel");
+  if (e.src[0]) {
+    lua_pushstring(_lua, e.src);
+    lua_setfield(_lua, -2, "src");
+  }
+  if (e.hasSeq) {
+    lua_pushinteger(_lua, e.seq);
+    lua_setfield(_lua, -2, "seq");
+  }
 
   if (e.type == Event::DRIVER) {
     // Flatten driver event fields directly onto the event table
@@ -1561,61 +1906,22 @@ void Sandbox::processNextEvent()
       }
     }
   } else {
-    // APP_EVENT: parse data into event.data subtable (existing behavior)
-    lua_newtable(_lua);
-    {
-      const char* json = e.data;
-      size_t len = strlen(json);
-
-      if (len >= 2 && json[0] == '{' && json[len - 1] == '}') {
-        size_t pos = 1;
-        while (pos < len - 1) {
-          while (pos < len - 1 && (json[pos] == ' ' || json[pos] == ',' || json[pos] == '\n' || json[pos] == '\r' || json[pos] == '\t'))
-            pos++;
-
-          if (pos >= len - 1) break;
-          if (json[pos] != '"') break;
-          pos++;
-
-          char key[64] = {0};
-          size_t keyLen = 0;
-          while (pos < len - 1 && json[pos] != '"' && keyLen < sizeof(key) - 1)
-            key[keyLen++] = json[pos++];
-          key[keyLen] = '\0';
-          if (pos >= len - 1) break;
-          pos++;
-
-          while (pos < len - 1 && (json[pos] == ':' || json[pos] == ' '))
-            pos++;
-
-          if (pos >= len - 1) break;
-
-          if (json[pos] == '"') {
-            pos++;
-            char val[128] = {0};
-            size_t valLen = 0;
-            while (pos < len - 1 && json[pos] != '"' && valLen < sizeof(val) - 1)
-              val[valLen++] = json[pos++];
-            val[valLen] = '\0';
-            if (pos < len - 1) pos++;
-            lua_pushstring(_lua, val);
-            lua_setfield(_lua, -2, key);
-          } else if (json[pos] == '-' || (json[pos] >= '0' && json[pos] <= '9')) {
-            char numStr[32] = {0};
-            size_t numLen = 0;
-            while (pos < len - 1 && numLen < sizeof(numStr) - 1 &&
-                   (json[pos] == '-' || json[pos] == '.' || (json[pos] >= '0' && json[pos] <= '9')))
-              numStr[numLen++] = json[pos++];
-            numStr[numLen] = '\0';
-            lua_pushnumber(_lua, atof(numStr));
-            lua_setfield(_lua, -2, key);
-          } else {
-            while (pos < len - 1 && json[pos] != ',' && json[pos] != '}')
-              pos++;
-          }
-        }
-      }
+    // APP_EVENT: parse data JSON into event.data subtable. Real JSON parsing
+    // (ArduinoJson) + the pushJson* mirror of the outgoing serializer —
+    // strings arrive unescaped, booleans as booleans, nested objects/arrays
+    // as tables to LUA_JSON_MAX_DEPTH. Same drop-don't-truncate discipline
+    // as the outgoing side: unparseable data (e.g. a payload that was cut
+    // off upstream) is never delivered garbled — the whole event is dropped.
+    JsonDocument dataDoc;
+    // const char* input → ArduinoJson copy mode (not zero-copy destructive).
+    if (deserializeJson(dataDoc, (const char*)e.data) ||
+        !dataDoc.is<JsonObjectConst>()) {
+      Serial.printf("Resident::Sandbox: unparseable data for app event '%s'; event dropped\n",
+                    e.name);
+      lua_pop(_lua, 3);  // on_event handler, ctx table, event table
+      return;
     }
+    pushJsonObjectToLua(_lua, dataDoc.as<JsonObjectConst>(), /*depth=*/1);
     lua_setfield(_lua, -2, "data");
   }
 
@@ -1628,7 +1934,9 @@ void Sandbox::processNextEvent()
   }
 }
 
-void Sandbox::pushAppEvent(const char* name, const char* dataJson, const char* from, uint32_t ts_ms)
+void Sandbox::pushAppEvent(const char* name, const char* dataJson, const char* from, uint32_t ts_ms,
+                           const char* channel, const char* src,
+                           bool hasSeq, uint32_t seq)
 {
   int nextHead = (_eventHead + 1) % SANDBOX_MAX_EVENTS;
   if (nextHead == _eventTail) {
@@ -1642,6 +1950,11 @@ void Sandbox::pushAppEvent(const char* name, const char* dataJson, const char* f
   strncpy(e.name, name, sizeof(e.name) - 1);
   strncpy(e.data, dataJson, sizeof(e.data) - 1);
   strncpy(e.from, from, sizeof(e.from) - 1);
+  strncpy(e.channel, (channel && channel[0]) ? channel : "driver",
+          sizeof(e.channel) - 1);
+  strncpy(e.src, src ? src : "", sizeof(e.src) - 1);
+  e.hasSeq = hasSeq;
+  e.seq = seq;
   _eventHead = nextHead;
 }
 

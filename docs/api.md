@@ -238,7 +238,7 @@ sandbox.onMessageWithChannel("system", [](const char* transport, const char* typ
 
 **Control-plane emit** — `sandbox.sendSystem(doc)` stamps `doc["channel"] = "system"` and sends it via the default transport (`courier().send`). For device control messages (voice start/end, etc.). Returns `false` when no network is configured or the send fails; the doc is stamped either way, so a caller inspecting it afterward always sees the envelope.
 
-**Data-plane emit** — `sandbox.publishEvent(name, dataJson)` builds `{channel:"app", type:name, data, from:getDeviceId(), nonce, ts_ms}` and hands it to the event sink: the sink set via `setEventSink(EventSink)` if one is registered, otherwise `courier().send` on the default transport. Rate-limited with a token bucket (5 events/s sustained, burst of 10); returns `false` on rate limit, no sink/network, or send failure — it never raises. This is the shared implementation behind the Lua `events.send` (see [Lua API](#events-module)) and any C++ caller, e.g. a platform wrapper's `room.announce` alias — note this is a **deliberate behavior change** from the old `room.announce`, which raised a Lua error on rate limit rather than returning `false`.
+**Data-plane emit** — `sandbox.publishEvent(name, dataJson)` builds `{channel:"app", type:name, data, from:getDeviceId(), src:"device", seq, nonce, ts_ms}` and hands it to the event sink. `seq` is the device's per-sender monotonic sequence (uint32, per-boot, one counter for all frames sent via this path; the `nonce` suffix reuses the same count). It goes to: the sink set via `setEventSink(EventSink)` if one is registered, otherwise `courier().send` on the default transport. Rate-limited with a token bucket (5 events/s sustained, burst of 10); returns `false` on rate limit, no sink/network, or send failure — it never raises. This is the shared implementation behind the Lua `events.send` (see [Lua API](#events-module)) and any C++ caller, e.g. a platform wrapper's `room.announce` alias — note this is a **deliberate behavior change** from the old `room.announce`, which raised a Lua error on rate limit rather than returning `false`.
 
 ```cpp
 using EventSink = std::function<bool(JsonDocument&)>;
@@ -254,6 +254,7 @@ sandbox.setEventSink([](JsonDocument& doc) {
 ```cpp
 sandbox.loadApp(luaCode);              // compile and run a Lua source string
 sandbox.loadShader(fields);            // generate Lua via ShaderTemplateFn, then loadApp
+sandbox.loadChunk(luaChunk);           // run a chunk in the RUNNING app's state (surgical update)
 sandbox.sendAppEvent(name, dataJson);  // queue an app_event to the running app
 sandbox.onMessageWithChannel(name, cb); // register a channel slot (see Channel routing)
 sandbox.sendSystem(doc);               // stamp channel:"system", send via default transport
@@ -282,6 +283,8 @@ sandbox.clearPersistedApp();           // wipe the saved app from the persistent
 `loadApp` stops any running app, calls `onAppReset()` on all extensions, generates a new `generationId`, and compiles the new app. An app must define at least one of `init`, `on_tick`, or `on_event` — compilation is rejected otherwise.
 
 `loadShader` requires `SandboxConfig::shaderTemplate` to be set; it converts the `ShaderFields` map to Lua source, then calls `loadApp`.
+
+`loadChunk(code)` runs a Lua chunk **in the running app's `lua_State`** — no teardown, no lifecycle reboot: globals, queued events, and timing survive, and `init()` is **not** re-called. It exists so replacing one registration (a named timer, recognizer, or component in an app built on last-registration-wins registries) can ship as a small chunk instead of a whole-generation reload. If the chunk (re)defines `init`/`on_tick`/`on_event` as functions, the cached dispatch refs are refreshed so the redefinition takes effect on the next dispatch. Returns `false` — with the app left running and untouched by the failure — on compile error or runtime error (Serial + `chunk_error` telemetry; note a chunk is not a transaction: statements before a runtime error did run), when no app is loaded, or during a `deferAppLoads` window (chunks are **dropped** with a log, never stashed — a stale surgical patch applied to a possibly different generation later is worse than a re-send). Chunks are never persisted: NVS keeps the base generation; senders must re-send chunks after a reboot. Wire entry: `channel:"system", type:"chunk", code:"..."`. Success emits `chunk_applied` telemetry.
 
 `suspendApp` pauses the Lua tick (`on_tick` and event dispatch) without unloading the app — Courier and extension `update()` keep running. While suspended, drivers receive `onAppRunning(false)` so the status display is freed for direct text (e.g. a "Listening" overlay via `SystemDisplay::displayText()`); `resumeApp` reverses this with `onAppRunning(true)`. Both are no-ops when no app is loaded, and repeated calls don't re-notify. `isAppRunning()` stays `true` while suspended — suspension is a separate axis queried via `isAppSuspended()`. Events arriving while suspended are queued, not dropped (though a long suspend can overflow the 8-slot ring, losing the oldest), and `loadApp` always clears suspension.
 
@@ -539,7 +542,7 @@ cfg.extensions = {&display, &button, &imu};
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `Extensions::MAX` | `8` | Maximum number of extensions per sandbox |
+| `Extensions::MAX` | `12` | Maximum number of extensions per sandbox |
 
 Extensions are stored in registration order. `begin()`, `registerModule()`, `update()`, and `onAppReset()` are all called in registration order.
 
@@ -727,6 +730,7 @@ All callbacks receive a `ctx` table. `on_tick` also receives `dt_ms` (integer, m
 |-------|------|-------------|
 | `time_ms` | integer | Milliseconds since the current app was loaded |
 | `trigger_count` | integer | Number of `"button"` driver events since the last app load |
+| `generation_id` | string? | The `generationId` the server stamped on the app load message — present in `init`/`on_tick`/`on_event`; `nil` when the load didn't carry one (direct C++ loads, NVS restores) |
 | `utc_h` | integer | Current UTC hour (0–23) |
 | `utc_m` | integer | Current UTC minute (0–59) |
 | `localtime_h` | integer | Local hour — equals `utc_h` unless a timezone has been set |
@@ -741,8 +745,11 @@ All callbacks receive a `ctx` table. `on_tick` also receives `dt_ms` (integer, m
 | `name` | string | Event name (e.g. `"button"`, `"my_event"`) |
 | `from` | string | Source identifier — empty string for driver events |
 | `ts_ms` | integer | Timestamp in milliseconds (`millis()`) when the event was queued |
+| `channel` | string | Source discriminator, always present: `"app"` or `"runtime"` for wire-borne frames (both delivered here), `"driver"` for hardware/driver events and host-firmware `sendAppEvent` injections (unless the caller passed a channel) |
+| `src` | string? | The frame's `src` envelope field (e.g. `"server"`), only when present on the frame; `nil` for internal events |
+| `seq` | integer? | The frame's per-sender monotonic `seq`, only when present on the frame; `nil` for internal events |
 | *(driver fields)* | any | For **driver events**: extra fields are flattened directly onto the table (e.g. `event.id`, `event.state`) |
-| `data` | table | For **app_events**: the JSON `data` object parsed into a subtable |
+| `data` | table | For **app events**: the JSON `data` object parsed into a subtable — strings (unescaped), integers, floats, booleans, and nested objects/arrays to 3 container levels (deeper containers are skipped with their key; JSON `null` leaves a hole at its array index). Unparseable or oversized (> `RESIDENT_EVENT_JSON_MAX`) data drops the whole event rather than delivering it garbled |
 
 ```lua
 function on_event(ctx, event)
@@ -778,16 +785,61 @@ Publishes an event on the app data plane (`channel:"app"`) — the Lua-side entr
 | Function | Returns | Description |
 |----------|---------|-------------|
 | `events.send(name)` | boolean | Publish `name` with no data |
-| `events.send(name, data)` | boolean | Publish `name` with a flat table of string/number values as `event.data` |
+| `events.send(name, data)` | boolean | Publish `name` with a table of string/number/boolean/table values as `event.data` |
 
 ```lua
 events.send("turn")
 events.send("color_change", { hue = 180, label = "warm" })
+events.send("state", { on = true, pos = { x = 1, y = 2 }, tags = { "a", "b" } })
 ```
 
-`data` must be a **flat** table — string and number values only (booleans, nested tables, and other types are silently skipped per-key). Serialized to a bounded 256-byte JSON buffer; oversized payloads are truncated.
+`data` serializes to a JSON object. String keys and values are JSON-escaped (`"`, `\`, and control characters). Values may be strings, numbers, booleans, or tables nested up to 3 table levels (counting `data` itself): a string-keyed table becomes a JSON object; a table with a non-empty array part (`#t > 0`) becomes a JSON array of elements `1..#t` (don't mix array and string keys — string keys of an array-part table are ignored). Top-level integer keys, deeper tables, and other value types (functions, userdata) are silently skipped per-key; unsupported array *elements* serialize as `null` to hold their position.
+
+Serialized into a bounded buffer of `RESIDENT_EVENT_JSON_MAX` bytes (default 1024; override with a build flag, e.g. `-DRESIDENT_EVENT_JSON_MAX=2048`). An oversized payload is never truncated: the event is dropped, a line is logged to Serial, and `events.send` returns `false`.
 
 Rate-limited by a shared token bucket: 5 events/s sustained, burst of 10. Returns `false` (rather than raising a Lua error) when rate-limited, when the event name is empty, or when the underlying send fails — always check the return value if you need to know whether it went out.
+
+### `lgfx` module (optional)
+
+Idiomatic LovyanGFX drawing from Lua — present only when the firmware registers displays into an `LgfxModule` and lists it in `SandboxConfig::extensions`:
+
+```cpp
+#include <ResidentLgfxModule.h>
+Resident::LgfxLovyanTarget<M5Canvas> lgfxMain{&displayDriver.canvas(),
+                                              [] { displayDriver.repaint(); }};
+Resident::LgfxModule lgfxModule;
+// setup: lgfxModule.addDisplay("main", &lgfxMain);  cfg.extensions = {..., &lgfxModule};
+```
+
+The adapter is a duck-typed template — instantiate it with anything carrying LovyanGFX's drawing API (`LGFX_Device`, `LGFX_Sprite`, `M5Canvas`, `M5GFX`). Colors are 24-bit `0xRRGGBB` everywhere; LovyanGFX converts to the panel/sprite depth (it interprets `uint32_t` colors as RGB888).
+
+```lua
+local g = lgfx.bind("main")      -- raises a Lua error for unknown names
+g:fillScreen(0x000000)
+g:fillCircle(80, 60, 20, 0xFF5533)
+g:setTextColor(0xFFFFFF); g:setTextSize(2); g:setCursor(4, 4); g:print("hi")
+g:drawString("centered", g:width() // 2, 30)
+g:flip()                         -- present to the glass
+```
+
+Handle methods (colon-call), matching LovyanGFX names/argument orders: `fillScreen(c)` · `drawPixel(x,y,c)` · `drawLine(x0,y0,x1,y1,c)` · `drawRect/fillRect(x,y,w,h,c)` · `drawRoundRect/fillRoundRect(x,y,w,h,r,c)` · `drawCircle/fillCircle(x,y,r,c)` · `drawTriangle/fillTriangle(x0,y0,x1,y1,x2,y2,c)` · `setTextColor(fg[,bg])` · `setTextSize(s)` · `setTextDatum(d)` (constants on the module table: `lgfx.TL_DATUM`, `TC`, `TR`, `ML`, `MC`, `MR`, `BL`, `BC`, `BR`, `L_BASELINE`, `C_BASELINE`, `R_BASELINE`) · `setCursor(x,y)` · `print(text)` · `drawString(text,x,y)` · `width()` · `height()` · `flip()`.
+
+**Present semantics:** `g:flip()` runs the presenter the firmware supplied at registration (for sprite-backed displays: push the sprite — e.g. the driver's `repaint()`); with no presenter (direct-to-panel targets) `flip()` is a no-op and drawing is live. Deliberately small this pass: default font + size multiplier only — no font selection, images, or Lua-created sprites.
+
+### `store` module
+
+An app-scoped **persistent** KV slot of scalars — state here survives `loadApp` (same identity) and reboot. RAM-backed with debounced write-through to the persistent store (NVS on device): at most one write per ~2 s of mutation quiet, plus a forced flush on app unload.
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `store.get(key)` | string \| number \| boolean \| nil | Value for `key`, `nil` if absent |
+| `store.set(key, value)` | boolean | Set a scalar (string/number/boolean). `nil` deletes. `false` if the value is non-scalar or the write would exceed the budget (rejected whole — no partial writes) |
+| `store.keys()` | array | All keys currently in the slot |
+| `store.clear()` | — | Empty the slot |
+
+**Scoping / reset policy:** the slot is namespaced by an app identity the server provides on the load message — `{channel:"system", type:"app", code:"...", storeNs:"<id ≤32 chars>"}`. Loading with the **same** `storeNs` preserves the slot; a **different** `storeNs` clears it first (persisted immediately); missing `storeNs` uses the shared default namespace `"app"`. The namespace is persisted alongside the data, so the policy holds across reboots. Direct C++ `loadApp()` calls leave the namespace unchanged.
+
+**Budget:** total persisted size (namespace + keys + values, serialized) is capped at `RESIDENT_STORE_JSON_MAX` (default 2048 bytes, build-flag overridable).
 
 ### `time` module
 
@@ -1130,10 +1182,10 @@ ESP-IDF CMake component graph.
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `Extensions::MAX` | `8` | Maximum extensions per sandbox |
+| `Extensions::MAX` | `12` | Maximum extensions per sandbox |
 | `Sandbox::TICK_INTERVAL` | `100 ms` | Lua `on_tick` interval (10 FPS) |
 | `Sandbox::SANDBOX_MAX_EVENTS` | `8` | Event ring buffer capacity; oldest event is dropped when full |
 | Event `name` max | `32 chars` | `Event::name` buffer size — driver event names longer than 31 bytes are truncated |
-| Event `data` max | `256 chars` | `Event::data` buffer — serialized driver event fields or `app_event` JSON |
+| Event `data` max | `RESIDENT_EVENT_JSON_MAX` (default `1024`) | `Event::data` buffer — serialized driver event fields or app-channel `data` JSON. Compile-time override via build flag; also bounds the outgoing `events.send` serializer |
 | `RUNTIME_ERROR_COOLDOWN` | `5000 ms` | Minimum interval between `runtime_error` telemetry emissions from `on_tick` |
 | `RUNTIME_ERROR_MAX_BURST` | `3` | Number of `runtime_error` telemetry events allowed before rate-limiting kicks in |
