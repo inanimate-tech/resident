@@ -57,7 +57,7 @@ void hostHello() {
   JsonDocument doc;
   doc["channel"] = "system";
   doc["type"] = "hello";
-  doc["data"]["proto"] = 1;
+  doc["data"]["protocol"] = 1;
   sandbox->injectMessage("test", "hello", doc);
 }
 

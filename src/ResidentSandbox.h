@@ -27,10 +27,11 @@
 #define RESIDENT_EVENT_JSON_MAX 1024
 #endif
 
-// The wire-protocol version announced in the device hello. Bumped only on
-// incompatible envelope changes; feature additions ride the hello's
-// `features` list instead.
-#define RESIDENT_PROTO_VERSION 1
+// The wire-protocol version announced in the device hello (data.protocol).
+// Bumped only on incompatible envelope changes — this is the whole
+// compatibility story (there is no feature list; a genuinely optional
+// capability introduces its own hello field when it exists).
+#define RESIDENT_PROTOCOL_VERSION 1
 
 // Event ring depth (slots; one is kept free, so usable depth is one less).
 // Override with a build flag, e.g. -DRESIDENT_EVENT_RING_SIZE=16.

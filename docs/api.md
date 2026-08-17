@@ -1090,7 +1090,7 @@ On every transport connect the sandbox queues a device hello — the device anno
 
 ```json
 { "channel": "system", "type": "hello", "data": {
-  "proto": 1,
+  "protocol": 1,
   "deviceType": "m5stick", "firmware": "1.4.0", "bootId": "9f2c11a0",
   "profile": "m5stick@2",
   "limits": { "eventBytes": 1024, "replyBytes": 1024, "storeBytes": 2048,
@@ -1099,14 +1099,14 @@ On every transport connect the sandbox queues a device hello — the device anno
 } }
 ```
 
-- `proto` is `RESIDENT_PROTO_VERSION` — the whole compatibility story. There is deliberately no feature list: chunk support is part of proto 1, telemetry needs no advance notice, and capture announces itself via its bracket. A genuinely optional capability introduces its own hello field when it exists.
+- `protocol` is `RESIDENT_PROTOCOL_VERSION` — the whole compatibility story. There is deliberately no feature list: chunk support is part of protocol version 1, telemetry needs no advance notice, and capture announces itself via its bracket. A genuinely optional capability introduces its own hello field when it exists.
 - `firmware` / `profile` come from `SandboxConfig::firmwareVersion` / `profileRef` (omitted when unset).
 - `limits` are the build's actual constants — hosts should size payloads against them instead of assuming.
 - Deliberately absent: surfaces, sensors, driver modules — authoring facts, whose one authority is the document behind `profile`. The hello carries only what a host needs to operate the session.
 - `app` describes what is running (or persisted and awaiting the boot countdown): its store namespace, plus `generationId` only when the wire stamped one (a restored app's self-generated id is omitted).
 - `sandbox.requestHello()` re-queues it at any time.
 
-A host hello may answer on the same channel: `{ "channel":"system", "type":"hello", "data": { "proto":1, "tz":"Europe/London" } }`. The sandbox applies `tz` and records receipt (`sandbox.hostHelloSeen()`). Nothing else gates on it yet — a host that never hellos gets today's behavior in full — but future defaults (framed media, legacy-path removal) will key on it.
+A host hello may answer on the same channel: `{ "channel":"system", "type":"hello", "data": { "protocol":1, "tz":"Europe/London" } }`. The sandbox applies `tz` and records receipt (`sandbox.hostHelloSeen()`). Nothing else gates on it yet — a host that never hellos gets today's behavior in full — but future defaults (framed media, legacy-path removal) will key on it.
 
 ---
 

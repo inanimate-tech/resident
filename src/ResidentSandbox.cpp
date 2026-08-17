@@ -760,7 +760,7 @@ bool Sandbox::sendHello()
   JsonDocument doc;
   doc["type"] = "hello";
   JsonObject d = doc["data"].to<JsonObject>();
-  d["proto"] = RESIDENT_PROTO_VERSION;
+  d["protocol"] = RESIDENT_PROTOCOL_VERSION;
   d["deviceType"] = getDeviceType();
   if (_config.firmwareVersion && _config.firmwareVersion[0]) {
     d["firmware"] = _config.firmwareVersion;

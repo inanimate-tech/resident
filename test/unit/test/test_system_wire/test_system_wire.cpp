@@ -131,7 +131,7 @@ void test_hello_carries_identity_limits_and_app(void) {
   pump();
   const std::string* f = frameWith("\"type\":\"hello\"");
   TEST_ASSERT_NOT_NULL(f);
-  TEST_ASSERT_TRUE(f->find("\"proto\":1") != std::string::npos);
+  TEST_ASSERT_TRUE(f->find("\"protocol\":1") != std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"deviceType\":\"native-test\"") != std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"firmware\":\"9.9-test\"") != std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"profile\":\"m5stick@2\"") != std::string::npos);
@@ -216,7 +216,7 @@ void test_host_hello_marks_seen(void) {
   JsonDocument doc;
   doc["channel"] = "system";
   doc["type"] = "hello";
-  doc["data"]["proto"] = 1;
+  doc["data"]["protocol"] = 1;
   doc["data"]["tz"] = "Europe/London";
   sandbox->injectMessage("test", "hello", doc);
   TEST_ASSERT_TRUE(sandbox->hostHelloSeen());
