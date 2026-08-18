@@ -106,22 +106,28 @@ public:
   // The board's registration: one panel, geometry read from it. Modules are
   // NOT declared here — a module declares itself when the board hands it the
   // target name (LgfxModule::addDisplay / LvglModule::addDisplay).
+  // Registration does NOT ask the panel how big it is. A board registers in
+  // its config function, which commonly runs during static init — before
+  // M5.begin(), before any display driver's begin() — and a panel asked for
+  // its width there is a panel whose hardware object is not constructed yet.
+  // On an ESP32-S3 with Arduino core 3.3.9 that is a LoadProhibited crash in
+  // global-ctor time, with no serial output to say why.
+  //
+  // So geometry is READ, never cached: size() below asks the panel at call
+  // time. Registration is now safe from anywhere.
   static bool addPanel(const char* name, PanelTarget* p,
                        const char* shape = "rect") {
     if (!p) return false;
     Entry* e = slot(name);
     if (!e) return false;
     e->panel = p;
-    e->w = p->width();
-    e->h = p->height();
     if (shape) e->shape = shape;
     return true;
   }
 
-  // Live geometry for an entry. A board that registers its panel before the
-  // driver's begin() caches zeros (the panel does not know its size yet), so
-  // prefer the panel's own numbers whenever it has one — the hardware is the
-  // authority, and a reader should never see a stale zero.
+  // Geometry for an entry, from the panel itself whenever it has one. The
+  // cached w/h are only for targets registered through add() by a graphics
+  // module (sprite-backed ones, which have no panel to ask).
   static void size(const Entry& e, int32_t& w, int32_t& h) {
     w = e.w;
     h = e.h;

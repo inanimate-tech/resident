@@ -1009,7 +1009,7 @@ The board's render targets ([`RenderTargets`](#residentrendertargets)), readable
 
 Each entry is `{ name, w, h, shape }`, with `shape` `"rect"` or `"round"`. The names are the ones `lgfx.bind(name)` and `lvgl.bind(name)` take.
 
-Geometry is read from the panel at call time, not from the registry's cache. A board that calls `addPanel` before its display driver's `begin()` registers zeros — the panel does not know its own size yet — and this read gives the hardware's answer regardless.
+Geometry is read from the panel at call time; the registry caches nothing for a panel-backed target. This is deliberate: a board registers its panels in a config function that commonly runs during **static init**, before `M5.begin()` and before any display driver's `begin()`, so asking a panel its size there dereferences hardware that does not exist yet. `addPanel` therefore never asks, and every reader gets live numbers.
 
 Why it exists: a consumer that needs to know what surfaces a board has can ASK the device. A framework module that would otherwise be handed the geometry out of band (a per-board configuration file, a profile layer) can read it instead, and what is read from the hardware cannot disagree with the hardware.
 

@@ -16,8 +16,9 @@ using Resident::RenderTargets;
 class FakePanel : public Resident::PanelTarget {
 public:
   FakePanel(int32_t w, int32_t h) : _w(w), _h(h) {}
-  int32_t width() const override { return _w; }
-  int32_t height() const override { return _h; }
+  int32_t width() const override { sizeReads++; return _w; }
+  int32_t height() const override { sizeReads++; return _h; }
+  mutable int sizeReads = 0;
   void blit(int32_t x, int32_t y, int32_t w, int32_t h,
             const uint16_t* px) override {
     blits++;
@@ -40,13 +41,34 @@ void test_add_panel_registers_geometry(void) {
   FakePanel panel(240, 135);
   TEST_ASSERT_TRUE(RenderTargets::addPanel("main", &panel, "rect"));
   TEST_ASSERT_EQUAL_INT(1, RenderTargets::count());
-  TEST_ASSERT_EQUAL_INT(240, (int)RenderTargets::entry(0).w);
-  TEST_ASSERT_EQUAL_INT(135, (int)RenderTargets::entry(0).h);
+  // Geometry is READ, not cached at registration: a board registers during
+  // static init, where asking the panel its size is a crash.
+  int32_t w = 0, h = 0;
+  RenderTargets::size(RenderTargets::entry(0), w, h);
+  TEST_ASSERT_EQUAL_INT(240, (int)w);
+  TEST_ASSERT_EQUAL_INT(135, (int)h);
   TEST_ASSERT_EQUAL_STRING("rect", RenderTargets::entry(0).shape);
   TEST_ASSERT_EQUAL_PTR(&panel, RenderTargets::panel("main"));
   TEST_ASSERT_NULL(RenderTargets::panel("nope"));
   // A board registration declares no module: modules declare themselves.
   TEST_ASSERT_EQUAL_UINT8(0, RenderTargets::entry(0).modules);
+}
+
+// The crash this guards: a board registers its panel in its config function,
+// which runs during static init — before M5.begin(), before any display
+// driver's begin(). Asking that panel how big it is dereferences hardware
+// that does not exist yet. Registration must not ask.
+void test_add_panel_never_asks_the_panel_its_size(void) {
+  FakePanel panel(240, 135);
+  panel.sizeReads = 0;
+  RenderTargets::addPanel("main", &panel);
+  TEST_ASSERT_EQUAL_INT(0, panel.sizeReads);
+  // ...and a reader gets the real numbers anyway.
+  int32_t w = 0, h = 0;
+  RenderTargets::size(RenderTargets::entry(0), w, h);
+  TEST_ASSERT_EQUAL_INT(240, (int)w);
+  TEST_ASSERT_EQUAL_INT(135, (int)h);
+  TEST_ASSERT_GREATER_THAN_INT(0, panel.sizeReads);
 }
 
 void test_modules_merge_onto_one_target(void) {
@@ -162,6 +184,7 @@ void test_table_is_bounded(void) {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_add_panel_registers_geometry);
+  RUN_TEST(test_add_panel_never_asks_the_panel_its_size);
   RUN_TEST(test_modules_merge_onto_one_target);
   RUN_TEST(test_unowned_target_answers_false_for_everyone);
   RUN_TEST(test_bind_claims_and_last_claim_wins);
