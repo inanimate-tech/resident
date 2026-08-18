@@ -690,6 +690,8 @@ private:
     static int lua_time_second(lua_State* L);
     static int lua_time_day_id(lua_State* L);
     static int lua_time_has_timezone(lua_State* L);
+    static int lua_surfaces_list(lua_State* L);
+    static int lua_surfaces_get(lua_State* L);
 
     // Math wrapper functions
     static int lua_math_floor(lua_State* L);

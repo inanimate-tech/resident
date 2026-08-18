@@ -32,6 +32,7 @@ framework hosting, and library-agnostic render targets.
 - **`loadChunk(code)`** / `{channel:"system", type:"chunk"}` runs a chunk in the running app's `lua_State` — globals, timers and events survive, `init()` is not re-called, and a failing chunk leaves the app running.
 - **Render targets**: `Resident::RenderTargets` + `PanelTarget` (geometry plus a synchronous big-endian RGB565 `blit`) is the one place a board declares its panels; the graphics modules build their own machinery over it.
 - **Bind is the claim**: `lgfx.bind` / `lvgl.bind` take ownership of a target (last bind wins), the non-owner's present path stands down silently, and `onAppReset` releases every claim.
+- **Lua `surfaces` module**: `surfaces.list()` / `surfaces.get(name)` read the render-target registry back — `{name, w, h, shape}` per panel, geometry from the `PanelTarget` at call time — so a consumer can ask a device what surfaces it has instead of being told out of band.
 - **Lua `lgfx` module** (`ResidentLgfxModule.h`, opt-in): idiomatic LovyanGFX drawing — rect/roundRect/circle/triangle/line/pixel, text, `flip()` — with `LgfxSpriteTarget<T>` owning the frame buffer.
 - **Lua `lvgl` module** (`ResidentLvglModule.h`, opt-in): retained-mode UI over LVGL 9 + luavgl; the module owns `lv_init`, the tick, the display, its buffers, the flush and the timer pump.
 - **Capture brackets**: `startCapture(stream, format)` / `endCapture()` wrap the mic stream in `{channel:"system", type:"capture"}` frames while the media payloads stay raw.

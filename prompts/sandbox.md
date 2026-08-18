@@ -117,6 +117,22 @@ NTP wall clock. UTC unless the device has a timezone.
 `time.is_valid()` · `time.has_timezone()` · `time.hour()` · `time.minute()`
 · `time.second()` · `time.day_id()` (days since boot — a daily cache key).
 
+## surfaces module
+
+The board's drawable surfaces. Geometry comes from the panel itself, so it is
+never stale.
+
+```lua
+for _, s in ipairs(surfaces.list()) do
+  log.info(s.name .. " " .. s.w .. "x" .. s.h .. " " .. s.shape)
+end
+local m = surfaces.get("main")   -- nil when the board has no such surface
+```
+
+Each entry is `{ name, w, h, shape }`; `shape` is `"rect"` or `"round"`. A
+board with no screen lists nothing. These are the same names `lgfx.bind(name)`
+and `lvgl.bind(name)` take.
+
 ## Always-global functions
 
 `rgb(r,g,b)` (normalized floats → packed color, negative-int sentinel) ·
