@@ -1,13 +1,13 @@
 #include <M5Unified.h>
 #include <Resident.h>
 #include <ResidentLgfxModule.h>
+#include "M5Panel.h"
 #include "DisplayDriver.h"
 #include "IMUDriver.h"
 #include "BuzzerDriver.h"
 #include "PushButtonsDriver.h"
 #ifdef HAS_LVGL
 #include <ResidentLvglModule.h>
-#include "LVGLDriver.h"
 #endif
 
 // Default endpoint: the canonical Resident relay. Devs can self-host by
@@ -29,35 +29,46 @@ static constexpr uint8_t BUTTON_PINS[] = {37, 39};
 #endif
 static constexpr PushButtonsConfig buttonConfig = {.numButtons = 2, .pins = BUTTON_PINS};
 
-DisplayDriver displayDriver;
+// The board's ONE render target (R19): geometry + raw blit. Everything that
+// reaches the glass goes through it — the status/app sprite, lgfx's frame
+// push, LVGL's partial flushes.
+M5Panel m5Panel;
+
+DisplayDriver displayDriver{&m5Panel};
 IMUDriver imuDriver;
 BuzzerDriver buzzerDriver{255};
 PushButtonsDriver buttonDriver{buttonConfig};
 
 // lgfx: idiomatic LovyanGFX drawing from Lua (local g = lgfx.bind("main")).
-// Shares the DisplayDriver's off-screen sprite; g:flip() presents it via the
-// driver's repaint() path, same as screen.flip().
-Resident::LgfxLovyanTarget<M5Canvas> lgfxMain{
-    &displayDriver.canvas(), [] { displayDriver.repaint(); }};
+// Shares the DisplayDriver's off-screen sprite; g:flip() blits it through
+// m5Panel — the same pixels screen.flip() pushes, the same panel LVGL
+// flushes to. Binding claims the panel (R19).
+Resident::LgfxSpriteTarget<M5Canvas> lgfxMain{&displayDriver.canvas()};
 Resident::LgfxModule lgfxModule;
 
 #ifdef HAS_LVGL
-// Retained-mode UI (env:m5stick-lvgl): LVGLDriver is the display/flush/tick
-// glue; the Lua surface is Resident's LvglModule — apps call
-// lvgl.bind("main"). The panel is shared with the sprite-backed
-// screen.*/lgfx surface; last writer wins on the glass.
-LVGLDriver lvglDriver;
+// Retained-mode UI (env:m5stick-lvgl). No glue driver: the module owns
+// lv_init, the lv_display_t over m5Panel, its draw buffers, the flush and
+// the timer pump. Apps call lvgl.bind("main") — which CLAIMS the panel, so
+// the lgfx path stands down instead of fighting for the glass (R19).
 Resident::LvglModule lvglModule;
 #endif
 
 Resident::SandboxConfig makeConfig() {
     Resident::SandboxConfig cfg;
     cfg.deviceType    = "stick";
+    Resident::RenderTargets::addPanel("main", &m5Panel);
     lgfxModule.addDisplay("main", &lgfxMain);
+#ifdef HAS_LVGL
+    Resident::LvglModule::DisplayOptions lvglMain;
+    lvglMain.dpi = 240;          // 240x135 on 25x13mm of glass
+    lvglMain.bufferRows = 14;    // ~1/10 screen: 240 * 14 * 2B = 6.7KB
+    lvglModule.addDisplay("main", lvglMain);
+#endif
     cfg.extensions    = {&displayDriver, &imuDriver, &buzzerDriver,
                          &buttonDriver, &lgfxModule,
 #ifdef HAS_LVGL
-                         &lvglDriver, &lvglModule,
+                         &lvglModule,
 #endif
     };
     cfg.systemDisplay = &displayDriver;
@@ -82,13 +93,6 @@ void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
     M5.Display.setRotation(1);
-
-#ifdef HAS_LVGL
-    // The lv_display_t must exist before it can be registered by name.
-    // beginExtension is idempotent — the sandbox's own begin pass no-ops.
-    Resident::Extension::beginExtension(lvglDriver);
-    lvglModule.addDisplay("main", lvglDriver.display());
-#endif
 
     // Override the default /agents/<type>-agent/<deviceId> path with the
     // canonical /devices/<deviceId> path used by resident.inanimate.tech.

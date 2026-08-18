@@ -12,10 +12,20 @@ extern "C" {
 
 void DisplayDriver::begin() {
   // setColorDepth must come BEFORE createSprite — the sprite buffer is
-  // allocated at whatever depth is set when create is called.
+  // allocated at whatever depth is set when create is called. (The lgfx
+  // module's LgfxSpriteTarget over this same canvas finds it already
+  // allocated and leaves it alone.)
   _canvas.setColorDepth(16);
   _canvas.createSprite(M5.Display.width(), M5.Display.height());
   _spriteReady = true;
+}
+
+// The one present path: the sprite buffer is RGB565 big-endian (LovyanGFX's
+// internal 16-bit format), exactly what PanelTarget::blit takes.
+void DisplayDriver::push() {
+  if (!_spriteReady || !_panel) return;
+  _panel->blit(0, 0, _canvas.width(), _canvas.height(),
+               (const uint16_t*)_canvas.getBuffer());
 }
 
 void DisplayDriver::displayText(const char* text) {
@@ -37,17 +47,17 @@ void DisplayDriver::displayText(const char* text) {
   _canvas.setCursor(4, 60);
   _canvas.print(text);
   _canvas.setTextScroll(false);    // restore default; drawn pixels unaffected
-  _canvas.pushSprite(0, 0);
+  push();
 }
 
 void DisplayDriver::repaint() {
-  if (_spriteReady) _canvas.pushSprite(0, 0);
+  push();
 }
 
 void DisplayDriver::onAppReset() {
   if (_spriteReady) {
     _canvas.fillScreen(TFT_BLACK);
-    _canvas.pushSprite(0, 0);
+    push();
   } else {
     M5.Display.fillScreen(TFT_BLACK);
   }
@@ -176,7 +186,7 @@ int DisplayDriver::pixel(lua_State* L) {
 
 // screen.flip() — push sprite framebuffer to display (single SPI transfer).
 int DisplayDriver::flip(lua_State* L) {
-  _canvas.pushSprite(0, 0);
+  push();
   return 0;
 }
 

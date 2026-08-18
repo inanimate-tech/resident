@@ -1,6 +1,7 @@
 #include <M5Unified.h>
 #include <Resident.h>
 #include <ResidentM5Mic.h>   // opt-in M5 mic driver shipped with Resident
+#include "M5Panel.h"
 #include "DisplayDriver.h"
 #include "IMUDriver.h"
 #include "BuzzerDriver.h"
@@ -25,6 +26,10 @@ static constexpr uint8_t BUTTON_PINS[] = {37, 39};
 #endif
 static constexpr PushButtonsConfig buttonConfig = {.numButtons = 2, .pins = BUTTON_PINS};
 
+// The board's one render target (R19): geometry + raw blit. The display
+// driver's sprite is presented through it.
+M5Panel m5Panel;
+
 IMUDriver imuDriver;
 BuzzerDriver buzzerDriver{255};
 PushButtonsDriver buttonDriver{buttonConfig};
@@ -40,11 +45,13 @@ static void showIdlePrompt();
 // tick; on this example (no app loaded) that means the idle prompt.
 class VoiceDisplay : public DisplayDriver {
 public:
+  using DisplayDriver::DisplayDriver;
+
   void restoreContent() override {
     if (!sandbox.isAppRunning()) showIdlePrompt();
   }
 };
-VoiceDisplay displayDriver;
+VoiceDisplay displayDriver{&m5Panel};
 
 // "Listening" overlay: a claim on the dual-role display while the front
 // button is held — the app (if any) is suspended for the duration. Static
@@ -58,6 +65,7 @@ static ListeningOverlay listening;
 Resident::SandboxConfig makeConfig() {
     Resident::SandboxConfig cfg;
     cfg.deviceType    = "stick";
+    Resident::RenderTargets::addPanel("main", &m5Panel);
     cfg.extensions    = {&displayDriver, &imuDriver, &buzzerDriver, &buttonDriver};
     cfg.systemDisplay = &displayDriver;   // dual-role: app screen AND system display
     cfg.systemButton  = &buttonDriver;    // front button: hold = talk
