@@ -906,7 +906,7 @@ Handle methods (colon-call), matching LovyanGFX names/argument orders: `fillScre
 
 ### `lvgl` module (optional)
 
-Retained-mode UI from Lua — LVGL 9 through the [luavgl arc fork](https://github.com/inanimate-tech/luavgl)'s display-scoped binding. Present only when the firmware names registered panel targets in an `LvglModule` and lists it in `SandboxConfig::extensions`. Opt-in like the lgfx module, with an extra requirement: the board's own build must supply LVGL and luavgl (`lib_deps`). Since R19 there is **no glue driver to write**: the module owns `lv_init`, the `millis` tick source, the `lv_display_t` over the board's [`PanelTarget`](#residentrendertargets), its draw buffers, the flush callback, the `lv_timer_handler` pump and the app-reset tree wipe. See `examples/m5stick-demo`'s `m5stick-lvgl` env for the full wiring.
+Retained-mode UI from Lua — LVGL 9 through the [Inanimate luavgl fork](https://github.com/inanimate-tech/luavgl)'s display-scoped binding. Present only when the firmware names registered panel targets in an `LvglModule` and lists it in `SandboxConfig::extensions`. Opt-in like the lgfx module, with an extra requirement: the board's own build must supply LVGL and luavgl (`lib_deps`). Since R19 there is **no glue driver to write**: the module owns `lv_init`, the `millis` tick source, the `lv_display_t` over the board's [`PanelTarget`](#residentrendertargets), its draw buffers, the flush callback, the `lv_timer_handler` pump and the app-reset tree wipe. See `examples/m5stick-demo`'s `m5stick-lvgl` env for the full wiring.
 
 ```cpp
 #include <ResidentLvglModule.h>   // not pulled in by Resident.h
