@@ -26,7 +26,8 @@ dispatch dies (and is reported), the app survives.
 
 The environment is a sandbox: there is no `os`, `io`, `require`, `load`,
 `dofile`, or `debug`. The pure libraries (`string`, `table`, `math`,
-`coroutine`) are all present.
+`coroutine`, `utf8`) are all present. Each callback runs under an instruction
+budget — an unbounded loop aborts that dispatch, not the device.
 
 ## ctx table
 
@@ -131,6 +132,7 @@ NTP wall clock. UTC unless the device has a timezone.
 | event data (both directions) | 1024 bytes serialized, drop not truncate |
 | events.send rate | 5/s sustained, burst 10 |
 | store budget | 2048 bytes total, rejected whole |
+| work per callback | 2,000,000 Lua instructions, then the dispatch is aborted |
 | repeated on_tick errors | 3, then one per 5 s |
 
 Keep apps short. A tight app survives device memory limits; a sprawling one

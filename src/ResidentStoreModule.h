@@ -1,4 +1,4 @@
-// src/ResidentStoreModule.h — the store slot that survives loadApp (arc A4).
+// src/ResidentStoreModule.h — the store slot that survives loadApp.
 //
 // An internal Extension registering the Lua `store` module: an app-scoped,
 // persistent KV slot of scalars — the foundation for device-canonical state.

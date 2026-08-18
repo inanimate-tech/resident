@@ -1,5 +1,5 @@
 // src/ResidentLgfxModule.h — the `lgfx` Lua module: resident's honest
-// drawing library (arc A7).
+// drawing library.
 //
 // Exposes idiomatic LovyanGFX drawing to Lua so models write against a
 // library they know from training data instead of invented per-device

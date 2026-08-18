@@ -1,4 +1,4 @@
-// lgfx module (arc A7): lgfx.bind + the core LovyanGFX drawing set from Lua.
+// lgfx module: lgfx.bind + the core LovyanGFX drawing set from Lua.
 //
 // Test approach: LovyanGFX itself doesn't compile host-side, so the module
 // binds the minimal LgfxTarget interface and firmware uses the duck-typed

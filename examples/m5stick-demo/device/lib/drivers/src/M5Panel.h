@@ -1,4 +1,4 @@
-// M5Panel — "the panel, addressable" (arc R19).
+// M5Panel — "the panel, addressable".
 //
 // The whole board-side render target: geometry and a raw RGB565 blit over
 // M5GFX. Every pixel that reaches the glass goes through here — the

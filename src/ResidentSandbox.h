@@ -85,14 +85,14 @@ public:
     // Load a shader from fields (uses shader template)
     void loadShader(const ShaderFields& fields);
 
-    // Run a Lua chunk in the RUNNING app's lua_State — the update lattice's
-    // middle rung: the app's globals, timers, and event flow survive, and
-    // the chunk's re-registrations take effect through the app's own
-    // last-registration-wins registries. init() is NOT re-called. Never
-    // persisted (chunks are ephemeral; the server re-sends them after a
-    // reboot). Returns false — with the app left running and untouched — on
-    // compile error, runtime error, no app loaded, or during a
-    // deferAppLoads window (chunks are DROPPED with a log, not stashed).
+    // Run a Lua chunk in the RUNNING app's lua_State: an in-place patch, where
+    // loadApp is a restart. The app's globals, timers and event flow survive
+    // and init() is NOT re-called, so a chunk that reassigns a function or a
+    // table entry swaps it without losing app state. Never persisted (chunks
+    // are ephemeral; the server re-sends them after a reboot). Returns false —
+    // with the app left running and untouched — on compile error, runtime
+    // error, no app loaded, or during a deferAppLoads window (chunks are
+    // DROPPED with a log, not stashed).
     // Wire entry: system-channel {type:"chunk", code:"..."}.
     bool loadChunk(const char* code);
 
@@ -385,7 +385,7 @@ private:
     // Event ring buffer below.
     EventsModule _eventsModule;
     // The Lua `store` KV slot — survives loadApp; namespaced by the app-load
-    // message's storeNs; debounced write-through to _store (arc A4).
+    // message's storeNs; debounced write-through to _store.
     StoreModule _storeModule;
     EventSink _eventSink;
     SystemSink _systemSink;

@@ -9,9 +9,12 @@ surface (display, buttons, sensors, etc.). Pairs with
 
 - `src/` — the firmware library. `Resident::Sandbox` is the entry point;
   `ResidentSandboxConfig.h` is the user-facing config struct.
-- `examples/` — buildable PlatformIO / ESP-IDF projects, one per board.
-  Currently `m5stick-demo`, `adafruit-esp32-s2-feather`, `espidf-basic`,
-  and `m5stick-claude-code` (a permission-hook relay).
+- `examples/` — buildable PlatformIO / ESP-IDF projects plus server-side
+  companions: `m5stick-demo`, `m5stick-voice`, `m5stick-clock`,
+  `adafruit-esp32-s2-feather`, `espidf-basic`, and `server-template`
+  (a Cloudflare Worker relay to start from).
+- `prompts/` — canonical Lua-surface authoring sheets (`sandbox.md`,
+  `lgfx.md`, `lvgl.md`), composed per board by consumers.
 - `test/unit/` — PlatformIO native unit tests with hand-rolled stubs for
   Arduino / Courier / ezTime headers under `test/unit/include/`.
 - `tools/` — `run-tests.py` (test runner), `agent-plugin/` (the Resident

@@ -1,4 +1,4 @@
-// src/ResidentRenderTargets.h — the render-target registry (arc R17/R19).
+// src/ResidentRenderTargets.h — the render-target registry.
 //
 // The single place a board's drawable surfaces are declared, and the seam
 // between "the panel, addressable" (the board's job) and the machinery a

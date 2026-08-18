@@ -1,4 +1,4 @@
-// Render targets (arc R17) + bind-is-the-claim ownership (arc R19).
+// Render targets + bind-is-the-claim ownership.
 //
 // The registry is pure enough to test host-side in full: panel registration,
 // same-name merging, the owner bit, last-claim-wins, the strict gate (an

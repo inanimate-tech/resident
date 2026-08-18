@@ -678,7 +678,7 @@ void Sandbox::handleSystemMessage(const char* transportName, const char* type,
     return;
   }
   if (strcmp(type, "chunk") == 0) {
-    // In-sandbox chunk load (update lattice A6). Deliberately OUTSIDE the
+    // In-sandbox chunk load. Deliberately OUTSIDE the
     // app/shader stash-deferral above: a chunk during a deferred-load
     // window is dropped inside loadChunk (see its comment), never stashed,
     // and never persisted.
@@ -1819,12 +1819,11 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   return loadedOk;
 }
 
-// The update lattice's middle rung (arc A6): run `code` in the CURRENT
-// lua_State with the running app's globals intact — that is the point.
-// Replacing one component means re-running a small chunk; the app's own
-// last-registration-wins registries (named timers/recognizers, done in
-// arc-core) make the swap surgical. Contrast loadApp: full teardown +
-// lifecycle reboot.
+// Run `code` in the CURRENT lua_State, with the running app's globals intact.
+// The point is what it does NOT do: loadApp tears the app down, resets the
+// globals and re-runs init(), so patching one function costs the app its whole
+// state. A chunk is the in-place alternative — the sender ships a few lines
+// that reassign what changed, and everything else keeps running.
 //
 // Semantics:
 // - init() is NOT re-called; timers/events keep flowing. _runState, the

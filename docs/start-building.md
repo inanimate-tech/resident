@@ -5,7 +5,7 @@
 There are four steps:
 
 1. **Bring up your hardware** — prove the board boots and each peripheral works. *No Resident yet.*
-2. **Add Resident** — layer the Lua sandbox + Wi-Fi + WebSocket transport on top. Apps can run, but they only see built-in modules (`log`, `time`, `kv`, math).
+2. **Add Resident** — layer the Lua sandbox + Wi-Fi + WebSocket transport on top. Apps can run, but they only see built-in modules (`log`, `time`, `store`, `events`, math).
 3. **Add Resident drivers** — expose your hardware as Lua modules (`screen.*`, `led.*`, `battery.*`, …).
 4. **Create and push apps** — use the agent skills to author a `DEVICE-SKILL.md`, generate Lua against it, and push to the default backend.
 
@@ -49,7 +49,7 @@ Resident pulls in WiFi, ezTime, WiFiManager, Courier, ArduinoJson, Esp32Lua, and
 
 ## Step 2 — Add Resident
 
-**Goal:** the same hardware, now with Wi-Fi + Lua sandbox + WebSocket transport to the default relay. The device displays its 8-character device ID once connected and accepts apps over `push-app`. Apps can only call built-in modules (`log`, `time`, `kv`, math globals); hardware bindings come in step 3.
+**Goal:** the same hardware, now with Wi-Fi + Lua sandbox + WebSocket transport to the default relay. The device displays its 8-character device ID once connected and accepts apps over `push-app`. Apps can only call built-in modules (`log`, `time`, `store`, `events`, math globals); hardware bindings come in step 3.
 
 ### What the agent should produce
 
