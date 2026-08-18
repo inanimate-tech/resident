@@ -2,7 +2,7 @@
 // LVGL 9 + luavgl (arc R17, R19).
 //
 // OPT-IN: this header is not included by Resident.h. Include it from board
-// code that also lists LVGL and the luavgl arc fork in its lib_deps (see
+// code that also lists LVGL and the Inanimate luavgl fork in its lib_deps (see
 // examples/m5stick-demo's `m5stick-lvgl` env):
 //
 //   #include <ResidentLvglModule.h>
