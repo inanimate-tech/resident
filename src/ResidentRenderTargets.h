@@ -118,6 +118,19 @@ public:
     return true;
   }
 
+  // Live geometry for an entry. A board that registers its panel before the
+  // driver's begin() caches zeros (the panel does not know its size yet), so
+  // prefer the panel's own numbers whenever it has one — the hardware is the
+  // authority, and a reader should never see a stale zero.
+  static void size(const Entry& e, int32_t& w, int32_t& h) {
+    w = e.w;
+    h = e.h;
+    if (!e.panel) return;
+    const int32_t pw = e.panel->width();
+    const int32_t ph = e.panel->height();
+    if (pw > 0 && ph > 0) { w = pw; h = ph; }
+  }
+
   static int count() { return countRef(); }
 
   // Valid for 0 <= i < count().
