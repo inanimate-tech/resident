@@ -35,6 +35,8 @@ void loop()  { sandbox.loop(); }
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `deviceType` | `const char*` | `nullptr` | Device type string — used for the WiFiManager AP name and the default `/agents/<type>-agent/<deviceId>` WS path |
+| `firmwareVersion` | `const char*` | `nullptr` | The board build's version string, announced in the device hello (see [Hello](#hello)). Omitted from the hello when null. |
+| `profileRef` | `const char*` | `nullptr` | Name+version of this device type's out-of-band authoring document (e.g. `"m5stick@2"`), announced in the device hello. Omitted when null. |
 | `extensions` | `Extensions` | `{}` | Drivers and extensions registered with the sandbox (registration order is preserved across `begin()` / `registerModule()` / `update()` / `onAppReset()`) |
 | `shaderTemplate` | `ShaderTemplateFn` | `nullptr` | Function that converts shader fields into Lua source (see [Message Protocol](#message-protocol)) |
 | `telemetry` | `TelemetryCallback` | `nullptr` | Called with outgoing telemetry JSON strings (also settable later via `sandbox.setTelemetryCallback`) |
@@ -43,6 +45,11 @@ void loop()  { sandbox.loop(); }
 | `systemLED` | `SystemLED*` | `nullptr` | Optional LED indicator; Resident's internal handler calls `solidColor()` automatically on connection state changes |
 | `network` | `std::optional<Courier::Config>` | unset | Networking opt-in. Set ⇒ Sandbox constructs an internal `Courier::Client`, drives WiFi / transports, fires connection callbacks. Unset ⇒ standalone runtime, no WiFi pulled in. |
 | `persistApps` | `bool` | `true` | Save the last successfully-loaded app to flash and restore it on boot. Set to `false` to disable for a build. |
+| `gateTickOnConnection` | `bool` | `false` | Restore the pre-0.8 behavior of pausing `on_tick` and event dispatch while disconnected. The default is offline-first: the app keeps running; only network sends wait. |
+| `openUnsafeLibs` | `bool` | `false` | Give the app environment the full Lua stdlib. The default removes `os`/`io`/`package`/`require`/`load`/`dofile`/`loadstring`/`loadfile`/`debug`. |
+| `freshAppEnvironment` | `bool` | `true` | Reset app globals to the runtime baseline on every `loadApp` — nothing from the previous app survives except the store slot. Set `false` for builds whose apps relied on cross-load leakage. |
+| `executionBudget` | `uint32_t` | `2000000` | Lua instruction cap per dispatch (init / one tick / one event / one chunk / each framework hook). Over-budget aborts the dispatch with a `runtime_error`; the app survives. `0` = unlimited. |
+| `framework` | `std::optional<FrameworkConfig>` | unset | Embed a framework module: `{name, version, source}` — privileged Lua the sandbox hosts outside the app (see [Framework modules](#framework-modules)). |
 | `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
 | `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). On M5 boards use the shipped `Resident::M5Mic` (`#include <ResidentM5Mic.h>`); otherwise implement `Resident::SystemMic`. Not a `Driver` — the pump owns its `begin()`/`end()`. |
 | `persistentStore` | `Resident::PersistentStore*` | `nullptr` | Override the backing store for persistence. `nullptr` uses NVS on device; inject a fake in tests. |
@@ -271,7 +278,9 @@ sandbox.onSystemButtonHold(cb);        // cb(true) on hold (past threshold), cb(
 sandbox.addOverlay(&ov, &surface, prio); // register a claim on a display surface, with priority
 sandbox.requestOverlay(&ov, show);       // request show/hide; per-surface arbitration picks winners
 sandbox.removeOverlay(&ov);              // deregister (tears the overlay down, resumes app if it suspended)
-sandbox.startMicStream();              // stream systemMic frames (default sink: ws().sendBinary)
+sandbox.startCapture(stream, format);  // {system, capture} bracket + mic stream (0.8 dialect)
+sandbox.endCapture();                  // stop the stream, close the bracket
+sandbox.startMicStream();              // stream systemMic frames, no brackets (board owns control frames)
 sandbox.stopMicStream();               // stop streaming
 sandbox.isMicStreaming();              // true while streaming
 sandbox.setMicStreamSink(fn);          // override the binary frame sink
@@ -393,28 +402,32 @@ All `Extension` methods (`name`, `registerModule`, `begin`, `update`, `onAppRese
 void sendEvent(const char* name, const EventField* fields, int fieldCount);
 ```
 
-Queues a driver event into the sandbox event ring. The event appears in Lua as `on_event(ctx, event)` with the event fields flattened directly onto the `event` table.
+Queues a driver event into the sandbox event ring. The event appears in Lua as `on_event(ctx, event)` with the fields as the `event.data` table — the same shape wire events use (since 0.8; fields were previously flattened onto the event table).
 
 ```cpp
 // In a button driver's ISR or debounce handler:
 EventField fields[] = {
     { "id",    EventField::INT,    { .i = buttonId } },
     { "state", EventField::STRING, { .s = "pressed" } },
+    { "mag",   EventField::FLOAT,  { .f = 1.5f } },
+    { "held",  EventField::BOOL,   { .b = true } },
 };
-sendEvent("button", fields, 2);
+sendEvent("button", fields, 4);
 ```
 
-The event name `"button"` is special: it increments `ctx.trigger_count` for every app tick until the next app load.
+The event name `"button"` is special: it increments `ctx.trigger_count`.
 
 ### EventField struct
 
 ```cpp
 struct EventField {
     const char* key;
-    enum Type { INT, STRING } type;
+    enum Type { INT, STRING, FLOAT, BOOL } type;
     union {
         int         i;
         const char* s;
+        float       f;
+        bool        b;
     };
 };
 ```
@@ -515,6 +528,14 @@ m.staticMethod("now_ms", [](lua_State* L) -> int {
 
 `staticMethod` accepts any `lua_CFunction` (`int(*)(lua_State*)`).
 
+### Fallthrough
+
+```cpp
+m.fallthrough(&MyModule::l_index);   // any lua_CFunction, receives (table, key)
+```
+
+Gives the module table a metatable whose `__index` is the supplied function — for extensions whose global must resolve missing keys against a table owned elsewhere. `ResidentLvglModule` uses this to keep luavgl's constants and constructors reachable alongside `lvgl.bind`.
+
 ### Constants
 
 ```cpp
@@ -547,6 +568,28 @@ cfg.extensions = {&display, &button, &imu};
 Extensions are stored in registration order. `begin()`, `registerModule()`, `update()`, and `onAppReset()` are all called in registration order.
 
 The user owns the extension instances (typically global or static variables). The `Extensions` struct holds raw pointers and does not manage lifetime.
+
+---
+
+## Resident::RenderTargets
+
+The render-target registry — the single place a board's drawable surfaces are declared, and INTERNAL machinery: both graphics modules feed it as a side effect of `addDisplay` (`LgfxModule` and `LvglModule`), and `lvgl.bind(name)` resolves against it. It is deliberately NOT broadcast: surface geometry is an authoring fact, and the one authority for authoring facts is the document behind the hello's `profile` key. A static-capacity table (`RenderTargets::MAX` = 8), no allocation, board-lifetime (entries survive app loads; `clear()` exists for tests).
+
+```cpp
+#include <ResidentRenderTargets.h>   // also pulled in by Resident.h
+
+// Usually implicit via a module's addDisplay; direct registration works too:
+Resident::RenderTargets::add("dial", 240, 240, "round",
+                             Resident::RenderTargets::MODULE_LGFX);
+```
+
+| Member | Description |
+|--------|-------------|
+| `add(name, w, h, shape, module)` | Register or update a surface. Same name merges: geometry and shape refresh, module bit ORed in. `shape` is `"rect"` or `"round"` (`nullptr` keeps the existing/default). `module` is `MODULE_LGFX` or `MODULE_LVGL`. Returns `false` when full or `name` is null. |
+| `count()` / `entry(i)` | Iterate the registered entries (`{name, w, h, shape, modules}`). |
+| `clear()` | Tests only — surfaces are hardware, not app state. |
+
+Names and shapes are stored as pointers; the registrant keeps them alive (string literals in firmware). `LgfxModule::addDisplay(name, target, shape = "rect")` registers geometry from the target's `width()`/`height()` (re-read in the module's `begin()`, since sprite-backed targets often have no geometry until their driver's `begin()`); `LvglModule::addDisplay(name, disp, shape = "rect")` reads `lv_display_get_horizontal_resolution`/`_vertical_`.
 
 ---
 
@@ -729,14 +772,14 @@ All callbacks receive a `ctx` table. `on_tick` also receives `dt_ms` (integer, m
 | Field | Type | Description |
 |-------|------|-------------|
 | `time_ms` | integer | Milliseconds since the current app was loaded |
-| `trigger_count` | integer | Number of `"button"` driver events since the last app load |
-| `generation_id` | string? | The `generationId` the server stamped on the app load message — present in `init`/`on_tick`/`on_event`; `nil` when the load didn't carry one (direct C++ loads, NVS restores) |
+| `trigger_count` | integer | Number of `"button"` driver events since BOOT (not reset by app loads; kept for shader compatibility) |
+| `generation_id` | string? | The `generationId` the server stamped on the app load message — `nil` when the load didn't carry one (direct C++ loads, NVS restores) |
 | `utc_h` | integer | Current UTC hour (0–23) |
 | `utc_m` | integer | Current UTC minute (0–59) |
 | `localtime_h` | integer | Local hour — equals `utc_h` unless a timezone has been set |
 | `localtime_m` | integer | Local minute — equals `utc_m` unless a timezone has been set |
 
-`localtime_h` / `localtime_m` reflect local time only after `Sandbox::setTimezone` succeeds. Otherwise they are equal to `utc_h` / `utc_m`.
+The table is IDENTICAL in every callback (since 0.8 — the wall-clock fields used to be absent from `on_event`'s ctx). `localtime_h` / `localtime_m` reflect local time only after `Sandbox::setTimezone` succeeds; otherwise they equal `utc_h` / `utc_m`.
 
 ### `event` table
 
@@ -748,16 +791,14 @@ All callbacks receive a `ctx` table. `on_tick` also receives `dt_ms` (integer, m
 | `channel` | string | Source discriminator, always present: `"app"` or `"runtime"` for wire-borne frames (both delivered here), `"driver"` for hardware/driver events and host-firmware `sendAppEvent` injections (unless the caller passed a channel) |
 | `src` | string? | The frame's `src` envelope field (e.g. `"server"`), only when present on the frame; `nil` for internal events |
 | `seq` | integer? | The frame's per-sender monotonic `seq`, only when present on the frame; `nil` for internal events |
-| *(driver fields)* | any | For **driver events**: extra fields are flattened directly onto the table (e.g. `event.id`, `event.state`) |
-| `data` | table | For **app events**: the JSON `data` object parsed into a subtable — strings (unescaped), integers, floats, booleans, and nested objects/arrays to 3 container levels (deeper containers are skipped with their key; JSON `null` leaves a hole at its array index). Unparseable or oversized (> `RESIDENT_EVENT_JSON_MAX`) data drops the whole event rather than delivering it garbled |
+| `data` | table | The payload, for EVERY event — driver and wire alike (one shape since 0.8). Parsed by one set of rules: strings (unescaped), integers, floats, booleans, and nested objects/arrays to 3 container levels (deeper containers are skipped with their key; JSON `null` leaves a hole at its array index). Unparseable or oversized (> `RESIDENT_EVENT_JSON_MAX`) data drops the whole event rather than delivering it garbled |
+| *(deprecated shadow)* | scalar | DRIVER events additionally mirror their top-level scalars onto the event table (`event.index`) — the historical flattened shape, kept for one deprecation window so existing apps survive a firmware bump. Envelope keys always win over a colliding field. New code reads `event.data.*`; the shadow goes with the next major |
 
 ```lua
 function on_event(ctx, event)
     if event.name == "button" then
-        -- driver event: fields flattened directly
-        log.info("button " .. tostring(event.id))
+        log.info("button " .. tostring(event.data.id))
     elseif event.name == "update" then
-        -- app_event: data is a subtable
         log.info("color: " .. event.data.color)
     end
 end
@@ -797,7 +838,7 @@ events.send("state", { on = true, pos = { x = 1, y = 2 }, tags = { "a", "b" } })
 
 Serialized into a bounded buffer of `RESIDENT_EVENT_JSON_MAX` bytes (default 1024; override with a build flag, e.g. `-DRESIDENT_EVENT_JSON_MAX=2048`). An oversized payload is never truncated: the event is dropped, a line is logged to Serial, and `events.send` returns `false`.
 
-Rate-limited by a shared token bucket: 5 events/s sustained, burst of 10. Returns `false` (rather than raising a Lua error) when rate-limited, when the event name is empty, or when the underlying send fails — always check the return value if you need to know whether it went out.
+Delivery (0.8): `events.send(name, data, opts?)` returns `"sent" | "queued" | "dropped"` (both success states truthy). Sends over the rate limit (shared token bucket: 5 events/s sustained, burst of 10) or while offline QUEUE into a bounded outbound queue (`RESIDENT_EVENT_QUEUE_SIZE`, default 16) and drain in order from `loop()` as tokens and connectivity allow. Envelopes are stamped (`seq`/`nonce`) at enqueue, so ordering holds and retries are dedup-safe. `opts.keep = true` marks a message overflow eviction never removes (eviction prefers the oldest non-keeper and feeds the drop counter). `"dropped"` means the event will never go: empty name, oversize payload, or evicted while the queue was full of keepers.
 
 ### `lgfx` module (optional)
 
@@ -826,6 +867,30 @@ Handle methods (colon-call), matching LovyanGFX names/argument orders: `fillScre
 
 **Present semantics:** `g:flip()` runs the presenter the firmware supplied at registration (for sprite-backed displays: push the sprite — e.g. the driver's `repaint()`); with no presenter (direct-to-panel targets) `flip()` is a no-op and drawing is live. Deliberately small this pass: default font + size multiplier only — no font selection, images, or Lua-created sprites.
 
+`addDisplay` also declares the surface in the [`RenderTargets`](#residentrendertargets) registry (shape via the optional third parameter, default `"rect"`), so the [hello](#hello) announces it.
+
+### `lvgl` module (optional)
+
+Retained-mode UI from Lua — LVGL 9 through the [luavgl arc fork](https://github.com/inanimate-tech/luavgl)'s display-scoped binding. Present only when the firmware registers displays into an `LvglModule` and lists it in `SandboxConfig::extensions`. Opt-in like the lgfx module, with an extra requirement: the board's own build must supply LVGL and luavgl (`lib_deps`), plus the display/flush/tick glue — Resident hosts the Lua surface, never the LVGL runtime. See `examples/m5stick-demo`'s `m5stick-lvgl` env for the full wiring (its `LVGLDriver` is the glue template).
+
+```cpp
+#include <ResidentLvglModule.h>   // not pulled in by Resident.h
+Resident::LvglModule lvglModule;
+// after the glue driver created its lv_display_t (begin it early if needed):
+lvglModule.addDisplay("main", disp);            // shape "rect" by default
+// cfg.extensions = {..., &glueDriver, &lvglModule};
+```
+
+```lua
+local h = lvgl.bind("main")    -- raises a Lua error for unknown names
+h.Label { text = "hi", align = lvgl.ALIGN.CENTER }
+h:set_theme { screen = { bg_color = "#0b0b10" } }
+```
+
+`lvgl.bind(name)` returns luavgl's display-scoped handle (idempotent per display): widget constructors parented to that display's active screen, `screen()`/`clean()`/`HOR_RES()`/`VER_RES()`/`mirror()`/`set_default()`/`set_theme{...}`, everything else falling through to the full luavgl module — see the fork's `docs/display-bind.md` for the handle contract and `prompts/lvgl.md` for the app-author surface. The `lvgl` global is Resident's module table (just `bind`), with a metatable falling through to luavgl's own module table — so `lvgl.Font`, `lvgl.ALIGN`, `lvgl.Anim` etc. resolve normally once the module has loaded, which happens on the first `bind` call. Two things follow: fallthrough keys are `nil` before any `bind` (bind first — apps always do), and Resident's name-based `bind` shadows luavgl's userdata-based `lvgl.bind(disp)` (use `lvgl.disp` functions if you truly need the raw form).
+
+Per-display ownership (last bind wins, C-side cleans invalidating Lua handles) is luavgl's business at the display level — Resident does not duplicate it. Themes are Lua's business too: glue drivers should bake none, and apps install their own via `h:set_theme{...}`. `addDisplay` also feeds the [`RenderTargets`](#residentrendertargets) registry (internal — bind-by-name resolution, not broadcast).
+
 ### `store` module
 
 An app-scoped **persistent** KV slot of scalars — state here survives `loadApp` (same identity) and reboot. RAM-backed with debounced write-through to the persistent store (NVS on device): at most one write per ~2 s of mutation quiet, plus a forced flush on app unload.
@@ -836,6 +901,7 @@ An app-scoped **persistent** KV slot of scalars — state here survives `loadApp
 | `store.set(key, value)` | boolean | Set a scalar (string/number/boolean). `nil` deletes. `false` if the value is non-scalar or the write would exceed the budget (rejected whole — no partial writes) |
 | `store.keys()` | array | All keys currently in the slot |
 | `store.clear()` | — | Empty the slot |
+| `store.remaining()` | integer | Bytes left in the persisted budget (0 when at/over) |
 
 **Scoping / reset policy:** the slot is namespaced by an app identity the server provides on the load message — `{channel:"system", type:"app", code:"...", storeNs:"<id ≤32 chars>"}`. Loading with the **same** `storeNs` preserves the slot; a **different** `storeNs` clears it first (persisted immediately); missing `storeNs` uses the shared default namespace `"app"`. The namespace is persisted alongside the data, so the policy holds across reboots. Direct C++ `loadApp()` calls leave the namespace unchanged.
 
@@ -977,7 +1043,24 @@ Send `{"type":"forget"}` (or call `clearPersistedApp()`) to wipe the saved app.
 
 ### Telemetry (outgoing)
 
-The sandbox emits telemetry events via `TelemetryCallback`. Format:
+Every telemetry emission goes out TWO ways:
+
+1. **On the wire, by default** (since 0.8): a channelled control-plane frame,
+   queued and drained from `loop()` (emissions often happen in the receive
+   context, where a direct send would be a reentrant WS write):
+
+```json
+{ "channel": "system", "type": "telemetry",
+  "data": { "name": "compile_error", "generationId": "1a2b3c", "error": "..." } }
+```
+
+   The queue is a bounded ring (8 slots, 7 usable); while unsendable
+   (offline), overflow drops the oldest. Sends route through the system sink
+   when one is set (`setSystemSink` — the control-plane mirror of
+   `setEventSink`), else the transport.
+
+2. **Via `TelemetryCallback`**, when one is set — the legacy flat format,
+   unchanged, for boards that route telemetry themselves:
 
 ```json
 { "type": "telemetry", "generationId": "1a2b3c", "name": "app_compiled", "data": {} }
@@ -994,16 +1077,67 @@ The sandbox emits telemetry events via `TelemetryCallback`. Format:
 | `app_restored` | A persisted app was successfully restored on boot |
 | `persist_load_failed` | A persisted app failed to load on boot and was discarded |
 | `persist_too_big` | An app was too large to save to the persistent store |
+| `store_full` | An over-budget `store.set` was rejected; `data.error` carries the key (once per key per app load) |
+| `framework_applied` | A framework (built-in or slot update) loaded successfully |
+| `framework_error` | A framework chunk failed to compile or run; `data.error` carries the message. A failing slot blob is discarded and the built-in runs |
+| `dropped` | The drop counter's periodic report; `data.count` = items silently dropped since boot (ring overflow, oversize payloads, rate limits, closed legacy paths). At most one report per minute, only when changed |
 
-Wire the callback up before `setup()` to forward telemetry over the connected WebSocket transport:
+The wire path makes the old forward-it-yourself callback wiring unnecessary; the callback remains for boards that want an additional sink.
 
-```cpp
-sandbox.setTelemetryCallback([](const char* json) {
-    sandbox.ws().sendText(json);
-});
+### Hello
+
+On every transport connect the sandbox queues a device hello — the device announcing itself so the host never has to assume its shape — drained by `loop()` (never sent from the connect context):
+
+```json
+{ "channel": "system", "type": "hello", "data": {
+  "protocol": 1,
+  "deviceType": "m5stick", "firmware": "1.4.0", "bootId": "9f2c11a0",
+  "profile": "m5stick@2",
+  "limits": { "eventBytes": 1024, "replyBytes": 1024, "storeBytes": 2048,
+              "storeNsChars": 32, "eventsPerSec": 5 },
+  "app": { "storeNs": "oracle", "generationId": "g1" }
+} }
 ```
 
+- `protocol` is `RESIDENT_PROTOCOL_VERSION` — the whole compatibility story. There is deliberately no feature list: chunk support is part of protocol version 1, telemetry needs no advance notice, and capture announces itself via its bracket. A genuinely optional capability introduces its own hello field when it exists.
+- `firmware` / `profile` come from `SandboxConfig::firmwareVersion` / `profileRef` (omitted when unset).
+- `limits` are the build's actual constants — hosts should size payloads against them instead of assuming.
+- Deliberately absent: surfaces, sensors, driver modules — authoring facts, whose one authority is the document behind `profile`. The hello carries only what a host needs to operate the session.
+- `app` describes what is running (or persisted and awaiting the boot countdown): its store namespace, plus `generationId` only when the wire stamped one (a restored app's self-generated id is omitted).
+- `sandbox.requestHello()` re-queues it at any time.
+
+A host hello may answer on the same channel: `{ "channel":"system", "type":"hello", "data": { "protocol":1, "tz":"Europe/London" } }`. The sandbox applies `tz` and records receipt (`sandbox.hostHelloSeen()`). Nothing else gates on it yet — a host that never hellos gets today's behavior in full — but future defaults (framed media, legacy-path removal) will key on it.
+
 ---
+
+## Framework modules
+
+Privileged runtime code the sandbox hosts OUTSIDE the app — for board families that ship a Lua framework their apps program against. Resident is generic here: it hosts; it never interprets.
+
+```cpp
+Resident::SandboxConfig::FrameworkConfig fw;
+fw.name = "myfw";          // announced in the hello — data, not semantics
+fw.version = 3;
+fw.source = MYFW_LUA;      // the built-in copy (cold-start default)
+cfg.framework = fw;
+```
+
+**The environment boundary.** The framework chunk runs in a private environment whose `__index` is `_G`: it reads every baseline global, but its own assignments stay local — app code cannot reach them. Writing through `_G` is the explicit app-facing act: `_G.api = {...}` installs API for apps. The environment also holds the one capability apps never get: `runtime.send(name, data, opts?)` — the control-plane mirror of `events.send` (same queue, same three-state return), publishing on `channel:"runtime"`. Hosts can therefore trust runtime-channel traffic: no app-level code can forge it.
+
+**Lifecycle hooks** (all optional; looked up in the framework env after its chunk runs):
+
+| Hook | When | Contract |
+|------|------|----------|
+| `framework_install()` | Before each app chunk runs (after the fresh-environment reset) | (Re)install the framework's app-facing API into `_G` |
+| `framework_tick(ctx, dt_ms)` | Every tick, before the app's `on_tick` | Same ctx shape as app callbacks |
+| `framework_event(ctx, e)` | Every event, before the app's `on_event` | Return `true` to consume — the app never sees it |
+| `framework_app_loaded()` | After an app loads successfully | — |
+
+Under a framework, an app may define NO lifecycle globals (`init`/`on_tick`/`on_event`) — validity is the framework's business. Events are accepted and dispatched to the framework even when the app has no `on_event`.
+
+**The framework slot.** `{channel:"system", type:"framework", name, version, code}` installs a replacement, persisted via the `PersistentStore` framework-slot virtuals (NVS key `resident/framework`) and loaded at boot in preference to the built-in. Empty `code` clears the slot and reverts to the built-in. A slot blob that fails to load is discarded (`framework_error`) and the built-in runs. Because only the system channel can carry this message, no sandboxed code — app or framework — can replace the framework. Each hello announces `framework: {name, version, source: "builtin"|"slot"}`, which is how a host decides to push an update.
+
+Errors in framework hooks are contained like app errors (`runtime_error`, dispatch dies, everything survives), and every hook runs under the execution budget.
 
 ## Writing a Driver
 

@@ -49,11 +49,20 @@ void PushButtonsDriver::update()
       }
     }
 
-    // Check long-press threshold while held
-    if (btn.isDown && !btn.longPressTriggered && _longPress[i].callback) {
-      if (now - btn.downStartTime >= _longPress[i].thresholdMs) {
+    // Check hold threshold while held. Recognition belongs to the DRIVER
+    // (0.8): a `hold` event is emitted whether or not a firmware callback
+    // is registered, so apps bind gestures without firmware wiring.
+    if (btn.isDown && !btn.longPressTriggered) {
+      unsigned long threshold =
+          _longPress[i].callback ? _longPress[i].thresholdMs : DEFAULT_HOLD_MS;
+      if (now - btn.downStartTime >= threshold) {
         btn.longPressTriggered = true;
-        _longPress[i].callback(true);
+        if (_longPress[i].callback) _longPress[i].callback(true);
+        Resident::EventField fields[] = {
+          {"index", Resident::EventField::INT, {.i = (int)i}},
+          {"held", Resident::EventField::BOOL, {.b = true}},
+        };
+        sendEvent("hold", fields, 2);
       }
     }
 
@@ -67,14 +76,22 @@ void PushButtonsDriver::update()
             if (_longPress[i].callback) {
               _longPress[i].callback(false);
             }
+            Resident::EventField fields[] = {
+              {"index", Resident::EventField::INT, {.i = (int)i}},
+              {"held", Resident::EventField::BOOL, {.b = false}},
+            };
+            sendEvent("hold", fields, 2);
           } else {
             btn.pressCount++;
+            // `tap` is the recognized gesture (0.8); `button` remains as
+            // the deprecated legacy name for one release.
             Resident::EventField fields[] = {
               {"index", Resident::EventField::INT, {.i = (int)i}},
               {"count", Resident::EventField::INT, {.i = (int)btn.pressCount}}
             };
+            sendEvent("tap", fields, 2);
             sendEvent("button", fields, 2);
-            Serial.printf("PushButton[%d] pressed (count=%d)\n", i, btn.pressCount);
+            Serial.printf("PushButton[%d] tapped (count=%d)\n", i, btn.pressCount);
           }
           btn.isDown = false;
         }

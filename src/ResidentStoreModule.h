@@ -21,6 +21,8 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <functional>
+#include <vector>
 #include "ResidentExtension.h"
 #include "ResidentLuaModule.h"
 #include "ResidentPersistentStore.h"
@@ -53,7 +55,15 @@ public:
     m.method<StoreModule, &StoreModule::set>("set");
     m.method<StoreModule, &StoreModule::keys>("keys");
     m.method<StoreModule, &StoreModule::clear>("clear");
+    m.method<StoreModule, &StoreModule::remaining>("remaining");
   }
+
+  // Budget-rejection feedback (0.8): called with the key the first time a
+  // set() is rejected over budget, once per key per app load — silent
+  // state loss is impossible. The sandbox wires this to telemetry.
+  using RejectCallback = std::function<void(const char* key)>;
+  void onBudgetReject(RejectCallback cb) { _onReject = std::move(cb); }
+  void resetRejections() { _rejectedKeys.clear(); }
 
   // Deliberately NOT clearing on onAppReset — surviving loadApp is the
   // point. Reset happens only via setNamespace (a different app identity)
@@ -180,12 +190,22 @@ public:
       if (existed) root[key] = saved.as<JsonVariantConst>();
       else         root.remove(key);
       Serial.println("Resident::Sandbox: store.set over budget; rejected");
+      reportRejection(key);
       lua_pushboolean(L, false);
       return 1;
     }
 
     markDirty();
     lua_pushboolean(L, true);
+    return 1;
+  }
+
+  // ── Lua: store.remaining() -> bytes left in the persisted budget ────────
+  int remaining(lua_State* L) {
+    size_t used = persistedSize();
+    lua_pushinteger(L, used >= RESIDENT_STORE_JSON_MAX
+                           ? 0
+                           : (lua_Integer)(RESIDENT_STORE_JSON_MAX - used));
     return 1;
   }
 
@@ -217,6 +237,17 @@ private:
   bool _dirty = false;
   unsigned long _lastMutationMs = 0;
   unsigned long _dirtySinceMs = 0;   // first dirty moment (max-flush clock)
+  RejectCallback _onReject;
+  std::vector<String> _rejectedKeys;   // once-per-key-per-load gate
+
+  void reportRejection(const char* key) {
+    if (!_onReject) return;
+    for (auto& k : _rejectedKeys) {
+      if (k == key) return;
+    }
+    _rejectedKeys.push_back(String(key));
+    _onReject(key);
+  }
 
   void markDirty() {
     _dirty = true;

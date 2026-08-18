@@ -116,7 +116,7 @@ The Feather exposes three drivers — see [`device/lib/drivers/src/`](../example
 - **Where to allocate framebuffers.** Large back-buffers (a 16-bit canvas at typical small-display resolutions is tens of KB) can live in SRAM if it fits alongside Wi-Fi + Lua state, or be pushed to PSRAM if the chip has it. Measure before deciding; the Lua state alone is a few tens of KB once an app is loaded.
 - **Lifecycle of driver state across apps.** On `onAppReset()`, restore a safe baseline: clear the canvas, turn the NeoPixel off, stop any audio. The next app should see fresh hardware. The example: `LEDDriver::onAppReset()` does `setPixelColor(0, 0); show();`.
 - **Order of hardware init vs `sandbox.setup()`.** Build and `init()` the underlying Adafruit / vendor objects in `main.cpp` *before* calling `sandbox.setup()`. The driver's own `begin()` runs inside Resident's lifecycle and assumes the hardware is already up.
-- **Event-emitting drivers.** Drivers can call `sendEvent(name, fields, count)` to surface hardware events to Lua's `on_event`. The m5stick-demo's `PushButtonsDriver` is the canonical example (button presses → `event.name == "button"`, `event.index == 0|1`).
+- **Event-emitting drivers.** Drivers can call `sendEvent(name, fields, count)` to surface hardware events to Lua's `on_event`. The m5stick-demo's `PushButtonsDriver` is the canonical example (button presses → `event.name == "button"`, `event.data.index == 0|1`).
 
 ### What the agent should be able to demonstrate
 

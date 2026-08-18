@@ -38,6 +38,14 @@ struct SandboxConfig {
   // defaults). Stays at top-level — it labels the device, not the network.
   const char* deviceType = nullptr;
 
+  // Optional self-description carried in the device hello (see docs/api.md
+  // "Hello"). firmwareVersion is the BOARD build's version string (not
+  // Resident's); profileRef names the out-of-band authoring document for
+  // this device type, with its version (e.g. "m5stick@2"). Both omitted
+  // from the hello when null.
+  const char* firmwareVersion = nullptr;
+  const char* profileRef = nullptr;
+
   // Hardware bindings exposed to Lua, plus shader-expression template.
   Extensions extensions;
   ShaderTemplateFn shaderTemplate = nullptr;
@@ -73,6 +81,42 @@ struct SandboxConfig {
   // to override the backing store (tests inject an in-memory fake).
   bool persistApps = true;
   PersistentStore* persistentStore = nullptr;
+
+  // Offline-first (0.8): ticking and event dispatch no longer gate on
+  // connectivity — a disconnected device keeps running its app; only
+  // network sends wait. Set true to restore the old gated behavior.
+  bool gateTickOnConnection = false;
+
+  // Sandbox hardening (0.8): by default the app environment does NOT get
+  // os / io / package / require / load / dofile / loadstring / loadfile /
+  // debug. Set true to open the full standard library (trusted builds
+  // whose apps predate the closed default).
+  bool openUnsafeLibs = false;
+
+  // Fresh app environment (0.8): each loadApp resets the globals to the
+  // runtime baseline — nothing from the previous app survives except the
+  // store slot. Set false for builds whose apps relied on cross-load
+  // global leakage.
+  bool freshAppEnvironment = true;
+
+  // Per-dispatch Lua instruction budget (0.8): init, one tick, one event,
+  // or one chunk may execute at most this many VM instructions before the
+  // dispatch is aborted with a runtime_error (the app survives — a
+  // `while true do end` kills a dispatch, not the device). 0 = unlimited.
+  uint32_t executionBudget = 2000000;
+
+  // Framework module (0.8): privileged runtime code the sandbox hosts
+  // OUTSIDE the app — its own environment, the runtime-channel sender,
+  // lifecycle interception, and a persistent update slot written only by
+  // {channel:"system", type:"framework"} messages. Resident is generic
+  // here: `name` is whatever framework the board embeds; the sandbox
+  // never interprets it.
+  struct FrameworkConfig {
+    const char* name = nullptr;     // announced in the hello
+    int version = 0;                // built-in copy's version
+    const char* source = nullptr;   // built-in Lua source (the cold-start default)
+  };
+  std::optional<FrameworkConfig> framework;
 
   // Networking opt-in. Presence ⇒ Sandbox constructs a Courier::Client with
   // this config, drives WiFi/transports, fires onConnected/onMessage/etc.

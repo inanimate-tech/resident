@@ -1,6 +1,3 @@
-<!-- SOURCE: prompts/sandbox.md — canonical copy lives there, versioned
-     with the code it documents. Edit THAT file and re-copy here. -->
-
 # Resident sandbox — Lua surface
 
 You are writing a Lua app for a small connected device. This sheet is the

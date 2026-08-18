@@ -101,11 +101,14 @@ void setup() {
 
     sandbox.addOverlay(&listening, &displayDriver, /*priority=*/100);
 
-    // Push-to-talk: hold the front button → overlay + stream; release → stop.
+    // Push-to-talk: hold the front button → overlay + capture; release →
+    // stop. startCapture/endCapture bracket the raw media frames with
+    // {system, capture, state/stream/format} so the host knows what the
+    // bytes are before the first frame arrives (the 0.8 capture dialect).
     sandbox.onSystemButtonHold([](bool held) {
         sandbox.requestOverlay(&listening, held);
-        if (held) sandbox.startMicStream();
-        else      sandbox.stopMicStream();
+        if (held) sandbox.startCapture();
+        else      sandbox.endCapture();
     });
 
     sandbox.setup();

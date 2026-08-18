@@ -133,18 +133,18 @@ void test_publish_event_cpp_path(void) {
 }
 
 void test_publish_event_rate_limited(void) {
+  // 0.8: over-limit publishes QUEUE instead of dropping — the sink sees the
+  // burst allowance immediately and the rest drain as tokens refill.
   build();
-  int sent = 0;
+  int went = 0;
   for (int i = 0; i < 20; i++) {
-    if (sandbox->publishEvent("spam", "{}")) sent++;
+    if (sandbox->publishEvent("spam", "{}")) went++;
   }
-  TEST_ASSERT_EQUAL_INT(10, sent);     // burst of 10, no time passing
-  testMillis() += 1000;                // 1s → 5 tokens refill
-  sent = 0;
-  for (int i = 0; i < 20; i++) {
-    if (sandbox->publishEvent("spam", "{}")) sent++;
-  }
-  TEST_ASSERT_EQUAL_INT(5, sent);
+  TEST_ASSERT_EQUAL_INT(10, sinkCalls);   // burst of 10, no time passing
+  TEST_ASSERT_TRUE(went > 10);            // the rest queued (true = will go)
+  testMillis() += 1000;                   // 1s → 5 tokens refill
+  sandbox->loop();
+  TEST_ASSERT_EQUAL_INT(15, sinkCalls);   // 5 more drained, in order
 }
 
 void test_nonces_are_unique_and_deviceid_prefixed(void) {
@@ -158,12 +158,26 @@ void test_nonces_are_unique_and_deviceid_prefixed(void) {
   TEST_ASSERT_NOT_NULL(strstr(captured.c_str(), prefix));
 }
 
-void test_publish_event_without_sink_or_network_returns_false(void) {
+void test_publish_event_without_sink_or_network_queues(void) {
+  // 0.8: no sink and no network means QUEUED, not lost — the event goes
+  // when a sink appears (reconnect, in production).
   Resident::SandboxConfig cfg;
   cfg.deviceType = "native-test";
   sandbox = new Resident::Sandbox(cfg);
   sandbox->setup();
-  TEST_ASSERT_FALSE(sandbox->publishEvent("x", "{}"));
+  captured.clear();
+  sinkCalls = 0;
+  TEST_ASSERT_TRUE(sandbox->publishEvent("x", "{}"));   // queued
+  sandbox->setEventSink([](JsonDocument& doc) {
+    std::string out;
+    serializeJson(doc, out);
+    captured = out;
+    sinkCalls++;
+    return true;
+  });
+  sandbox->loop();
+  TEST_ASSERT_EQUAL_INT(1, sinkCalls);
+  TEST_ASSERT_NOT_NULL(strstr(captured.c_str(), "\"type\":\"x\""));
 }
 
 // ── serializeLuaTableToJson: byte-exact unit tests ─────────────────────────
@@ -270,13 +284,15 @@ void test_events_send_oversize_payload_dropped_not_truncated(void) {
   char code[512];
   snprintf(code, sizeof(code),
            "function init(ctx)\n"
-           "  ok = events.send('big', {blob = string.rep('x', %d)})\n"
+           "  local r = events.send('big', {blob = string.rep('x', %d)})\n"
+           "  is_dropped = (r == 'dropped')\n"
            "end\n"
            "function on_tick(ctx, dt) end\n",
            RESIDENT_EVENT_JSON_MAX + 100);
   loadApp(code);
   TEST_ASSERT_EQUAL_INT(0, sinkCalls);                       // nothing sent
-  TEST_ASSERT_FALSE(sandbox->luaGlobalBoolForTest("ok"));    // send() -> false
+  // 0.8: send() returns the string "dropped" for an oversize payload.
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("is_dropped"));
 }
 
 // ── incoming path: pushJsonObjectToLua unit tests (mirror the outgoing) ───
@@ -508,7 +524,7 @@ int main(int, char**) {
   RUN_TEST(test_publish_event_cpp_path);
   RUN_TEST(test_publish_event_rate_limited);
   RUN_TEST(test_nonces_are_unique_and_deviceid_prefixed);
-  RUN_TEST(test_publish_event_without_sink_or_network_returns_false);
+  RUN_TEST(test_publish_event_without_sink_or_network_queues);
   RUN_TEST(test_serializer_flat_payloads_unchanged);
   RUN_TEST(test_serializer_escapes_quotes_backslashes_controls);
   RUN_TEST(test_serializer_escapes_keys);

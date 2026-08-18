@@ -75,6 +75,9 @@ def unit_tests() -> None:
 # app-less hold-detector fix — this build was never gated before).
 PLATFORMIO_EXAMPLES: list[Path | tuple[Path, str]] = [
     ROOT / "examples" / "m5stick-demo" / "device",
+    # The optional LVGL + luavgl env (ResidentLvglModule + the ported
+    # LVGLDriver glue) — not in default_envs, so gate it explicitly.
+    (ROOT / "examples" / "m5stick-demo" / "device", "m5stick-lvgl"),
     ROOT / "examples" / "adafruit-esp32-s2-feather" / "device",
     ROOT / "examples" / "adafruit-esp32-s2-feather" / "device-minimal-resident",
     # device-no-resident doesn't use Resident; included as a smoke test that

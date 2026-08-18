@@ -92,8 +92,8 @@ local n = button.press_count()   -- total presses since the app loaded
 ```
 
 Best practice: handle presses in `on_event(ctx, event)` rather than
-polling. The event has `event.name == "button"`, `event.index == 0`, and
-`event.count` (the running press count).
+polling. The event has `event.name == "button"`, `event.data.index == 0`, and
+`event.data.count` (the running press count).
 
 ```lua
 function on_event(ctx, event)

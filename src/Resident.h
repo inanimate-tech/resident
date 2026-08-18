@@ -8,6 +8,7 @@
 #include "ResidentExtension.h"
 #include "ResidentExtensions.h"
 #include "ResidentLuaModule.h"
+#include "ResidentRenderTargets.h"
 #include "ResidentStatusLED.h"
 #include "ResidentStatusDisplay.h"
 #include "ResidentSystemLED.h"

@@ -8,6 +8,7 @@
 #include <map>
 #include <functional>
 #include <optional>
+#include <vector>
 #include <Courier.h>
 #include "ResidentDriver.h"
 #include "ResidentLuaModule.h"
@@ -24,6 +25,25 @@
 // this grows the Sandbox by 8x the increase.
 #ifndef RESIDENT_EVENT_JSON_MAX
 #define RESIDENT_EVENT_JSON_MAX 1024
+#endif
+
+// The wire-protocol version announced in the device hello (data.protocol).
+// Bumped only on incompatible envelope changes — this is the whole
+// compatibility story (there is no feature list; a genuinely optional
+// capability introduces its own hello field when it exists).
+#define RESIDENT_PROTOCOL_VERSION 1
+
+// Event ring depth (slots; one is kept free, so usable depth is one less).
+// Override with a build flag, e.g. -DRESIDENT_EVENT_RING_SIZE=16.
+// RAM note: each slot holds RESIDENT_EVENT_JSON_MAX bytes of data.
+#ifndef RESIDENT_EVENT_RING_SIZE
+#define RESIDENT_EVENT_RING_SIZE 8
+#endif
+
+// Outbound event queue depth (rate-limited / offline sends wait here and
+// drain in order on capacity or reconnect).
+#ifndef RESIDENT_EVENT_QUEUE_SIZE
+#define RESIDENT_EVENT_QUEUE_SIZE 16
 #endif
 
 namespace Resident {
@@ -120,6 +140,15 @@ public:
     bool startMicStream();
     void stopMicStream();
     bool isMicStreaming() const { return _micStreaming; }
+
+    // Capture brackets (0.8) — the one dialect for media capture: sends
+    // {channel:"system", type:"capture", data:{state:"start", stream,
+    // format}} BEFORE the first media frame (payloads stay raw; the bracket
+    // carries the metadata), starts the mic pump, and reverses on end.
+    // Format 1 = PCM16 mono 16 kHz. Call from the main loop only (a send
+    // from the receive context is silently dropped by the transport).
+    bool startCapture(uint16_t stream = 1, uint16_t format = 1);
+    void endCapture();
 
     // Overlay support. Register an overlay as a claim on the display surface
     // it draws to (nullptr = a dedicated surface: never contends, never
@@ -239,15 +268,46 @@ public:
     void setShowDescriptions(bool show) { _showDescriptions = show; }
 
     // ── Data-plane emit ──
-    // Builds {channel:"app", type:name, data, from, nonce, ts_ms} and hands
-    // it to the event sink (default: courier().send on the default
-    // transport). Rate-limited (5/s, burst 10). Returns false on rate limit,
-    // no sink, or sink failure. Shared by the Lua path (events.send) and the
-    // C++ path (wrapper aliases, e.g. HRD's room.announce).
-    bool publishEvent(const char* name, const char* dataJson);
+    // Builds {channel:"app", type:name, data, from, nonce, ts_ms} and
+    // delivers it through the outbound event queue: sent immediately when
+    // under the rate limit (5/s, burst 10) and a sink/transport is up;
+    // otherwise queued (bounded; oldest non-keeper evicted on overflow)
+    // and drained in order from loop(). Shared by the Lua path
+    // (events.send) and the C++ path (wrapper aliases).
+    enum class SendResult { Sent, Queued, Dropped };
+    SendResult publishEventEx(const char* name, const char* dataJson,
+                              bool keep = false,
+                              const char* channel = "app");
+    // Legacy boolean shape: true = the event will go (sent or queued).
+    bool publishEvent(const char* name, const char* dataJson) {
+      return publishEventEx(name, dataJson) != SendResult::Dropped;
+    }
 
     using EventSink = std::function<bool(JsonDocument&)>;
     void setEventSink(EventSink sink) { _eventSink = std::move(sink); }
+
+    // ── Control-plane emit seam ──
+    // When set, sendSystem() hands the stamped doc here instead of the
+    // transport — the system-plane mirror of setEventSink (native tests, or
+    // a platform wrapper that owns its own delivery).
+    using SystemSink = std::function<bool(JsonDocument&)>;
+    void setSystemSink(SystemSink sink) { _systemSink = std::move(sink); }
+
+    // ── Hello (see docs/api.md "Hello") ──
+    // Queue the device hello for the next loop() drain. Called internally on
+    // every transport connect; public so boards and tests can re-announce.
+    void requestHello() { _helloPending = true; }
+    // True once a host hello has been received this boot. The legacy
+    // un-channelled path and the app_event wrapper close when it is true
+    // (the reverse-hello rule from the receiving side); future defaults
+    // key on it the same way.
+    bool hostHelloSeen() const { return _hostHelloSeen; }
+
+    // Count a silently-dropped item (ring overflow, oversize payload,
+    // rate limit, closed legacy path). Public so internal modules
+    // (EventsModule) can report through the same counter; reported
+    // upstream as throttled `dropped` telemetry.
+    void countDrop() { _dropCount++; }
 
     // ── Identity / status accessors ──
     const String& getDeviceId() const { return _deviceId; }
@@ -328,7 +388,92 @@ private:
     // message's storeNs; debounced write-through to _store (arc A4).
     StoreModule _storeModule;
     EventSink _eventSink;
+    SystemSink _systemSink;
     unsigned long _eventNonceCounter = 0;
+
+    // ── Outbound control-plane queue (hello + wire telemetry) ──
+    // Sends must never happen from the receive context (a reentrant WS send
+    // is silently dropped), and telemetry fires from paths that RUN in the
+    // receive context (loadApp → emitTelemetry). So control-plane emissions
+    // queue here and drain from loop(). Bounded; overflow drops the oldest.
+    bool _helloPending = false;
+    bool _hostHelloSeen = false;
+    String _bootId;
+    struct PendingTelemetry { String name; String generationId; String error; long count = -1; };
+    static constexpr int TELEMETRY_QUEUE_SIZE = 8;
+    PendingTelemetry _pendingTelemetry[TELEMETRY_QUEUE_SIZE];
+    int _telemetryHead = 0;
+    int _telemetryTail = 0;
+    void queueTelemetryWire(const char* name, const char* error, long count = -1);
+    void drainOutboundSystem();
+    bool sendHello();
+
+    // ── Drop accounting (loss is reported, never silent) ──
+    // One counter for every silent-loss site: ring overflow, oversize
+    // payloads (both directions), rate-limited publishes, closed legacy
+    // paths. Reported as `dropped` telemetry (count = cumulative since
+    // boot), throttled to one report per interval and only when changed.
+    static constexpr unsigned long DROP_REPORT_INTERVAL_MS = 60000;
+    uint32_t _dropCount = 0;
+    uint32_t _lastReportedDrops = 0;
+    unsigned long _lastDropReportMs = 0;
+
+    // ── Outbound event queue (R9): rate-limited/offline sends wait here ──
+    // Envelopes are stamped (seq/nonce) at enqueue so retries are dedup-safe
+    // and ordering holds; the drain takes rate-limit tokens as it sends.
+    // keep=true entries (asks) are never evicted by overflow.
+    struct QueuedEvent { String json; bool keep = false; uint32_t seq = 0; };
+    std::vector<QueuedEvent> _eventQueue;
+    void drainOutboundEvents();
+
+    // Active capture bracket (startCapture/endCapture).
+    uint16_t _captureStream = 0;
+
+    // Fresh app environment (R5): baseline snapshot + per-load reset.
+    void snapshotBaselineGlobals();
+    void resetAppGlobals();
+
+    // ── Execution budget (R8): per-dispatch instruction cap ──
+    void armExecutionBudget();
+    void disarmExecutionBudget();
+    static void executionBudgetHook(struct lua_State* L, struct lua_Debug* ar);
+
+    // Shared ctx builder for event/framework dispatch.
+    void pushCtxTable();
+
+    // ── Framework module hosting (R16) ──
+    // The framework runs in its own environment table (__index → _G): its
+    // globals are unreachable from app code, while it reads the shared
+    // baseline. C++ holds refs to its env and hook functions (set to
+    // LUA_NOREF in initialize(), like the lifecycle refs); the runtime-
+    // channel sender is a C closure handed into that env — no app path to
+    // it exists. Hook contract (all optional, looked up in the framework
+    // env after its chunk runs):
+    //   framework_install()        — before each app chunk: (re)install the
+    //                                framework's app-facing API into _G
+    //   framework_tick(ctx, dt)    — before the app's on_tick
+    //   framework_event(ctx, e)    — before the app's on_event; return
+    //                                true to consume (app never sees it)
+    //   framework_app_loaded()     — after an app loads successfully
+    int _fwEnvRef = 0;
+    int _fwInstallRef = 0;
+    int _fwTickRef = 0;
+    int _fwEventRef = 0;
+    int _fwAppLoadedRef = 0;
+    bool _fwActive = false;
+    String _fwName;
+    int _fwVersion = 0;
+    const char* _fwSlotSource = "builtin";   // "builtin" | "slot"
+    bool frameworkActive() const { return _fwActive; }
+    bool loadFramework(const char* code, const char* name, int version,
+                       bool fromSlot);
+    void unloadFramework();
+    void setupFramework();       // boot: slot blob if valid, else built-in
+    void handleFrameworkMessage(JsonDocument& doc);
+    void refreshFrameworkHooks();
+    bool callFrameworkNoArg(int ref, const char* what);
+    void callFrameworkTick(unsigned long dt_ms);
+    static int luaRuntimeSend(struct lua_State* L);
 
     // Description-on-load display (setShowDescriptions).
     bool _showDescriptions = true;
@@ -488,7 +633,7 @@ private:
         uint32_t seq;
         bool hasSeq;
     };
-    static constexpr int SANDBOX_MAX_EVENTS = 8;
+    static constexpr int SANDBOX_MAX_EVENTS = RESIDENT_EVENT_RING_SIZE;
     Event _events[SANDBOX_MAX_EVENTS];
     int _eventHead = 0;
     int _eventTail = 0;
@@ -514,6 +659,10 @@ private:
     bool callInit();  // true if init ran without error (or no init function)
     void callOnTick(unsigned long dt_ms);
     void processNextEvent();
+    // Push the Lua event table for `e` (envelope + data + driver shadow);
+    // pushes exactly one value on success, nothing when the payload is
+    // unparseable (the event drops).
+    bool pushEventTable(const Event& e);
     void pushLocalTimeFields();  // pushes utc_h/utc_m/localtime_h/localtime_m onto the Lua table at stack top
     // Sets ctx.generation_id on the table at stack top — only when the app
     // load carried a server-stamped generationId (Lua sees nil otherwise).
