@@ -14,7 +14,7 @@ Point your agent at [docs/start-building.md](docs/start-building.md) to add the 
 
 ## Examples
 
-Working PlatformIO projects for specific boards live under [examples/](examples/) — currently the M5StickC Plus2 and the Adafruit ESP32-S2 TFT Feather. Each is buildable as-is; use them as templates for bringing up your own hardware.
+Working projects live under [examples/](examples/) — the M5StickC Plus2 (`m5stick-demo`, plus `m5stick-voice` and `m5stick-clock`), the Adafruit ESP32-S2 TFT Feather, and a bare ESP-IDF build (`espidf-basic`). Each is buildable as-is; use them as templates for bringing up your own hardware.
 
 ### Quick start
 
@@ -72,8 +72,8 @@ sandbox.onConnected([]() {
     // load a bootstrap Lua app once the WS is up
 });
 
-sandbox.onMessage([](const char* transport, const char* type, JsonDocument& doc) {
-    // fires only for non-reserved types — Resident handles app/shader/app_event
+sandbox.onMessageWithChannel("system", [](const char* transport, const char* type, JsonDocument& doc) {
+    // custom control-plane types; Resident handles the reserved ones itself
 });
 ```
 
@@ -136,29 +136,29 @@ For Lua-only extensions that don't expose hardware or emit events, extend `Resid
 
 ## Message Protocol
 
-Resident routes three JSON message types internally — your `sandbox.onMessage(cb)` callback only fires for *other* types:
+Every message carries an envelope `channel` field that steers it onto a plane:
 
 ```json
-{ "type": "app", "code": "function on_tick(ctx, dt_ms) ... end" }
-{ "type": "shader", "expr": "rgb(sin(time_ms/1000)*0.5+0.5, 0, 0)" }
-{ "type": "app_event", "name": "button_press", "data": { "id": 1 } }
+{ "channel": "system", "type": "app",   "code": "function on_tick(ctx, dt_ms) ... end" }
+{ "channel": "system", "type": "shader", "expr": "rgb(sin(time_ms/1000)*0.5+0.5, 0, 0)" }
+{ "channel": "app",    "type": "button_press", "data": { "id": 1 } }
 ```
 
-Register `sandbox.onMessage(cb)` to handle custom types. No super-call is needed — the reserved types never reach your callback.
+`channel:"app"` is the data plane — it reaches the Lua `on_event`. `channel:"system"` is the control plane, where Resident handles the reserved types (`app`, `shader`, `chunk`, `forget`, `framework`, `hello`, `goodbye`) itself and hands anything else to a slot registered with `onMessageWithChannel("system", cb)`. Any other channel name gets its own slot. See [docs/api.md](docs/api.md#channel-routing) for the full picture, including the un-channelled legacy path.
 
 ### Sandbox lifecycle
 
 - `init(ctx)` — called once after compilation
 - `on_tick(ctx, dt_ms)` — called at 10 FPS with elapsed time
-- `on_event(ctx, event)` — called for app_event messages and driver events
+- `on_event(ctx, event)` — called for wire events and driver events, with the payload in `event.data`
 
-The `ctx` table contains: `time_ms`, `trigger_count`, `utc_h`, `utc_m`, `localtime_h`, `localtime_m`.
+The `ctx` table contains: `time_ms`, `trigger_count`, `generation_id`, `utc_h`, `utc_m`, `localtime_h`, `localtime_m`.
 
 `localtime_h` / `localtime_m` return local time when a timezone has been set on the sandbox via `Sandbox::setTimezone(ianaZone)` and ezTime recognised the zone; otherwise they equal `utc_h` / `utc_m`.
 
 ### Shader expressions
 
-Shader messages are converted to Lua via a template function you provide. The expression has access to `time_ms`, `trigger_count`, and time variables. Built-in helpers: `rgb(r,g,b)`, `fract(x)`, `beat(bpm)`, `noise2d(x,y)`.
+Shader messages are converted to Lua via a template function you provide. The expression has access to `time_ms`, `trigger_count`, and time variables. Built-in helpers: `rgb(r,g,b)`, `fract(x)`, `beat(bpm,t)`, `noise2d(x,y)`.
 
 ### Timezone
 
@@ -197,7 +197,7 @@ And in `idf_component.yml`:
 ```yaml
 dependencies:
   inanimate/resident:
-    version: "^0.6.0"
+    version: "^0.7.0"
 ```
 
 ## License

@@ -1,4 +1,4 @@
-// Lua `store` module (arc A4): app-scoped persistent KV slot. Survives
+// Lua `store` module: app-scoped persistent KV slot. Survives
 // loadApp (same namespace) and reboot; a different storeNs clears it;
 // write-through to the PersistentStore is debounced plus flushed on app
 // unload; 2KB budget with no partial writes.

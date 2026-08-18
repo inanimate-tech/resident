@@ -45,9 +45,9 @@ void loop()  { sandbox.loop(); }
 | `systemLED` | `SystemLED*` | `nullptr` | Optional LED indicator; Resident's internal handler calls `solidColor()` automatically on connection state changes |
 | `network` | `std::optional<Courier::Config>` | unset | Networking opt-in. Set ⇒ Sandbox constructs an internal `Courier::Client`, drives WiFi / transports, fires connection callbacks. Unset ⇒ standalone runtime, no WiFi pulled in. |
 | `persistApps` | `bool` | `true` | Save the last successfully-loaded app to flash and restore it on boot. Set to `false` to disable for a build. |
-| `gateTickOnConnection` | `bool` | `false` | Restore the pre-0.8 behavior of pausing `on_tick` and event dispatch while disconnected. The default is offline-first: the app keeps running; only network sends wait. |
+| `gateTickOnConnection` | `bool` | `false` | Pause `on_tick` and event dispatch while disconnected. The default is offline-first: the app keeps running; only network sends wait. |
 | `openUnsafeLibs` | `bool` | `false` | Give the app environment the full Lua stdlib. The default removes `os`/`io`/`package`/`require`/`load`/`dofile`/`loadstring`/`loadfile`/`debug`. |
-| `freshAppEnvironment` | `bool` | `true` | Reset app globals to the runtime baseline on every `loadApp` — nothing from the previous app survives except the store slot. Set `false` for builds whose apps relied on cross-load leakage. |
+| `freshAppEnvironment` | `bool` | `true` | Reset app globals to the runtime baseline on every `loadApp` — nothing from the previous app survives except the store slot. Set `false` for builds whose apps need globals to persist across loads. |
 | `executionBudget` | `uint32_t` | `2000000` | Lua instruction cap per dispatch (init / one tick / one event / one chunk / each framework hook). Over-budget aborts the dispatch with a `runtime_error`; the app survives. `0` = unlimited. |
 | `framework` | `std::optional<FrameworkConfig>` | unset | Embed a framework module: `{name, version, source}` — privileged Lua the sandbox hosts outside the app (see [Framework modules](#framework-modules)). |
 | `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
@@ -122,7 +122,7 @@ sandbox.loop();    // call from Arduino loop()
    1. `Courier::Client::loop()` drives the network state machine and reads transports.
    2. **Driver heartbeat:** the de-duplicated lifecycle list is walked once and `update()` is called on each object. Role peripherals (`systemDisplay`, `systemLED`, `systemButton`) update every loop regardless of app state or connectivity. All other extensions update only while an app is loaded (running or suspended). Connectivity does not gate either cadence.
    3. If a persisted app is waiting to load, the boot countdown runs (and the function returns early).
-   4. The Lua `on_tick(ctx, dt_ms)` callback fires at 10 FPS (100 ms interval) — only while an app is Running, and (when networked) only once connected. Standalone always ticks unconditionally.
+   4. The Lua `on_tick(ctx, dt_ms)` callback fires at 10 FPS (100 ms interval) while an app is Running. Connectivity does not gate it unless `SandboxConfig::gateTickOnConnection` is set.
    5. Up to one pending event is delivered to `on_event(ctx, event)`.
 
 ### Setup-phase callbacks (register before `setup()`)
@@ -172,7 +172,7 @@ sandbox.onConnected([]() {
 
 ### Message interposition
 
-Three tools for platform wrappers that need to sit in front of the sandbox's message routing without re-implementing it. Their reach differs since channel routing landed: `onMessageFilter` is **legacy un-channelled path only**; `deferAppLoads` and `injectMessage` apply across both the legacy path and channel routing (see [Channel routing](#channel-routing)).
+Three tools for platform wrappers that need to sit in front of the sandbox's message routing without re-implementing it. Their reach differs: `onMessageFilter` is **legacy un-channelled path only**; `deferAppLoads` and `injectMessage` apply across both the legacy path and channel routing (see [Channel routing](#channel-routing)).
 
 ```cpp
 // Pre-routing filter (single-slot), legacy un-channelled path only (no
@@ -226,10 +226,10 @@ Incoming messages carry an envelope `channel` field that steers them onto one of
 
 | `channel` value | Routes to | Notes |
 |-----------------|-----------|-------|
-| `"app"` | `handleAppMessage` → Lua `on_event(ctx, event)` with `event.name = type` | Data plane. No reserved types here — `type:"forget"` on this channel is just an event, not a persistence op. Self-echo (`from == getDeviceId()`) and duplicate `nonce` (16-entry ring, exact match) are dropped before delivery. Gated like `sendAppEvent`: dropped when no app is loaded or the app defines no `on_event`. The legacy `app_event` envelope (`{"type":"app_event","name":...,"data":...}`) is still accepted here for one release, logging `[deprecated] app_event wrapper; send channel:"app" with type=<event name>`. |
-| `"system"` | `handleSystemMessage` | Control plane. Reserved types `app`/`shader`/`forget` are handled exactly as on the legacy path (including `deferAppLoads` and the `description` display below); any other type falls through to the single `"system"` slot registered via `onMessageWithChannel("system", cb)`. |
+| `"app"` | `handleAppMessage` → Lua `on_event(ctx, event)` with `event.name = type` | Data plane. No reserved types here — `type:"forget"` on this channel is just an event, not a persistence op. Self-echo (`from == getDeviceId()`) and duplicate `nonce` (16-entry ring, exact match) are dropped before delivery. Gated like `sendAppEvent`: dropped when no app is loaded or the app defines no `on_event`. The legacy `app_event` envelope (`{"type":"app_event","name":...,"data":...}`) is still accepted here for one release, logging `[deprecated] app_event wrapper; send channel:"app" with type=<event name>` — until a [host hello](#hello) arrives, after which it is dropped and counted. |
+| `"system"` | `handleSystemMessage` | Control plane. Reserved types are handled internally: `app` / `shader` (with `deferAppLoads` and the `description` display below), [`chunk`](#sandbox-controls), `forget`, [`framework`](#framework-modules), [`hello`](#hello), `goodbye`. Any other type falls through to the single `"system"` slot registered via `onMessageWithChannel("system", cb)`. |
 | anything else | the matching slot registered via `onMessageWithChannel(name, cb)` | Single slot per channel name (exact string match), last registration wins. An unregistered channel is logged (`Resident::Sandbox: no handler for channel '<channel>' (type '<type>'); dropped`) and the message is dropped. Up to 8 slots (`onMessageWithChannel` does not include `"app"` — the data plane belongs to the Lua app, not a C++ slot). |
-| *(absent)* | the legacy un-channelled path | `[deprecated] un-channelled '<type>' message; sender should stamp channel`, then `onMessageFilter` → deferral → reserved-type routing → `onMessage` — unchanged from before channel routing. |
+| *(absent)* | the legacy un-channelled path | Logs `[deprecated] un-channelled '<type>' message; sender should stamp channel`, then `onMessageFilter` → deferral → reserved-type routing → `onMessage`. Closed once a [host hello](#hello) arrives: dropped and counted instead. |
 
 ```cpp
 // Public entry points, callable directly by wrappers with their own receive
@@ -245,7 +245,7 @@ sandbox.onMessageWithChannel("system", [](const char* transport, const char* typ
 
 **Control-plane emit** — `sandbox.sendSystem(doc)` stamps `doc["channel"] = "system"` and sends it via the default transport (`courier().send`). For device control messages (voice start/end, etc.). Returns `false` when no network is configured or the send fails; the doc is stamped either way, so a caller inspecting it afterward always sees the envelope.
 
-**Data-plane emit** — `sandbox.publishEvent(name, dataJson)` builds `{channel:"app", type:name, data, from:getDeviceId(), src:"device", seq, nonce, ts_ms}` and hands it to the event sink. `seq` is the device's per-sender monotonic sequence (uint32, per-boot, one counter for all frames sent via this path; the `nonce` suffix reuses the same count). It goes to: the sink set via `setEventSink(EventSink)` if one is registered, otherwise `courier().send` on the default transport. Rate-limited with a token bucket (5 events/s sustained, burst of 10); returns `false` on rate limit, no sink/network, or send failure — it never raises. This is the shared implementation behind the Lua `events.send` (see [Lua API](#events-module)) and any C++ caller, e.g. a platform wrapper's `room.announce` alias — note this is a **deliberate behavior change** from the old `room.announce`, which raised a Lua error on rate limit rather than returning `false`.
+**Data-plane emit** — `sandbox.publishEvent(name, dataJson)` builds `{channel:"app", type:name, data, from:getDeviceId(), src:"device", seq, nonce, ts_ms}` and hands it to the event sink. `seq` is the device's per-sender monotonic sequence (uint32, per-boot, one counter for all frames sent via this path; the `nonce` suffix reuses the same count). It goes to: the sink set via `setEventSink(EventSink)` if one is registered, otherwise `courier().send` on the default transport. Rate-limited with a token bucket (5 events/s sustained, burst of 10). It never raises: `publishEvent` returns `false` only when the event will never go (no sink/network, send failure, oversize payload); a rate-limited or offline send is queued and returns `true`. `publishEventEx(name, dataJson, keep = false, channel = "app")` returns the underlying `SendResult::{Sent, Queued, Dropped}`. This is the shared implementation behind `events.send` (see [Lua API](#events-module)) and any C++ caller.
 
 ```cpp
 using EventSink = std::function<bool(JsonDocument&)>;
@@ -262,11 +262,15 @@ sandbox.setEventSink([](JsonDocument& doc) {
 sandbox.loadApp(luaCode);              // compile and run a Lua source string
 sandbox.loadShader(fields);            // generate Lua via ShaderTemplateFn, then loadApp
 sandbox.loadChunk(luaChunk);           // run a chunk in the RUNNING app's state (surgical update)
-sandbox.sendAppEvent(name, dataJson);  // queue an app_event to the running app
+sandbox.sendAppEvent(name, dataJson[, channel]); // queue an event to the running app (default channel "driver")
 sandbox.onMessageWithChannel(name, cb); // register a channel slot (see Channel routing)
 sandbox.sendSystem(doc);               // stamp channel:"system", send via default transport
-sandbox.publishEvent(name, dataJson);  // stamp channel:"app" event, rate-limited, send via sink
+sandbox.publishEvent(name, dataJson);  // stamp channel:"app" event, rate-limited/queued, send via sink
+sandbox.publishEventEx(name, dataJson, keep, channel); // same, returning SendResult
 sandbox.setEventSink(fn);              // override publishEvent's/events.send's destination
+sandbox.setSystemSink(fn);             // override sendSystem's destination (hello + telemetry included)
+sandbox.requestHello();                // re-queue the device hello
+sandbox.hostHelloSeen();               // true once a host hello arrived this boot
 sandbox.setShowDescriptions(show);     // toggle description → systemDisplay on app/shader load
 sandbox.setTimezone("Europe/London");  // IANA zone — performs UDP lookup on first use
 sandbox.hasTimezone();                 // true after a successful setTimezone call
@@ -278,7 +282,7 @@ sandbox.onSystemButtonHold(cb);        // cb(true) on hold (past threshold), cb(
 sandbox.addOverlay(&ov, &surface, prio); // register a claim on a display surface, with priority
 sandbox.requestOverlay(&ov, show);       // request show/hide; per-surface arbitration picks winners
 sandbox.removeOverlay(&ov);              // deregister (tears the overlay down, resumes app if it suspended)
-sandbox.startCapture(stream, format);  // {system, capture} bracket + mic stream (0.8 dialect)
+sandbox.startCapture(stream, format);  // {system, capture} bracket + mic stream
 sandbox.endCapture();                  // stop the stream, close the bracket
 sandbox.startMicStream();              // stream systemMic frames, no brackets (board owns control frames)
 sandbox.stopMicStream();               // stop streaming
@@ -293,7 +297,12 @@ sandbox.clearPersistedApp();           // wipe the saved app from the persistent
 
 `loadShader` requires `SandboxConfig::shaderTemplate` to be set; it converts the `ShaderFields` map to Lua source, then calls `loadApp`.
 
-`loadChunk(code)` runs a Lua chunk **in the running app's `lua_State`** — no teardown, no lifecycle reboot: globals, queued events, and timing survive, and `init()` is **not** re-called. It exists so replacing one registration (a named timer, recognizer, or component in an app built on last-registration-wins registries) can ship as a small chunk instead of a whole-generation reload. If the chunk (re)defines `init`/`on_tick`/`on_event` as functions, the cached dispatch refs are refreshed so the redefinition takes effect on the next dispatch. Returns `false` — with the app left running and untouched by the failure — on compile error or runtime error (Serial + `chunk_error` telemetry; note a chunk is not a transaction: statements before a runtime error did run), when no app is loaded, or during a `deferAppLoads` window (chunks are **dropped** with a log, never stashed — a stale surgical patch applied to a possibly different generation later is worse than a re-send). Chunks are never persisted: NVS keeps the base generation; senders must re-send chunks after a reboot. Wire entry: `channel:"system", type:"chunk", code:"..."`. Success emits `chunk_applied` telemetry.
+`loadChunk(code)` runs a Lua chunk **in the running app's `lua_State`** — an in-place patch, where `loadApp` is a restart. Globals, queued events and timing survive, and `init()` is **not** re-called, so a chunk that reassigns a function or a table entry swaps it without costing the app its state. Wire entry: `channel:"system", type:"chunk", code:"..."`.
+
+- If the chunk (re)defines `init`/`on_tick`/`on_event`, the cached dispatch refs are refreshed and the redefinition takes effect on the next dispatch.
+- Success emits `chunk_applied` telemetry; a compile or runtime error emits `chunk_error` (Serial too) and leaves the app running. A chunk is not a transaction — statements before a runtime error did run.
+- Returns `false` on compile error, runtime error, no app loaded, or during a `deferAppLoads` window. Deferred chunks are **dropped** with a log, never stashed.
+- Never persisted. NVS keeps the base app; senders re-send chunks after a reboot.
 
 `suspendApp` pauses the Lua tick (`on_tick` and event dispatch) without unloading the app — Courier and extension `update()` keep running. While suspended, drivers receive `onAppRunning(false)` so the status display is freed for direct text (e.g. a "Listening" overlay via `SystemDisplay::displayText()`); `resumeApp` reverses this with `onAppRunning(true)`. Both are no-ops when no app is loaded, and repeated calls don't re-notify. `isAppRunning()` stays `true` while suspended — suspension is a separate axis queried via `isAppSuspended()`. Events arriving while suspended are queued, not dropped (though a long suspend can overflow the 8-slot ring, losing the oldest), and `loadApp` always clears suspension.
 
@@ -343,7 +352,6 @@ In standalone mode:
 
 - `hasNetwork()` returns `false`; `courier()` and `ws()` assert.
 - `isConnected()` always returns `false`.
-- `loop()` ticks Lua at 10 FPS unconditionally (no gating on connection state).
 - `onConfigureNetwork` / `onTransportsWillConnect` / `onMessage` / `onConnectionChange` / `onConnected` never fire — but registering them is harmless.
 
 ---
@@ -402,7 +410,7 @@ All `Extension` methods (`name`, `registerModule`, `begin`, `update`, `onAppRese
 void sendEvent(const char* name, const EventField* fields, int fieldCount);
 ```
 
-Queues a driver event into the sandbox event ring. The event appears in Lua as `on_event(ctx, event)` with the fields as the `event.data` table — the same shape wire events use (since 0.8; fields were previously flattened onto the event table).
+Queues a driver event into the sandbox event ring. The event appears in Lua as `on_event(ctx, event)` with the fields as the `event.data` table — the same shape wire events use.
 
 ```cpp
 // In a button driver's ISR or debounce handler:
@@ -434,10 +442,9 @@ struct EventField {
 
 | Field | Description |
 |-------|-------------|
-| `key` | Field name — appears as `event.<key>` in Lua. Max 32 chars (event name buffer). |
-| `type` | `EventField::INT` or `EventField::STRING` |
-| `i` | Integer value (when `type == INT`) |
-| `s` | String value (when `type == STRING`) |
+| `key` | Field name — appears as `event.data.<key>` in Lua |
+| `type` | `EventField::INT`, `STRING`, `FLOAT`, or `BOOL` |
+| `i` / `s` / `f` / `b` | The value, in the union member matching `type` |
 
 ### Inheritance ordering rule
 
@@ -471,8 +478,8 @@ runs on a single de-duplicated list every loop:
   brief reconnect.
 - **Other extensions** update **only while an app is loaded** (running or
   suspended).
-- **Connectivity gates neither** `update()`. (The Lua `on_tick` still waits
-  for the first connection on networked boards.)
+- **Connectivity gates neither** `update()`, nor the Lua `on_tick` (unless
+  `SandboxConfig::gateTickOnConnection` is set).
 
 A driver fills a device role by implementing the role interface (`SystemDisplay`
 / `SystemButton` / `SystemLED`, each a `Driver` subclass) — that's the
@@ -724,7 +731,23 @@ sandbox.isMicStreaming();            // true while streaming
 sandbox.setMicStreamSink(fn);        // bool(const uint8_t* data, size_t len) — default: ws().sendBinary
 ```
 
-`startMicStream()` returns `false` (and does not start streaming) when no `systemMic` is configured or its `begin()` fails. While streaming, each `Sandbox::loop()` reads up to `frameSamples()` (capped at an internal 512-sample buffer) and forwards the bytes to the sink — the default sink is `ws().sendBinary`. The pump adds **no framing or control frames**: any envelope (e.g. a `{"type":"..."}` start/stop text frame, or a format handshake) is a device concern, sent by your code around `startMicStream()` / `stopMicStream()`. Streaming is independent of app state — it continues while the app is suspended.
+`startMicStream()` returns `false` (and does not start streaming) when no `systemMic` is configured or its `begin()` fails. While streaming, each `Sandbox::loop()` reads up to `frameSamples()` (capped at an internal 512-sample buffer) and forwards the bytes to the sink — the default sink is `ws().sendBinary`. The pump adds **no framing or control frames**. Streaming is independent of app state — it continues while the app is suspended.
+
+### Capture brackets
+
+`startCapture` / `endCapture` wrap the same pump in control-plane frames, so the metadata rides the bracket and the media payloads stay raw:
+
+```cpp
+sandbox.startCapture();            // stream = 1, format = 1 by default
+sandbox.endCapture();
+```
+
+```json
+{ "channel": "system", "type": "capture", "data": { "state": "start", "stream": 1, "format": 1 } }
+{ "channel": "system", "type": "capture", "data": { "state": "end",   "stream": 1 } }
+```
+
+The start bracket is sent before the first media frame; if it fails to send, capture does not start. A failed `startMicStream()` closes the bracket it opened and `startCapture` returns `false`. `startCapture` on an already-streaming sandbox returns `true` without re-bracketing. Boards that own their own control frames use `startMicStream` / `stopMicStream` directly instead.
 
 ### Writing a mic adaptor
 
@@ -812,7 +835,7 @@ All callbacks receive a `ctx` table. `on_tick` also receives `dt_ms` (integer, m
 | `localtime_h` | integer | Local hour — equals `utc_h` unless a timezone has been set |
 | `localtime_m` | integer | Local minute — equals `utc_m` unless a timezone has been set |
 
-The table is IDENTICAL in every callback (since 0.8 — the wall-clock fields used to be absent from `on_event`'s ctx). `localtime_h` / `localtime_m` reflect local time only after `Sandbox::setTimezone` succeeds; otherwise they equal `utc_h` / `utc_m`.
+The table is IDENTICAL in every callback. `localtime_h` / `localtime_m` reflect local time only after `Sandbox::setTimezone` succeeds; otherwise they equal `utc_h` / `utc_m`.
 
 ### `event` table
 
@@ -824,8 +847,8 @@ The table is IDENTICAL in every callback (since 0.8 — the wall-clock fields us
 | `channel` | string | Source discriminator, always present: `"app"` or `"runtime"` for wire-borne frames (both delivered here), `"driver"` for hardware/driver events and host-firmware `sendAppEvent` injections (unless the caller passed a channel) |
 | `src` | string? | The frame's `src` envelope field (e.g. `"server"`), only when present on the frame; `nil` for internal events |
 | `seq` | integer? | The frame's per-sender monotonic `seq`, only when present on the frame; `nil` for internal events |
-| `data` | table | The payload, for EVERY event — driver and wire alike (one shape since 0.8). Parsed by one set of rules: strings (unescaped), integers, floats, booleans, and nested objects/arrays to 3 container levels (deeper containers are skipped with their key; JSON `null` leaves a hole at its array index). Unparseable or oversized (> `RESIDENT_EVENT_JSON_MAX`) data drops the whole event rather than delivering it garbled |
-| *(deprecated shadow)* | scalar | DRIVER events additionally mirror their top-level scalars onto the event table (`event.index`) — the historical flattened shape, kept for one deprecation window so existing apps survive a firmware bump. Envelope keys always win over a colliding field. New code reads `event.data.*`; the shadow goes with the next major |
+| `data` | table | The payload, for EVERY event — driver and wire alike, one shape. Parsed by one set of rules: strings (unescaped), integers, floats, booleans, and nested objects/arrays to 3 container levels (deeper containers are skipped with their key; JSON `null` leaves a hole at its array index). Unparseable or oversized (> `RESIDENT_EVENT_JSON_MAX`) data drops the whole event rather than delivering it garbled |
+| *(deprecated shadow)* | scalar | DRIVER events also mirror their top-level scalars onto the event table (`event.index`). Envelope keys win over a colliding field. Read `event.data.*`; the shadow goes with the next major |
 
 ```lua
 function on_event(ctx, event)
@@ -858,20 +881,24 @@ Publishes an event on the app data plane (`channel:"app"`) — the Lua-side entr
 
 | Function | Returns | Description |
 |----------|---------|-------------|
-| `events.send(name)` | boolean | Publish `name` with no data |
-| `events.send(name, data)` | boolean | Publish `name` with a table of string/number/boolean/table values as `event.data` |
+| `events.send(name)` | `"sent"` \| `"queued"` \| `"dropped"` | Publish `name` with no data |
+| `events.send(name, data)` | same | Publish `name` with a table of string/number/boolean/table values as `event.data` |
+| `events.send(name, data, opts)` | same | `opts.keep = true` marks a message queue-overflow eviction never removes |
+
+Both success states are truthy, so a caller that only needs "will this go?" can treat the result as a boolean.
 
 ```lua
 events.send("turn")
 events.send("color_change", { hue = 180, label = "warm" })
 events.send("state", { on = true, pos = { x = 1, y = 2 }, tags = { "a", "b" } })
+events.send("escalation", { level = 3 }, { keep = true })
 ```
 
 `data` serializes to a JSON object. String keys and values are JSON-escaped (`"`, `\`, and control characters). Values may be strings, numbers, booleans, or tables nested up to 3 table levels (counting `data` itself): a string-keyed table becomes a JSON object; a table with a non-empty array part (`#t > 0`) becomes a JSON array of elements `1..#t` (don't mix array and string keys — string keys of an array-part table are ignored). Top-level integer keys, deeper tables, and other value types (functions, userdata) are silently skipped per-key; unsupported array *elements* serialize as `null` to hold their position.
 
-Serialized into a bounded buffer of `RESIDENT_EVENT_JSON_MAX` bytes (default 1024; override with a build flag, e.g. `-DRESIDENT_EVENT_JSON_MAX=2048`). An oversized payload is never truncated: the event is dropped, a line is logged to Serial, and `events.send` returns `false`.
+Serialized into a bounded buffer of `RESIDENT_EVENT_JSON_MAX` bytes (default 1024; override with a build flag, e.g. `-DRESIDENT_EVENT_JSON_MAX=2048`). An oversized payload is never truncated — the event is dropped and a line is logged to Serial.
 
-Delivery (0.8): `events.send(name, data, opts?)` returns `"sent" | "queued" | "dropped"` (both success states truthy). Sends over the rate limit (shared token bucket: 5 events/s sustained, burst of 10) or while offline QUEUE into a bounded outbound queue (`RESIDENT_EVENT_QUEUE_SIZE`, default 16) and drain in order from `loop()` as tokens and connectivity allow. Envelopes are stamped (`seq`/`nonce`) at enqueue, so ordering holds and retries are dedup-safe. `opts.keep = true` marks a message overflow eviction never removes (eviction prefers the oldest non-keeper and feeds the drop counter). `"dropped"` means the event will never go: empty name, oversize payload, or evicted while the queue was full of keepers.
+**Delivery.** Sends over the rate limit (shared token bucket: 5 events/s sustained, burst of 10) or while offline QUEUE into a bounded outbound queue (`RESIDENT_EVENT_QUEUE_SIZE`, default 16) and drain in order from `loop()` as tokens and connectivity allow. Envelopes are stamped (`seq`/`nonce`) at enqueue, so ordering holds and retries are dedup-safe. Overflow eviction prefers the oldest non-keeper and feeds the drop counter. `"dropped"` means the event will never go: empty name, oversize payload, or evicted while the queue was full of keepers.
 
 ### `lgfx` module (optional)
 
@@ -887,7 +914,7 @@ Resident::LgfxModule lgfxModule;
 //        cfg.extensions = {..., &lgfxModule};
 ```
 
-Both adapters are duck-typed templates — instantiate with anything carrying LovyanGFX's drawing API (`LGFX_Device`, `LGFX_Sprite`, `M5Canvas`, `M5GFX`, a test fake). `LgfxSpriteTarget<T>` is the R19 shape: the MODULE owns the frame buffer — on the first bind it calls `setColorDepth(16)` + `createSprite(...)` at the registered panel's geometry (idempotent: a board that pre-created the sprite for its own status path keeps the one buffer), and `flip()` blits it through the panel. `LgfxLovyanTarget<T>` remains for targets that present themselves: construct it with a presenter callback, or with none for direct-to-panel targets where drawing is already live. Colors are 24-bit `0xRRGGBB` everywhere; LovyanGFX converts to the panel/sprite depth (it interprets `uint32_t` colors as RGB888).
+Both adapters are duck-typed templates — instantiate with anything carrying LovyanGFX's drawing API (`LGFX_Device`, `LGFX_Sprite`, `M5Canvas`, `M5GFX`, a test fake). With `LgfxSpriteTarget<T>` the MODULE owns the frame buffer: on the first bind it calls `setColorDepth(16)` + `createSprite(...)` at the registered panel's geometry (idempotent — a board that pre-created the sprite for its own status path keeps the one buffer), and `flip()` blits it through the panel. `LgfxLovyanTarget<T>` is for targets that present themselves: construct it with a presenter callback, or with none for direct-to-panel targets where drawing is already live. Colors are 24-bit `0xRRGGBB` everywhere; LovyanGFX converts to the panel/sprite depth (it interprets `uint32_t` colors as RGB888).
 
 ```lua
 local g = lgfx.bind("main")      -- raises a Lua error for unknown names
@@ -906,7 +933,7 @@ Handle methods (colon-call), matching LovyanGFX names/argument orders: `fillScre
 
 ### `lvgl` module (optional)
 
-Retained-mode UI from Lua — LVGL 9 through the [Inanimate luavgl fork](https://github.com/inanimate-tech/luavgl)'s display-scoped binding. Present only when the firmware names registered panel targets in an `LvglModule` and lists it in `SandboxConfig::extensions`. Opt-in like the lgfx module, with an extra requirement: the board's own build must supply LVGL and luavgl (`lib_deps`). Since R19 there is **no glue driver to write**: the module owns `lv_init`, the `millis` tick source, the `lv_display_t` over the board's [`PanelTarget`](#residentrendertargets), its draw buffers, the flush callback, the `lv_timer_handler` pump and the app-reset tree wipe. See `examples/m5stick-demo`'s `m5stick-lvgl` env for the full wiring.
+Retained-mode UI from Lua — LVGL 9 through the [Inanimate luavgl fork](https://github.com/inanimate-tech/luavgl)'s display-scoped binding. Present only when the firmware names registered panel targets in an `LvglModule` and lists it in `SandboxConfig::extensions`. Opt-in like the lgfx module, with an extra requirement: the board's own build must supply LVGL and luavgl (`lib_deps`). There is **no glue driver to write**: the module owns `lv_init`, the `millis` tick source, the `lv_display_t` over the board's [`PanelTarget`](#residentrendertargets), its draw buffers, the flush callback, the `lv_timer_handler` pump and the app-reset tree wipe. See `examples/m5stick-demo`'s `m5stick-lvgl` env for the full wiring.
 
 ```cpp
 #include <ResidentLvglModule.h>   // not pulled in by Resident.h
@@ -934,7 +961,7 @@ h:set_theme { screen = { bg_color = "#0b0b10" } }
 
 ### `store` module
 
-An app-scoped **persistent** KV slot of scalars — state here survives `loadApp` (same identity) and reboot. RAM-backed with debounced write-through to the persistent store (NVS on device): at most one write per ~2 s of mutation quiet, plus a forced flush on app unload.
+An app-scoped **persistent** KV slot of scalars — state here survives `loadApp` (same identity) and reboot. RAM-backed with debounced write-through to the persistent store (NVS on device): at most one write per ~2 s of mutation quiet, plus a flush at least every 30 s while dirty (so an app that mutates on every tick still persists), on app unload, and at capture start.
 
 | Function | Returns | Description |
 |----------|---------|-------------|
@@ -1014,7 +1041,7 @@ See [Writing a Driver](#writing-a-driver) for the C++ side of this.
 
 ## Message Protocol
 
-This section describes the reserved types on the legacy un-channelled path (no `channel` field) — see [Channel routing](#channel-routing) for the full envelope picture, including the `"app"` data plane and custom channels. Resident routes four JSON message types (`app`, `shader`, `app_event`, `forget`) internally on this path — they never reach the user's `onMessage(cb)` callback. Any other type is forwarded to `onMessage` if registered. The `"system"` channel handles `app`/`shader`/`forget` identically (same `loadApp`/`loadShader`/`clearPersistedApp` calls, same deferral and description-display behavior) but has no `app_event` — the app data plane is `channel:"app"`, documented under Channel routing.
+This section describes the reserved types on the legacy un-channelled path (no `channel` field) — see [Channel routing](#channel-routing) for the full envelope picture, including the `"app"` data plane and custom channels. Resident routes four JSON message types (`app`, `shader`, `app_event`, `forget`) internally on this path — they never reach the user's `onMessage(cb)` callback. Any other type is forwarded to `onMessage` if registered. The `"system"` channel handles `app`/`shader`/`forget` identically (same `loadApp`/`loadShader`/`clearPersistedApp` calls, same deferral and description-display behavior), adds `chunk`/`framework`/`hello`/`goodbye`, and has no `app_event` — the app data plane is `channel:"app"`.
 
 ### `app` — load a Lua app
 
@@ -1086,9 +1113,9 @@ Send `{"type":"forget"}` (or call `clearPersistedApp()`) to wipe the saved app.
 
 Every telemetry emission goes out TWO ways:
 
-1. **On the wire, by default** (since 0.8): a channelled control-plane frame,
-   queued and drained from `loop()` (emissions often happen in the receive
-   context, where a direct send would be a reentrant WS write):
+1. **On the wire, by default**: a channelled control-plane frame, queued and
+   drained from `loop()` (emissions often happen in the receive context, where
+   a direct send would be a reentrant WS write):
 
 ```json
 { "channel": "system", "type": "telemetry",
@@ -1100,8 +1127,8 @@ Every telemetry emission goes out TWO ways:
    when one is set (`setSystemSink` — the control-plane mirror of
    `setEventSink`), else the transport.
 
-2. **Via `TelemetryCallback`**, when one is set — the legacy flat format,
-   unchanged, for boards that route telemetry themselves:
+2. **Via `TelemetryCallback`**, when one is set — a flat format, for boards
+   that route telemetry themselves:
 
 ```json
 { "type": "telemetry", "generationId": "1a2b3c", "name": "app_compiled", "data": {} }
@@ -1123,7 +1150,7 @@ Every telemetry emission goes out TWO ways:
 | `framework_error` | A framework chunk failed to compile or run; `data.error` carries the message. A failing slot blob is discarded and the built-in runs |
 | `dropped` | The drop counter's periodic report; `data.count` = items silently dropped since boot (ring overflow, oversize payloads, rate limits, closed legacy paths). At most one report per minute, only when changed |
 
-The wire path makes the old forward-it-yourself callback wiring unnecessary; the callback remains for boards that want an additional sink.
+The wire path needs no wiring; the callback is there for boards that want an additional sink.
 
 ### Hello
 
@@ -1147,7 +1174,9 @@ On every transport connect the sandbox queues a device hello — the device anno
 - `app` describes what is running (or persisted and awaiting the boot countdown): its store namespace, plus `generationId` only when the wire stamped one (a restored app's self-generated id is omitted).
 - `sandbox.requestHello()` re-queues it at any time.
 
-A host hello may answer on the same channel: `{ "channel":"system", "type":"hello", "data": { "protocol":1, "tz":"Europe/London" } }`. The sandbox applies `tz` and records receipt (`sandbox.hostHelloSeen()`). Nothing else gates on it yet — a host that never hellos gets today's behavior in full — but future defaults (framed media, legacy-path removal) will key on it.
+A host hello may answer on the same channel: `{ "channel":"system", "type":"hello", "data": { "protocol":1, "tz":"Europe/London" } }`. The sandbox applies `tz` and records receipt (`sandbox.hostHelloSeen()`). Receipt also **closes the legacy paths**: a host that speaks hello has no business sending un-channelled frames or the `app_event` wrapper, so both are dropped and counted from then on. A host that never hellos keeps them.
+
+Inbound `{ "channel":"system", "type":"goodbye" }` is logged.
 
 ---
 
@@ -1246,7 +1275,7 @@ Then in Lua:
 ```lua
 function on_event(ctx, event)
     if event.name == "button" then
-        log.info("button pin=" .. tostring(event.pin))
+        log.info("button pin=" .. tostring(event.data.pin))
     end
 end
 ```
@@ -1358,9 +1387,15 @@ ESP-IDF CMake component graph.
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `Extensions::MAX` | `12` | Maximum extensions per sandbox |
+| `RenderTargets::MAX` | `8` | Maximum registered render targets per board |
 | `Sandbox::TICK_INTERVAL` | `100 ms` | Lua `on_tick` interval (10 FPS) |
-| `Sandbox::SANDBOX_MAX_EVENTS` | `8` | Event ring buffer capacity; oldest event is dropped when full |
+| `RESIDENT_EVENT_RING_SIZE` | `8` | Inbound event ring depth (one slot kept free, so 7 usable); oldest event is dropped when full. Build-flag overridable |
+| `RESIDENT_EVENT_QUEUE_SIZE` | `16` | Outbound event queue depth (rate-limited / offline sends wait here). Build-flag overridable |
+| `RESIDENT_EVENT_JSON_MAX` | `1024` | Event `data` buffer — bounds the `events.send` serializer, the incoming app-channel `data`, and each ring slot. Build-flag overridable; the ring grows by 8× any increase |
+| `RESIDENT_STORE_JSON_MAX` | `2048` | Serialized size cap on the whole persisted `store` blob. Build-flag overridable |
+| `StoreModule::STORE_NS_MAX` | `32` | Maximum `storeNs` length in characters |
 | Event `name` max | `32 chars` | `Event::name` buffer size — driver event names longer than 31 bytes are truncated |
-| Event `data` max | `RESIDENT_EVENT_JSON_MAX` (default `1024`) | `Event::data` buffer — serialized driver event fields or app-channel `data` JSON. Compile-time override via build flag; also bounds the outgoing `events.send` serializer |
+| `SandboxConfig::executionBudget` | `2000000` | Lua instructions per dispatch (`0` = unlimited) |
+| Event rate limit | `5/s`, burst `10` | Token bucket shared by `events.send`, `runtime.send` and `publishEvent` |
 | `RUNTIME_ERROR_COOLDOWN` | `5000 ms` | Minimum interval between `runtime_error` telemetry emissions from `on_tick` |
 | `RUNTIME_ERROR_MAX_BURST` | `3` | Number of `runtime_error` telemetry events allowed before rate-limiting kicks in |

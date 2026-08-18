@@ -1,5 +1,5 @@
 // src/ResidentLvglModule.h — the `lvgl` Lua module: retained-mode UI via
-// LVGL 9 + luavgl (arc R17, R19).
+// LVGL 9 + luavgl.
 //
 // OPT-IN: this header is not included by Resident.h. Include it from board
 // code that also lists LVGL and the Inanimate luavgl fork in its lib_deps (see
@@ -12,7 +12,7 @@
 //   lvglModule.addDisplay("main", {.dpi = 240});
 //   cfg.extensions = {..., &lvglModule};
 //
-// Since R19 the MODULE owns the LVGL runtime, not the board: lv_init, the
+// The MODULE owns the LVGL runtime, not the board: lv_init, the
 // millis tick source, the lv_display_t, its draw buffers, the flush callback
 // (over the panel's blit), the lv_timer_handler pump and the app-reset tree
 // wipe all live here. A board supplies only "the panel, addressable" — a
