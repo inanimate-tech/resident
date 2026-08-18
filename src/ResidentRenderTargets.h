@@ -103,6 +103,18 @@ public:
     return true;
   }
 
+  // A module's declaration: "I can draw on this target." No geometry — a
+  // module declares at firmware-setup time, which is the same static-init
+  // window addPanel lives in, so asking anything its size here is the same
+  // crash. Geometry comes from size() when someone actually reads.
+  static bool declare(const char* name, const char* shape, uint8_t module) {
+    Entry* e = slot(name);
+    if (!e) return false;
+    if (shape) e->shape = shape;
+    e->modules |= module;
+    return true;
+  }
+
   // The board's registration: one panel, geometry read from it. Modules are
   // NOT declared here — a module declares itself when the board hands it the
   // target name (LgfxModule::addDisplay / LvglModule::addDisplay).

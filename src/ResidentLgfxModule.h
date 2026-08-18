@@ -227,8 +227,19 @@ public:
   // Sprite-backed targets often have no geometry until the panel is up
   // (addDisplay typically runs before setup(), sometimes before the board's
   // display begin()). Re-read it here.
+  // begin() runs after every driver's begin(), so hardware is up: this is the
+  // first safe moment to measure. A panel-backed target needs no cache (the
+  // registry reads its panel), but a sprite-backed one has no panel to ask, so
+  // record its geometry here for readers like the `surfaces` module.
   void begin() override {
-    for (int i = 0; i < _count; i++) declare(_slots[i]);
+    for (int i = 0; i < _count; i++) {
+      const Slot& s = _slots[i];
+      declare(s);
+      if (!RenderTargets::panel(s.name) && s.target) {
+        RenderTargets::add(s.name, s.target->width(), s.target->height(),
+                           s.shape, RenderTargets::MODULE_LGFX);
+      }
+    }
   }
 
   // Bind is the claim, app reset is the release: the next app's first bind
@@ -310,13 +321,13 @@ private:
   Slot _slots[MAX_DISPLAYS] = {};
   int _count = 0;
 
-  // Registry declaration for one slot: geometry from the board's panel when
-  // there is one (the drawing target may have none until it is allocated).
+  // Registry declaration for one slot: the module bit and the shape, never
+  // geometry. addDisplay is called from a board's config function, which
+  // commonly runs during static init — measuring anything there dereferences
+  // hardware that does not exist yet. Readers get live geometry from
+  // RenderTargets::size().
   static void declare(const Slot& s) {
-    PanelTarget* p = RenderTargets::panel(s.name);
-    int32_t w = p ? p->width() : s.target->width();
-    int32_t h = p ? p->height() : s.target->height();
-    RenderTargets::add(s.name, w, h, s.shape, RenderTargets::MODULE_LGFX);
+    RenderTargets::declare(s.name, s.shape, RenderTargets::MODULE_LGFX);
   }
 
   // Present one frame — the R19 gate. Not the owner? Drop it silently: the

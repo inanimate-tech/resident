@@ -100,9 +100,10 @@ public:
     _slots[_count].name = displayName;
     _slots[_count].opts = opts;
     _count++;
-    PanelTarget* p = RenderTargets::panel(displayName);
-    RenderTargets::add(displayName, p ? p->width() : 0, p ? p->height() : 0,
-                       nullptr, RenderTargets::MODULE_LVGL);
+    // The module bit only: addDisplay runs from a board's config function,
+    // which commonly runs during static init, and measuring a panel there is
+    // a crash. Geometry is read when the display is created, on first bind.
+    RenderTargets::declare(displayName, nullptr, RenderTargets::MODULE_LVGL);
     return true;
   }
 

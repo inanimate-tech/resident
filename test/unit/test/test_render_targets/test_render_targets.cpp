@@ -71,6 +71,19 @@ void test_add_panel_never_asks_the_panel_its_size(void) {
   TEST_ASSERT_GREATER_THAN_INT(0, panel.sizeReads);
 }
 
+// The same rule one layer up: a graphics module's addDisplay is called from
+// the same board config function, so declaring must not measure either.
+void test_module_declare_never_asks_the_panel_its_size(void) {
+  FakePanel panel(240, 135);
+  RenderTargets::addPanel("main", &panel);
+  panel.sizeReads = 0;
+  RenderTargets::declare("main", nullptr, RenderTargets::MODULE_LGFX);
+  RenderTargets::declare("main", nullptr, RenderTargets::MODULE_LVGL);
+  TEST_ASSERT_EQUAL_INT(0, panel.sizeReads);
+  TEST_ASSERT_EQUAL_UINT8(RenderTargets::MODULE_LGFX | RenderTargets::MODULE_LVGL,
+                          RenderTargets::entry(0).modules);
+}
+
 void test_modules_merge_onto_one_target(void) {
   FakePanel panel(466, 466);
   RenderTargets::addPanel("dial", &panel, "round");
@@ -185,6 +198,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_add_panel_registers_geometry);
   RUN_TEST(test_add_panel_never_asks_the_panel_its_size);
+  RUN_TEST(test_module_declare_never_asks_the_panel_its_size);
   RUN_TEST(test_modules_merge_onto_one_target);
   RUN_TEST(test_unowned_target_answers_false_for_everyone);
   RUN_TEST(test_bind_claims_and_last_claim_wins);
