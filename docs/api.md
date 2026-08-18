@@ -573,23 +573,56 @@ The user owns the extension instances (typically global or static variables). Th
 
 ## Resident::RenderTargets
 
-The render-target registry — the single place a board's drawable surfaces are declared, and INTERNAL machinery: both graphics modules feed it as a side effect of `addDisplay` (`LgfxModule` and `LvglModule`), and `lvgl.bind(name)` resolves against it. It is deliberately NOT broadcast: surface geometry is an authoring fact, and the one authority for authoring facts is the document behind the hello's `profile` key. A static-capacity table (`RenderTargets::MAX` = 8), no allocation, board-lifetime (entries survive app loads; `clear()` exists for tests).
+The render-target registry — the single place a board's drawable surfaces are declared, and the seam between "the panel, addressable" (the board's job) and the machinery a graphics library needs to draw on it (the module's job). It is INTERNAL machinery: the graphics modules resolve `bind(name)` against it and arbitrate ownership through it. It is deliberately NOT broadcast: surface geometry is an authoring fact, and the one authority for authoring facts is the document behind the hello's `profile` key. A static-capacity table (`RenderTargets::MAX` = 8), no allocation, board-lifetime (entries survive app loads; `clear()` exists for tests).
+
+A board registers **one library-agnostic target per panel**:
 
 ```cpp
 #include <ResidentRenderTargets.h>   // also pulled in by Resident.h
 
-// Usually implicit via a module's addDisplay; direct registration works too:
-Resident::RenderTargets::add("dial", 240, 240, "round",
-                             Resident::RenderTargets::MODULE_LGFX);
+class MyPanel : public Resident::PanelTarget {
+  int32_t width() const override  { return M5.Display.width(); }
+  int32_t height() const override { return M5.Display.height(); }
+  void blit(int32_t x, int32_t y, int32_t w, int32_t h,
+            const uint16_t* px) override {
+    M5.Display.startWrite();
+    M5.Display.setAddrWindow(x, y, w, h);
+    M5.Display.writePixels(px, (int32_t)w * h);
+    M5.Display.endWrite();
+  }
+};
+MyPanel myPanel;
+Resident::RenderTargets::addPanel("main", &myPanel, "rect");
 ```
+
+`PanelTarget` is the whole board-side surface: geometry plus a synchronous RGB565 blit. **Byte order: big-endian (high byte first)** — the SPI wire order, which is also LovyanGFX's internal 16-bit sprite format (`swap565`); a caller holding little-endian pixels (LVGL's native RGB565) swaps before calling, as `LvglModule`'s flush does.
+
+The modules then build their own machinery over that one target when Lua binds it — `LgfxModule` allocates and owns a full-frame sprite and presents it with a single blit; `LvglModule` creates and owns the `lv_display_t`, its partial draw buffers and the flush callback over the same blit.
 
 | Member | Description |
 |--------|-------------|
-| `add(name, w, h, shape, module)` | Register or update a surface. Same name merges: geometry and shape refresh, module bit ORed in. `shape` is `"rect"` or `"round"` (`nullptr` keeps the existing/default). `module` is `MODULE_LGFX` or `MODULE_LVGL`. Returns `false` when full or `name` is null. |
-| `count()` / `entry(i)` | Iterate the registered entries (`{name, w, h, shape, modules}`). |
+| `addPanel(name, panel, shape = "rect")` | The board's registration: attach a `PanelTarget` and take geometry from it. Same name merges. Returns `false` when full or `panel` is null. |
+| `add(name, w, h, shape, module)` | Declare a module bit on a target (what the modules call from `addDisplay`). Same name merges: geometry and shape refresh, module bit ORed in. `shape` `nullptr` keeps the existing/default. |
+| `panel(name)` | The registered `PanelTarget*`, or null. |
+| `claim(name, module)` | **Bind is the claim.** Set the owner (last claim wins). `false` for unknown names. |
+| `owner(name)` / `isOwner(name, module)` | The owner bit (`0` = unowned); `isOwner` is the present-path gate and is strict — an UNOWNED target answers `false` for everyone. |
+| `release(module)` | Release every target this module owns (called from each module's `onAppReset`); returns the count. |
+| `releaseAll()` | Release everything, whoever owns it. |
+| `count()` / `entry(i)` | Iterate the entries (`{name, w, h, shape, modules, owner, panel}`). |
 | `clear()` | Tests only — surfaces are hardware, not app state. |
 
-Names and shapes are stored as pointers; the registrant keeps them alive (string literals in firmware). `LgfxModule::addDisplay(name, target, shape = "rect")` registers geometry from the target's `width()`/`height()` (re-read in the module's `begin()`, since sprite-backed targets often have no geometry until their driver's `begin()`); `LvglModule::addDisplay(name, disp, shape = "rect")` reads `lv_display_get_horizontal_resolution`/`_vertical_`.
+Names and shapes are stored as pointers; the registrant keeps them alive (string literals in firmware).
+
+#### Bind is the claim (ownership)
+
+Two graphics libraries cannot both drive one panel: a full-frame sprite push and LVGL's partial flushes overwrite each other and the glass strobes. So the registry holds **one owner bit per target**, and `lgfx.bind(name)` / `lvgl.bind(name)` are both the app's library DECLARATION and its ownership CLAIM:
+
+- **Last bind wins**, either module, in either direction.
+- The **non-owner's present path stands down silently**: an `lgfx` `flip()` is dropped, and LVGL's flush callback returns without touching the panel (its display refresh timer is paused too, so it doesn't even render). Drawing keeps working — only presenting is gated.
+- **On takeover** the incoming owner repaints everything it can (`LvglModule` invalidates the whole active screen), because the pixels on the glass were the other library's a moment ago.
+- **`onAppReset` releases every claim** (each module releases its own), so each app's first bind is a clean claim. This is also what kills the app-reset blank-frame race: the wipe of the outgoing LVGL tree invalidates a blank screen, but an unowned display never flushes it behind the incoming app.
+
+Out of this arbitration by design: the **system/status display role** and **overlays**. Those write through the board's own path (the driver that owns the status text and its sprite), so connection text and overlays reach the glass whether or not an app has claimed the panel.
 
 ---
 
@@ -846,13 +879,15 @@ Idiomatic LovyanGFX drawing from Lua — present only when the firmware register
 
 ```cpp
 #include <ResidentLgfxModule.h>
-Resident::LgfxLovyanTarget<M5Canvas> lgfxMain{&displayDriver.canvas(),
-                                              [] { displayDriver.repaint(); }};
+M5Canvas canvas{&M5.Display};                          // the frame buffer object
+Resident::LgfxSpriteTarget<M5Canvas> lgfxMain{&canvas};
 Resident::LgfxModule lgfxModule;
-// setup: lgfxModule.addDisplay("main", &lgfxMain);  cfg.extensions = {..., &lgfxModule};
+// setup: Resident::RenderTargets::addPanel("main", &myPanel);
+//        lgfxModule.addDisplay("main", &lgfxMain);
+//        cfg.extensions = {..., &lgfxModule};
 ```
 
-The adapter is a duck-typed template — instantiate it with anything carrying LovyanGFX's drawing API (`LGFX_Device`, `LGFX_Sprite`, `M5Canvas`, `M5GFX`). Colors are 24-bit `0xRRGGBB` everywhere; LovyanGFX converts to the panel/sprite depth (it interprets `uint32_t` colors as RGB888).
+Both adapters are duck-typed templates — instantiate with anything carrying LovyanGFX's drawing API (`LGFX_Device`, `LGFX_Sprite`, `M5Canvas`, `M5GFX`, a test fake). `LgfxSpriteTarget<T>` is the R19 shape: the MODULE owns the frame buffer — on the first bind it calls `setColorDepth(16)` + `createSprite(...)` at the registered panel's geometry (idempotent: a board that pre-created the sprite for its own status path keeps the one buffer), and `flip()` blits it through the panel. `LgfxLovyanTarget<T>` remains for targets that present themselves: construct it with a presenter callback, or with none for direct-to-panel targets where drawing is already live. Colors are 24-bit `0xRRGGBB` everywhere; LovyanGFX converts to the panel/sprite depth (it interprets `uint32_t` colors as RGB888).
 
 ```lua
 local g = lgfx.bind("main")      -- raises a Lua error for unknown names
@@ -865,21 +900,27 @@ g:flip()                         -- present to the glass
 
 Handle methods (colon-call), matching LovyanGFX names/argument orders: `fillScreen(c)` · `drawPixel(x,y,c)` · `drawLine(x0,y0,x1,y1,c)` · `drawRect/fillRect(x,y,w,h,c)` · `drawRoundRect/fillRoundRect(x,y,w,h,r,c)` · `drawCircle/fillCircle(x,y,r,c)` · `drawTriangle/fillTriangle(x0,y0,x1,y1,x2,y2,c)` · `setTextColor(fg[,bg])` · `setTextSize(s)` · `setTextDatum(d)` (constants on the module table: `lgfx.TL_DATUM`, `TC`, `TR`, `ML`, `MC`, `MR`, `BL`, `BC`, `BR`, `L_BASELINE`, `C_BASELINE`, `R_BASELINE`) · `setCursor(x,y)` · `print(text)` · `drawString(text,x,y)` · `width()` · `height()` · `flip()`.
 
-**Present semantics:** `g:flip()` runs the presenter the firmware supplied at registration (for sprite-backed displays: push the sprite — e.g. the driver's `repaint()`); with no presenter (direct-to-panel targets) `flip()` is a no-op and drawing is live. Deliberately small this pass: default font + size multiplier only — no font selection, images, or Lua-created sprites.
+**Present semantics:** `g:flip()` presents the frame — one blit of the module-owned sprite through the target's registered [`PanelTarget`](#residentrendertargets), or (for a target with no readable buffer) the presenter callback the firmware supplied, or nothing at all for direct-to-panel targets where drawing is live. Deliberately small this pass: default font + size multiplier only — no font selection, images, or Lua-created sprites.
 
-`addDisplay` also declares the surface in the [`RenderTargets`](#residentrendertargets) registry (shape via the optional third parameter, default `"rect"`), so the [hello](#hello) announces it.
+**`lgfx.bind(name)` is also the ownership claim** ([bind is the claim](#bind-is-the-claim-ownership)): it allocates the frame buffer if needed and takes the target. While another module owns it — because the app called `lvgl.bind` on the same target, or because an app reset released every claim — `g:flip()` is **dropped silently**; drawing calls still work. `addDisplay(name, target, shape = "rect")` declares the `MODULE_LGFX` bit on the target in the [`RenderTargets`](#residentrendertargets) registry.
 
 ### `lvgl` module (optional)
 
-Retained-mode UI from Lua — LVGL 9 through the [luavgl arc fork](https://github.com/inanimate-tech/luavgl)'s display-scoped binding. Present only when the firmware registers displays into an `LvglModule` and lists it in `SandboxConfig::extensions`. Opt-in like the lgfx module, with an extra requirement: the board's own build must supply LVGL and luavgl (`lib_deps`), plus the display/flush/tick glue — Resident hosts the Lua surface, never the LVGL runtime. See `examples/m5stick-demo`'s `m5stick-lvgl` env for the full wiring (its `LVGLDriver` is the glue template).
+Retained-mode UI from Lua — LVGL 9 through the [luavgl arc fork](https://github.com/inanimate-tech/luavgl)'s display-scoped binding. Present only when the firmware names registered panel targets in an `LvglModule` and lists it in `SandboxConfig::extensions`. Opt-in like the lgfx module, with an extra requirement: the board's own build must supply LVGL and luavgl (`lib_deps`). Since R19 there is **no glue driver to write**: the module owns `lv_init`, the `millis` tick source, the `lv_display_t` over the board's [`PanelTarget`](#residentrendertargets), its draw buffers, the flush callback, the `lv_timer_handler` pump and the app-reset tree wipe. See `examples/m5stick-demo`'s `m5stick-lvgl` env for the full wiring.
 
 ```cpp
 #include <ResidentLvglModule.h>   // not pulled in by Resident.h
 Resident::LvglModule lvglModule;
-// after the glue driver created its lv_display_t (begin it early if needed):
-lvglModule.addDisplay("main", disp);            // shape "rect" by default
-// cfg.extensions = {..., &glueDriver, &lvglModule};
+// setup, after the board registered its panel:
+Resident::RenderTargets::addPanel("main", &myPanel);
+Resident::LvglModule::DisplayOptions opts;
+opts.dpi = 240;                                 // 0 = LVGL's default
+opts.bufferRows = 14;                           // 0 = auto (height/10, min 8)
+lvglModule.addDisplay("main", opts);            // or addDisplay("main")
+// cfg.extensions = {..., &lvglModule};
 ```
+
+`DisplayOptions` also takes a board-supplied draw buffer (`buffer` + `bufferBytes`, e.g. `heap_caps_malloc(..., MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)`); leave it null and the module allocates with `lv_malloc`. The `lv_display_t` is created **on the first bind**, so a board whose apps never use LVGL allocates no display and no buffers. `LV_COLOR_DEPTH` must be 16 (the blit contract is RGB565); the flush byte-swaps LVGL's little-endian pixels into the panel's wire order.
 
 ```lua
 local h = lvgl.bind("main")    -- raises a Lua error for unknown names
@@ -889,7 +930,7 @@ h:set_theme { screen = { bg_color = "#0b0b10" } }
 
 `lvgl.bind(name)` returns luavgl's display-scoped handle (idempotent per display): widget constructors parented to that display's active screen, `screen()`/`clean()`/`HOR_RES()`/`VER_RES()`/`mirror()`/`set_default()`/`set_theme{...}`, everything else falling through to the full luavgl module — see the fork's `docs/display-bind.md` for the handle contract and `prompts/lvgl.md` for the app-author surface. The `lvgl` global is Resident's module table (just `bind`), with a metatable falling through to luavgl's own module table — so `lvgl.Font`, `lvgl.ALIGN`, `lvgl.Anim` etc. resolve normally once the module has loaded, which happens on the first `bind` call. Two things follow: fallthrough keys are `nil` before any `bind` (bind first — apps always do), and Resident's name-based `bind` shadows luavgl's userdata-based `lvgl.bind(disp)` (use `lvgl.disp` functions if you truly need the raw form).
 
-Per-display ownership (last bind wins, C-side cleans invalidating Lua handles) is luavgl's business at the display level — Resident does not duplicate it. Themes are Lua's business too: glue drivers should bake none, and apps install their own via `h:set_theme{...}`. `addDisplay` also feeds the [`RenderTargets`](#residentrendertargets) registry (internal — bind-by-name resolution, not broadcast).
+**`lvgl.bind(name)` is also the ownership claim** ([bind is the claim](#bind-is-the-claim-ownership)): it creates the display if needed, takes the target from whoever held it, and invalidates the whole active screen so the takeover repaints every pixel the other library left behind. While this module does NOT own the target, the flush callback returns without touching the panel and the display's refresh timer is paused — that is how a wiped, unowned tree can no longer race a blank frame onto the glass behind the incoming app. `onAppReset` wipes the tree (`lv_obj_clean` — luavgl invalidates Lua handles on C-side deletion) and releases the claim. Handle-level caching (one handle per display) stays luavgl's business. Themes are Lua's business: the module bakes none, and apps install their own via `h:set_theme{...}`.
 
 ### `store` module
 

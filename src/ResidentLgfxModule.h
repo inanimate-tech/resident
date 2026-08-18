@@ -21,14 +21,25 @@
 //   No LovyanGFX include here; the firmware's own include provides TGfx.
 //   LovyanGFX interprets uint32_t color arguments as RGB888, so colors
 //   pass straight through and the panel/sprite converts to its own depth.
+// - LgfxSpriteTarget<TSprite>: the R19 shape. The MODULE owns the frame
+//   buffer: on the first bind it creates the sprite at the registered
+//   PanelTarget's geometry, and g:flip() presents it with ONE blit through
+//   that panel. The board supplies only the sprite object (the concrete
+//   LovyanGFX type it can name) and the panel.
 // - LgfxModule: the optional Extension. Firmware registers displays at
 //   setup (addDisplay) and lists the module in SandboxConfig::extensions;
 //   Lua binds by name.
 //
-// Present-to-glass: g:flip() calls the target's flip(). For sprite-backed
-// devices, construct the adapter with a presenter callback that pushes the
-// sprite (e.g. the driver's repaint()/pushSprite path). For direct-to-panel
-// targets, omit the presenter — flip() is then a no-op and drawing is live.
+// Present-to-glass: g:flip() presents the frame — but only while THIS module
+// owns the target. `lgfx.bind(name)` claims it (R19, see
+// ResidentRenderTargets.h); after `lvgl.bind(name)` takes the claim, or
+// after an app reset releases it, flip is dropped silently instead of
+// fighting the other library for the glass.
+//
+// The present path itself: if the target exposes pixels() and the registry
+// has a PanelTarget for the name, the module blits the whole frame; else it
+// falls back to the target's own flip() (the legacy presenter-callback
+// adapter, and direct-to-panel targets where drawing is already live).
 //
 // Deliberately small this pass: default font + setTextSize multiplier only,
 // no font selection, no images, no Lua-created sprites.
@@ -79,7 +90,18 @@ public:
   virtual int32_t width() = 0;
   virtual int32_t height() = 0;
 
-  // Present the frame to the glass. Default: drawing is live, nothing to do.
+  // R19 machinery hooks. Defaults keep pre-R19 targets (their own presenter,
+  // or direct-to-panel) working unchanged.
+  //
+  // allocate(): called on every bind, at the panel's geometry — create the
+  // frame buffer here if it doesn't exist yet. Must be idempotent.
+  virtual bool allocate(int32_t /*w*/, int32_t /*h*/) { return true; }
+  // The frame buffer, RGB565 big-endian (the PanelTarget::blit contract), or
+  // null when this target has no readable buffer (present via flip()).
+  virtual const uint16_t* pixels() const { return nullptr; }
+
+  // Present the frame to the glass. Only called when pixels() is null (or no
+  // panel is registered); default: drawing is live, nothing to do.
   virtual void flip() {}
 };
 
@@ -141,9 +163,42 @@ public:
 
   void flip() override { if (_present) _present(); }
 
-private:
+protected:
   TGfx* _gfx;
+
+private:
   Presenter _present;
+};
+
+// ── R19: a module-owned sprite over a registered PanelTarget ─────────────
+//
+// The board declares the sprite object (only it can name the concrete
+// LovyanGFX type) and hands it over; the MODULE decides when it exists and
+// how it reaches the glass:
+//
+//   M5Canvas canvas{&M5.Display};
+//   Resident::LgfxSpriteTarget<M5Canvas> lgfxMain{&canvas};
+//   Resident::RenderTargets::addPanel("main", &myPanel);
+//   lgfxModule.addDisplay("main", &lgfxMain);
+//
+// createSprite is idempotent here: a board that pre-creates the sprite for
+// its own status-display path (the m5stick DisplayDriver does) keeps the one
+// frame buffer, and lgfx composes on top of it.
+template <class TSprite>
+class LgfxSpriteTarget : public LgfxLovyanTarget<TSprite> {
+public:
+  explicit LgfxSpriteTarget(TSprite* sprite)
+      : LgfxLovyanTarget<TSprite>(sprite) {}
+
+  bool allocate(int32_t w, int32_t h) override {
+    if (this->_gfx->getBuffer()) return true;   // already created
+    this->_gfx->setColorDepth(16);              // must precede createSprite
+    return this->_gfx->createSprite(w, h) != nullptr;
+  }
+
+  const uint16_t* pixels() const override {
+    return (const uint16_t*)this->_gfx->getBuffer();
+  }
 };
 
 // ── The Lua module ────────────────────────────────────────────────────────
@@ -154,9 +209,10 @@ public:
   const char* name() const override { return "lgfx"; }
 
   // Firmware setup: register a display under a bind name. Call before
-  // Sandbox::setup(). Returns false when the table is full. Also declares
-  // the surface in the RenderTargets registry (geometry from the target,
-  // shape "rect" unless overridden) so the device hello can announce it.
+  // Sandbox::setup(). Returns false when the table is full. Declares the
+  // MODULE_LGFX bit on the target in the RenderTargets registry; geometry
+  // comes from the registered PanelTarget when the board registered one
+  // (addPanel), else from the drawing target itself.
   bool addDisplay(const char* displayName, LgfxTarget* target,
                   const char* shape = "rect") {
     if (_count >= MAX_DISPLAYS || !displayName || !target) return false;
@@ -164,20 +220,21 @@ public:
     _slots[_count].target = target;
     _slots[_count].shape = shape;
     _count++;
-    RenderTargets::add(displayName, target->width(), target->height(), shape,
-                       RenderTargets::MODULE_LGFX);
+    declare(_slots[_count - 1]);
     return true;
   }
 
-  // Sprite-backed targets often have no geometry until the driver's begin()
-  // creates the framebuffer (addDisplay typically runs before setup()).
-  // Re-read it here: extension begin() runs before any hello can drain.
+  // Sprite-backed targets often have no geometry until the panel is up
+  // (addDisplay typically runs before setup(), sometimes before the board's
+  // display begin()). Re-read it here.
   void begin() override {
-    for (int i = 0; i < _count; i++) {
-      RenderTargets::add(_slots[i].name, _slots[i].target->width(),
-                         _slots[i].target->height(), _slots[i].shape,
-                         RenderTargets::MODULE_LGFX);
-    }
+    for (int i = 0; i < _count; i++) declare(_slots[i]);
+  }
+
+  // Bind is the claim, app reset is the release: the next app's first bind
+  // is a clean claim, and until then this module's flips stand down.
+  void onAppReset() override {
+    RenderTargets::release(RenderTargets::MODULE_LGFX);
   }
 
   void registerModule(LuaModule& m) override {
@@ -194,11 +251,23 @@ public:
   // pcall and reported like any other app error.
   int bind(lua_State* L) {
     const char* name = luaL_checkstring(L, 1);
-    LgfxTarget* t = nullptr;
+    Slot* s = nullptr;
     for (int i = 0; i < _count; i++) {
-      if (strcmp(_slots[i].name, name) == 0) { t = _slots[i].target; break; }
+      if (strcmp(_slots[i].name, name) == 0) { s = &_slots[i]; break; }
     }
-    if (!t) return luaL_error(L, "lgfx.bind: no display named '%s'", name);
+    if (!s) return luaL_error(L, "lgfx.bind: no display named '%s'", name);
+
+    // R19: the bind is the claim. Build our machinery over the panel (the
+    // frame buffer, at the panel's geometry) and take ownership — the other
+    // module's present path stands down from here.
+    PanelTarget* p = RenderTargets::panel(name);
+    int32_t w = p ? p->width() : s->target->width();
+    int32_t h = p ? p->height() : s->target->height();
+    if (!s->target->allocate(w, h)) {
+      return luaL_error(L, "lgfx.bind: '%s' frame buffer allocation failed", name);
+    }
+    declare(*s);
+    RenderTargets::claim(name, RenderTargets::MODULE_LGFX);
 
     struct Entry { const char* name; lua_CFunction fn; };
     static const Entry entries[] = {
@@ -225,7 +294,7 @@ public:
     };
     lua_createtable(L, 0, (int)(sizeof(entries) / sizeof(entries[0])));
     for (const Entry& e : entries) {
-      lua_pushlightuserdata(L, t);
+      lua_pushlightuserdata(L, s);
       lua_pushcclosure(L, e.fn, 1);
       lua_setfield(L, -2, e.name);
     }
@@ -241,11 +310,31 @@ private:
   Slot _slots[MAX_DISPLAYS] = {};
   int _count = 0;
 
-  // Colon-call convention: arg 1 is the bound handle table; drawing args
-  // start at index 2. The target rides in upvalue 1.
-  static LgfxTarget* tgt(lua_State* L) {
-    return (LgfxTarget*)lua_touserdata(L, lua_upvalueindex(1));
+  // Registry declaration for one slot: geometry from the board's panel when
+  // there is one (the drawing target may have none until it is allocated).
+  static void declare(const Slot& s) {
+    PanelTarget* p = RenderTargets::panel(s.name);
+    int32_t w = p ? p->width() : s.target->width();
+    int32_t h = p ? p->height() : s.target->height();
+    RenderTargets::add(s.name, w, h, s.shape, RenderTargets::MODULE_LGFX);
   }
+
+  // Present one frame — the R19 gate. Not the owner? Drop it silently: the
+  // other library is driving this panel and a flip here would strobe.
+  static void present(const Slot& s) {
+    if (!RenderTargets::isOwner(s.name, RenderTargets::MODULE_LGFX)) return;
+    PanelTarget* p = RenderTargets::panel(s.name);
+    const uint16_t* px = s.target->pixels();
+    if (p && px) p->blit(0, 0, s.target->width(), s.target->height(), px);
+    else         s.target->flip();   // legacy presenter / direct-to-panel
+  }
+
+  // Colon-call convention: arg 1 is the bound handle table; drawing args
+  // start at index 2. The bound slot rides in upvalue 1.
+  static Slot* slot(lua_State* L) {
+    return (Slot*)lua_touserdata(L, lua_upvalueindex(1));
+  }
+  static LgfxTarget* tgt(lua_State* L) { return slot(L)->target; }
   static int32_t geti(lua_State* L, int idx) { return (int32_t)luaL_checkinteger(L, idx); }
   static uint32_t getc(lua_State* L, int idx) { return (uint32_t)luaL_checkinteger(L, idx); }
 
@@ -306,7 +395,7 @@ private:
   }
   static int l_width(lua_State* L) { lua_pushinteger(L, tgt(L)->width()); return 1; }
   static int l_height(lua_State* L) { lua_pushinteger(L, tgt(L)->height()); return 1; }
-  static int l_flip(lua_State* L) { tgt(L)->flip(); return 0; }
+  static int l_flip(lua_State* L) { present(*slot(L)); return 0; }
 };
 
 } // namespace Resident

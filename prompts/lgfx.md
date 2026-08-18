@@ -25,6 +25,15 @@ g:flip()                          -- nothing reaches the glass until this
   `L_BASELINE`, `C_BASELINE`, `R_BASELINE`) · or `g:setCursor(x,y)` + `g:print(s)`
 - `g:width()` · `g:height()` · `g:flip()`
 
+## Binding is claiming
+
+`lgfx.bind(name)` declares the library this app draws that surface with AND
+claims the surface. One panel, one library: if the same app also calls
+`lvgl.bind(name)` on that surface, LVGL takes it over and every later
+`g:flip()` is dropped silently (the drawing calls still run — they just never
+reach the glass). Pick one library per surface and stay with it. Ownership
+resets when a new app loads, so the next app's first bind is clean.
+
 ## Rules
 
 - Default font only. Size `n` renders ~6·n px per character, ~8·n px tall.

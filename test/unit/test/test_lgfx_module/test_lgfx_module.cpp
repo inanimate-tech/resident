@@ -6,6 +6,11 @@
 // LovyanGFX-shaped method signatures and a small pixel buffer — instantiated
 // THROUGH the real adapter template, so the adapter's forwarding (including
 // the setTextColor one/two-arg split and the presenter) is what's under test.
+//
+// R19 (bind is the claim) is exercised in situ through the third display,
+// "panel": a module-owned LgfxSpriteTarget over a registered PanelTarget, so
+// the claim on bind, the blit present path, and the stand-down of a
+// non-owner's flip are tested as Lua actually reaches them.
 #include <unity.h>
 #include <string>
 #include <vector>
@@ -88,13 +93,38 @@ struct FakeGfx {
   }
   int32_t width() { return W; }
   int32_t height() { return H; }
+
+  // Sprite-shaped surface (what LgfxSpriteTarget manages):
+  uint16_t frame[H * W] = {};
+  bool created = false;
+  int depth = 0;
+  void setColorDepth(int d) { depth = d; }
+  void* createSprite(int32_t, int32_t) { created = true; return frame; }
+  void* getBuffer() { return created ? (void*)frame : nullptr; }
+};
+
+class FakePanel : public Resident::PanelTarget {
+public:
+  int32_t width() const override { return FakeGfx::W; }
+  int32_t height() const override { return FakeGfx::H; }
+  void blit(int32_t x, int32_t y, int32_t w, int32_t h,
+            const uint16_t* px) override {
+    blits++;
+    lastX = x; lastY = y; lastW = w; lastH = h; lastPx = px;
+  }
+  int blits = 0;
+  int32_t lastX = -1, lastY = -1, lastW = -1, lastH = -1;
+  const uint16_t* lastPx = nullptr;
 };
 
 FakeGfx* gfxMain = nullptr;
 FakeGfx* gfxAux = nullptr;
+FakeGfx* gfxSprite = nullptr;
+FakePanel* fakePanel = nullptr;
 int flips = 0;
 Resident::LgfxLovyanTarget<FakeGfx>* targetMain = nullptr;
 Resident::LgfxLovyanTarget<FakeGfx>* targetAux = nullptr;
+Resident::LgfxSpriteTarget<FakeGfx>* targetPanel = nullptr;
 Resident::LgfxModule* lgfxModule = nullptr;
 Resident::Sandbox* sandbox = nullptr;
 
@@ -103,14 +133,20 @@ constexpr const char* IDLE_APP =
     "function on_tick(ctx, dt) end\n";
 
 void build() {
+  Resident::RenderTargets::clear();
   gfxMain = new FakeGfx();
   gfxAux = new FakeGfx();
+  gfxSprite = new FakeGfx();
+  fakePanel = new FakePanel();
   flips = 0;
   targetMain = new Resident::LgfxLovyanTarget<FakeGfx>(gfxMain, [] { flips++; });
   targetAux = new Resident::LgfxLovyanTarget<FakeGfx>(gfxAux);  // no presenter
+  targetPanel = new Resident::LgfxSpriteTarget<FakeGfx>(gfxSprite);
+  Resident::RenderTargets::addPanel("panel", fakePanel);
   lgfxModule = new Resident::LgfxModule();
   lgfxModule->addDisplay("main", targetMain);
   lgfxModule->addDisplay("aux", targetAux);
+  lgfxModule->addDisplay("panel", targetPanel);
 
   Resident::SandboxConfig cfg;
   cfg.deviceType = "native-test";
@@ -139,8 +175,12 @@ void tearDown(void) {
   delete lgfxModule; lgfxModule = nullptr;
   delete targetMain; targetMain = nullptr;
   delete targetAux; targetAux = nullptr;
+  delete targetPanel; targetPanel = nullptr;
   delete gfxMain; gfxMain = nullptr;
   delete gfxAux; gfxAux = nullptr;
+  delete gfxSprite; gfxSprite = nullptr;
+  delete fakePanel; fakePanel = nullptr;
+  Resident::RenderTargets::clear();
 }
 
 void test_bind_dimensions_pixels_and_flip(void) {
@@ -233,6 +273,65 @@ void test_bind_unknown_display_raises(void) {
   TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("failed"));
 }
 
+// ── R19: bind is the claim ───────────────────────────────────────────────
+
+void test_sprite_bind_allocates_claims_and_blits(void) {
+  build();
+  TEST_ASSERT_FALSE(gfxSprite->created);
+  TEST_ASSERT_TRUE(sandbox->loadChunk(
+      "g = lgfx.bind('panel')\n"
+      "g:fillScreen(0x102030)\n"
+      "g:flip()\n"));
+  TEST_ASSERT_TRUE(gfxSprite->created);            // module owns the buffer
+  TEST_ASSERT_EQUAL_INT(16, gfxSprite->depth);     // 16bpp before create
+  TEST_ASSERT_EQUAL_UINT8(Resident::RenderTargets::MODULE_LGFX,
+                          Resident::RenderTargets::owner("panel"));
+  TEST_ASSERT_EQUAL_INT(1, fakePanel->blits);      // one whole-frame blit
+  TEST_ASSERT_EQUAL_INT(0, (int)fakePanel->lastX);
+  TEST_ASSERT_EQUAL_INT(0, (int)fakePanel->lastY);
+  TEST_ASSERT_EQUAL_INT(FakeGfx::W, (int)fakePanel->lastW);
+  TEST_ASSERT_EQUAL_INT(FakeGfx::H, (int)fakePanel->lastH);
+  TEST_ASSERT_EQUAL_PTR(gfxSprite->frame, fakePanel->lastPx);
+}
+
+void test_flip_stands_down_when_the_other_library_claims(void) {
+  build();
+  TEST_ASSERT_TRUE(sandbox->loadChunk("g = lgfx.bind('panel')\ng:flip()\n"));
+  TEST_ASSERT_EQUAL_INT(1, fakePanel->blits);
+
+  // lvgl.bind('panel') on the same target — the walkie-talkie rule.
+  Resident::RenderTargets::claim("panel", Resident::RenderTargets::MODULE_LVGL);
+  TEST_ASSERT_TRUE(sandbox->loadChunk("g:flip()\ng:flip()\n"));
+  TEST_ASSERT_EQUAL_INT(1, fakePanel->blits);      // dropped silently
+
+  // Drawing still works — only the present path stands down.
+  TEST_ASSERT_TRUE(sandbox->loadChunk("g:drawPixel(1, 2, 0x00FF00)\n"));
+  TEST_ASSERT_EQUAL_UINT32(0x00FF00u, gfxSprite->px[2][1]);
+}
+
+void test_app_reset_releases_and_the_next_bind_reclaims(void) {
+  build();
+  TEST_ASSERT_TRUE(sandbox->loadChunk("g = lgfx.bind('panel')\ng:flip()\n"));
+  TEST_ASSERT_EQUAL_INT(1, fakePanel->blits);
+
+  lgfxModule->onAppReset();
+  TEST_ASSERT_EQUAL_UINT8(0, Resident::RenderTargets::owner("panel"));
+  TEST_ASSERT_TRUE(sandbox->loadChunk("g:flip()\n"));
+  TEST_ASSERT_EQUAL_INT(1, fakePanel->blits);      // unowned: nothing presents
+
+  TEST_ASSERT_TRUE(sandbox->loadChunk("g = lgfx.bind('panel')\ng:flip()\n"));
+  TEST_ASSERT_EQUAL_INT(2, fakePanel->blits);      // claimed back
+}
+
+void test_legacy_presenter_target_also_obeys_ownership(void) {
+  build();
+  TEST_ASSERT_TRUE(sandbox->loadChunk("m = lgfx.bind('main')\nm:flip()\n"));
+  TEST_ASSERT_EQUAL_INT(1, flips);                 // presenter ran
+  Resident::RenderTargets::claim("main", Resident::RenderTargets::MODULE_LVGL);
+  TEST_ASSERT_TRUE(sandbox->loadChunk("m:flip()\n"));
+  TEST_ASSERT_EQUAL_INT(1, flips);                 // stood down
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_bind_dimensions_pixels_and_flip);
@@ -241,5 +340,9 @@ int main(int, char**) {
   RUN_TEST(test_text_calls_and_datum_constants);
   RUN_TEST(test_two_displays_bind_independently);
   RUN_TEST(test_bind_unknown_display_raises);
+  RUN_TEST(test_sprite_bind_allocates_claims_and_blits);
+  RUN_TEST(test_flip_stands_down_when_the_other_library_claims);
+  RUN_TEST(test_app_reset_releases_and_the_next_bind_reclaims);
+  RUN_TEST(test_legacy_presenter_target_also_obeys_ownership);
   return UNITY_END();
 }

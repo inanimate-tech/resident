@@ -4,13 +4,21 @@
 #include <ResidentDriver.h>
 #include <ResidentLuaModule.h>
 #include <ResidentStatusDisplay.h>
+#include <ResidentRenderTargets.h>
 #include <M5Unified.h>
 
 // A StatusDisplay (which is a Driver): renders Lua screen.* via an off-screen
-// sprite and writes connection-state text directly to the display. Status
+// sprite and presents it through the board's one PanelTarget (R19). Status
 // display calls are suppressed while an app is running.
+//
+// This is the system/status display ROLE, deliberately outside the R19
+// bind-is-the-claim arbitration: connection text and the status sprite must
+// reach the glass whether or not an app has claimed the panel for a
+// graphics library.
 class DisplayDriver : public Resident::StatusDisplay {
 public:
+  explicit DisplayDriver(Resident::PanelTarget* panel) : _panel(panel) {}
+
   const char* name() const override { return "screen"; }
 
   void registerModule(Resident::LuaModule& m) override {
@@ -46,17 +54,21 @@ public:
   // init(); tick-driven apps would otherwise redraw on their next on_tick.
   void repaint();
 
-  // The off-screen sprite, for sharing with the lgfx module: register it as
-  // an LgfxLovyanTarget with repaint() as the presenter and both drawing
-  // surfaces (screen.* verbs and lgfx) hit the same framebuffer.
+  // The off-screen sprite, for sharing with the lgfx module: wrap it in an
+  // LgfxSpriteTarget and both drawing surfaces (screen.* verbs and lgfx) hit
+  // the same framebuffer, presented through the same panel.
   M5Canvas& canvas() { return _canvas; }
 
 protected:
   M5Canvas _canvas{&M5.Display};
 
 private:
+  Resident::PanelTarget* _panel = nullptr;
   bool _spriteReady = false;
   bool _appRunning = false;
+
+  // One present path for the sprite: the board's panel.
+  void push();
 
   int clear(lua_State* L);
   int text(lua_State* L);
