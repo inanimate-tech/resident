@@ -1203,7 +1203,7 @@ cfg.framework = fw;
 | `framework_event(ctx, e)` | Every event, before the app's `on_event` | Return `true` to consume — the app never sees it |
 | `framework_app_loaded()` | After an app loads successfully | — |
 
-Under a framework, an app may define NO lifecycle globals (`init`/`on_tick`/`on_event`) — validity is the framework's business. Events are accepted and dispatched to the framework even when the app has no `on_event`.
+Under a framework, an app **need not** define any lifecycle global (`init`/`on_tick`/`on_event`) — an app defining none is normally rejected, and an active framework relaxes that, because validity is the framework's business. Apps may still define them: the framework's hooks run first, then the app's callbacks. Events are accepted and dispatched to the framework even when the app has no `on_event`.
 
 **The framework slot.** `{channel:"system", type:"framework", name, version, code}` installs a replacement, persisted via the `PersistentStore` framework-slot virtuals (NVS key `resident/framework`) and loaded at boot in preference to the built-in. Empty `code` clears the slot and reverts to the built-in. A slot blob that fails to load is discarded (`framework_error`) and the built-in runs. Because only the system channel can carry this message, no sandboxed code — app or framework — can replace the framework. Each hello announces `framework: {name, version, source: "builtin"|"slot"}`, which is how a host decides to push an update.
 
