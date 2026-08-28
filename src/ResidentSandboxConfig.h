@@ -33,6 +33,12 @@ using TelemetryCallback = std::function<void(const char* json)>;
 // synthesized without triggering the warning.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+// Feature test for SandboxConfig::executionDeadlineMs and
+// executionSoftDeadlineMs. A board that must also build against an older
+// published SDK guards its opt-in on this rather than on which env it is, so
+// the opt-in activates by itself once the newer SDK is in place.
+#define RESIDENT_HAS_EXECUTION_DEADLINE 1
+
 struct SandboxConfig {
   // Identifies the physical board (used for AP name and protocol path
   // defaults). Stays at top-level — it labels the device, not the network.
@@ -104,6 +110,26 @@ struct SandboxConfig {
   // dispatch is aborted with a runtime_error (the app survives — a
   // `while true do end` kills a dispatch, not the device). 0 = unlimited.
   uint32_t executionBudget = 2000000;
+
+  // Per-dispatch WALL-CLOCK hard deadline, in milliseconds. Non-zero takes
+  // precedence over executionBudget and inverts how the guard is armed: the
+  // dispatch runs with no Lua hook at all, and a one-shot timer installs a
+  // stopping hook only once the deadline has passed. A dispatch that finishes
+  // in time therefore pays nothing, where an instruction budget puts the VM
+  // in trap mode for its whole duration. Over-deadline aborts that dispatch
+  // with a runtime_error, exactly as the instruction budget does.
+  // Device builds only (needs esp_timer); 0 = use executionBudget. A board
+  // that sets this and leaves executionBudget non-zero keeps the instruction
+  // cap as its fallback if the timer cannot be created (logged at boot).
+  uint32_t executionDeadlineMs = 0;
+
+  // Per-dispatch WALL-CLOCK soft deadline, in milliseconds. A dispatch that
+  // outlives it is reported — a rate-limited serial line plus a
+  // `slow_dispatch` telemetry event — and allowed to finish. Measured at
+  // dispatch end, so it also sees time spent inside a blocking C binding,
+  // which no Lua hook can observe. Independent of executionDeadlineMs and of
+  // the platform; 0 = no reporting.
+  uint32_t executionSoftDeadlineMs = 0;
 
   // Framework module (0.8): privileged runtime code the sandbox hosts
   // OUTSIDE the app — its own environment, the runtime-channel sender,

@@ -16,6 +16,7 @@ extern "C" {
 
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 
 // Custom Lua allocator. Prefers PSRAM, but transparently falls back to
 // internal RAM on boards without PSRAM (e.g. ESP32-S3FN8). The capability is
@@ -101,6 +102,8 @@ void Sandbox::configure(const SandboxConfig& config) {
 
 Sandbox::~Sandbox()
 {
+  // Before lua_close: the timer callback dereferences _lua.
+  destroyExecutionDeadlineTimer();
   if (_deferredLoadJson) {
     free(_deferredLoadJson);
     _deferredLoadJson = nullptr;
@@ -222,6 +225,9 @@ void Sandbox::initialize()
   // Store sandbox instance in registry
   lua_pushlightuserdata(_lua, this);
   lua_setfield(_lua, LUA_REGISTRYINDEX, REGISTRY_KEY);
+
+  // Created once, up front: the arm path must not allocate.
+  createExecutionDeadlineTimer();
 
   // Initialize function refs to LUA_NOREF
   _initFuncRef = LUA_NOREF;
@@ -968,10 +974,52 @@ void Sandbox::drainOutboundEvents()
   }
 }
 
-// ── Execution budget (R8): a per-dispatch instruction cap ────────────────
+// ── Execution guard (R8): a per-dispatch instruction cap or deadline ─────
+//
 // Armed around every protected Lua call (init, one tick, one event, one
-// chunk, framework hooks): a runaway loop aborts THAT dispatch with a
+// chunk, framework hooks): a runaway aborts THAT dispatch with a
 // runtime_error — the app and the device survive.
+//
+// Two guards share the arm/disarm pair, and SandboxConfig picks one.
+//
+// executionBudget counts VM instructions. It is deterministic, so it is what
+// host tests want, but it is not a time bound (the same 2 M instructions land
+// anywhere from ~740 ms to ~1.05 s depending on the instruction mix) and it
+// is not free: Lua 5.4 raises a per-frame `trap` flag while any count hook is
+// armed, routing every instruction through luaG_traceexec for the whole
+// dispatch — measured at +79% to +165% on VM-bound Lua.
+//
+// executionDeadlineMs bounds wall-clock instead, and inverts the arming. No
+// hook is installed at dispatch start; a one-shot esp_timer installs a
+// stopping hook only once the deadline has passed. A dispatch that finishes
+// in time is completely unhooked and pays nothing, so only a runaway is
+// taxed.
+//
+// A third, passive check sits alongside both: executionSoftDeadlineMs is
+// compared against the elapsed time at disarm and only reports. Because it
+// measures after the fact it also sees time spent inside a blocking C
+// binding, where no Lua instruction executes and therefore no hook can fire.
+
+// Wall-clock microseconds. Only ever differenced, so 32-bit wrap is safe.
+static inline uint32_t dispatchClockUs()
+{
+#ifdef ESP_PLATFORM
+  return (uint32_t)esp_timer_get_time();
+#else
+  // The host harness fakes millis(); scaling it keeps the soft deadline on
+  // the clock a test can advance, and there is no micros() to fake.
+  return (uint32_t)(millis() * 1000UL);
+#endif
+}
+
+static Sandbox* sandboxFromState(lua_State* L)
+{
+  lua_getfield(L, LUA_REGISTRYINDEX, REGISTRY_KEY);
+  Sandbox* self = static_cast<Sandbox*>(lua_touserdata(L, -1));
+  lua_pop(L, 1);
+  return self;
+}
+
 void Sandbox::executionBudgetHook(lua_State* L, lua_Debug* ar)
 {
   (void)ar;
@@ -979,16 +1027,147 @@ void Sandbox::executionBudgetHook(lua_State* L, lua_Debug* ar)
   luaL_error(L, "execution budget exceeded");
 }
 
+void Sandbox::executionDeadlineHook(lua_State* L, lua_Debug* ar)
+{
+  (void)ar;
+  lua_sethook(L, nullptr, 0, 0);   // one shot — disarm before raising
+
+  Sandbox* self = sandboxFromState(L);
+  // A hook the timer task installed just as its dispatch returned lands on
+  // whatever runs next. Re-checking the deadline makes that harmless: an
+  // in-time dispatch simply loses the one fire above.
+  if (self && (int32_t)(dispatchClockUs() - self->_dispatchDeadlineUs) < 0) return;
+
+  const uint32_t ms = self ? self->_config.executionDeadlineMs : 0;
+  luaL_error(L, "execution deadline exceeded (%d ms)", (int)ms);
+}
+
+void Sandbox::executionDeadlineTimeout(void* arg)
+{
+#ifdef ESP_PLATFORM
+  Sandbox* self = static_cast<Sandbox*>(arg);
+  portENTER_CRITICAL(&self->_deadlineMux);
+  // The dispatch may have finished between the timer firing and this line;
+  // _deadlineArmed is cleared under the same lock, so the check is honest.
+  if (self->_deadlineArmed && self->_lua) {
+    lua_sethook(self->_lua, executionDeadlineHook, LUA_MASKCOUNT, 1);
+  }
+  portEXIT_CRITICAL(&self->_deadlineMux);
+#else
+  (void)arg;
+#endif
+}
+
+void Sandbox::createExecutionDeadlineTimer()
+{
+#ifdef ESP_PLATFORM
+  if (_deadlineTimer || _config.executionDeadlineMs == 0) return;
+  esp_timer_create_args_t args = {};
+  args.callback = &Sandbox::executionDeadlineTimeout;
+  args.arg = this;
+  args.dispatch_method = ESP_TIMER_TASK;
+  args.name = "resident_deadline";
+  esp_timer_handle_t h = nullptr;
+  if (esp_timer_create(&args, &h) != ESP_OK) {
+    Serial.println("Resident::Sandbox: execution deadline timer unavailable");
+    return;
+  }
+  _deadlineTimer = h;
+  Serial.printf("Resident::Sandbox: execution deadline %lu ms (lazy-armed)\n",
+                (unsigned long)_config.executionDeadlineMs);
+#endif
+}
+
+void Sandbox::destroyExecutionDeadlineTimer()
+{
+#ifdef ESP_PLATFORM
+  if (!_deadlineTimer) return;
+  esp_timer_stop((esp_timer_handle_t)_deadlineTimer);
+  esp_timer_delete((esp_timer_handle_t)_deadlineTimer);
+  _deadlineTimer = nullptr;
+#endif
+}
+
+#if RESIDENT_TICK_DIAGS
+void Sandbox::setExecutionDeadlineMs(uint32_t ms)
+{
+  _config.executionDeadlineMs = ms;
+  if (ms == 0) destroyExecutionDeadlineTimer();
+  else createExecutionDeadlineTimer();
+}
+#endif
+
 void Sandbox::armExecutionBudget()
 {
-  if (!_lua || _config.executionBudget == 0) return;
+  if (!_lua) return;
+  // Nested protected calls share the outermost dispatch's guard: re-arming
+  // would hand the inner call a fresh budget, which is the one way a runaway
+  // could evade the guard entirely.
+  if (_dispatchDepth++ > 0) return;
+
+  _dispatchStartUs = dispatchClockUs();
+
+#ifdef ESP_PLATFORM
+  if (_deadlineTimer) {
+    _dispatchDeadlineUs =
+        _dispatchStartUs + _config.executionDeadlineMs * 1000UL;
+    portENTER_CRITICAL(&_deadlineMux);
+    _deadlineArmed = true;
+    portEXIT_CRITICAL(&_deadlineMux);
+    esp_timer_start_once((esp_timer_handle_t)_deadlineTimer,
+                         (uint64_t)_config.executionDeadlineMs * 1000ULL);
+    return;   // no Lua hook — the whole point
+  }
+#endif
+
+  if (_config.executionBudget == 0) return;
   lua_sethook(_lua, executionBudgetHook, LUA_MASKCOUNT,
               (int)_config.executionBudget);
 }
 
 void Sandbox::disarmExecutionBudget()
 {
+  if (_dispatchDepth == 0) return;
+  if (--_dispatchDepth > 0) return;
+
+#ifdef ESP_PLATFORM
+  // Stop first, then clear under the lock: a callback already running blocks
+  // here until it has installed its hook, which the clear below then undoes.
+  if (_deadlineTimer) esp_timer_stop((esp_timer_handle_t)_deadlineTimer);
+  portENTER_CRITICAL(&_deadlineMux);
+  _deadlineArmed = false;
   if (_lua) lua_sethook(_lua, nullptr, 0, 0);
+  portEXIT_CRITICAL(&_deadlineMux);
+#else
+  if (_lua) lua_sethook(_lua, nullptr, 0, 0);
+#endif
+
+  if (_config.executionSoftDeadlineMs == 0) return;
+  const uint32_t elapsedUs = dispatchClockUs() - _dispatchStartUs;
+  if (elapsedUs >= _config.executionSoftDeadlineMs * 1000UL) {
+    reportSlowDispatch(elapsedUs);
+  }
+}
+
+// Reported like on_tick's runtime errors: a short burst, then one per
+// cooldown, so an app that is slow every tick costs one line every 5 s.
+void Sandbox::reportSlowDispatch(uint32_t elapsedUs)
+{
+  const unsigned long now = millis();
+  if (_slowDispatchBurst >= SLOW_DISPATCH_MAX_BURST &&
+      now - _lastSlowDispatchMs < SLOW_DISPATCH_COOLDOWN) {
+    return;
+  }
+  if (_slowDispatchBurst < SLOW_DISPATCH_MAX_BURST) _slowDispatchBurst++;
+  _lastSlowDispatchMs = now;
+
+  char detail[80];
+  snprintf(detail, sizeof(detail), "dispatch took %lu.%lu ms (soft %lu ms)",
+           (unsigned long)(elapsedUs / 1000UL),
+           (unsigned long)((elapsedUs % 1000UL) / 100UL),
+           (unsigned long)_config.executionSoftDeadlineMs);
+  Serial.printf("Resident::Sandbox: %s\n", detail);
+  emitTelemetry("slow_dispatch", detail);
 }
 
 // ── Framework module hosting (R16) ───────────────────────────────────────
@@ -1732,13 +1911,255 @@ void Sandbox::loop() {
   unsigned long now = millis();
   unsigned long elapsed = now - _lastTickTime;
   if (elapsed >= TICK_INTERVAL) {
+#if RESIDENT_TICK_DIAGS
+    uint32_t diagT0 = micros();
+#endif
     callFrameworkTick(elapsed);
+#if RESIDENT_TICK_DIAGS
+    uint32_t diagT1 = micros();
+#endif
     callOnTick(elapsed);
+#if RESIDENT_TICK_DIAGS
+    noteTickTiming(elapsed, diagT1 - diagT0, micros() - diagT1);
+#endif
     _lastTickTime = now;
   }
 
   processNextEvent();
 }
+
+#if RESIDENT_TICK_DIAGS
+// One dispatch's timing. `periodMs` is the realised gap between tick starts
+// (what the app sees as dt_ms); `fwUs`/`appUs` are the framework_tick and
+// on_tick halves of the dispatch itself.
+//
+// Two failures are distinguished. A dispatch costing more than TICK_INTERVAL
+// is an *overrun*: the Lua work alone cannot fit the budget. A period longer
+// than DIAG_LATE_PERIOD_MS with a dispatch that fits is a *late* tick: the
+// schedule slipped somewhere else in loop() (drivers, transports, overlays).
+void Sandbox::noteTickTiming(unsigned long periodMs, uint32_t fwUs, uint32_t appUs)
+{
+  const uint32_t dispatchUs = fwUs + appUs;
+  const unsigned long now = millis();
+
+  if (_diagWindowStart == 0) _diagWindowStart = now;
+  _diagTicks++;
+  _diagDispatchSumUs += dispatchUs;
+  if (dispatchUs > _diagDispatchMaxUs) _diagDispatchMaxUs = dispatchUs;
+  if (appUs > _diagAppMaxUs) _diagAppMaxUs = appUs;
+  if (fwUs > _diagFwMaxUs) _diagFwMaxUs = fwUs;
+  if (periodMs > _diagPeriodMaxMs) _diagPeriodMaxMs = periodMs;
+
+  const bool overrun = dispatchUs >= TICK_INTERVAL * 1000UL;
+  if (overrun) _diagOverruns++;
+  else if (periodMs >= DIAG_LATE_PERIOD_MS) _diagLate++;
+
+  if (overrun && now - _diagLastOverrunLog >= DIAG_OVERRUN_LOG_MS) {
+    _diagLastOverrunLog = now;
+    Serial.printf("[tickdiag] OVERRUN dispatch=%lu.%02lums (on_tick=%lu.%02lu "
+                  "framework=%lu.%02lu) budget=%lums period=%lums\n",
+                  dispatchUs / 1000UL, (dispatchUs % 1000UL) / 10UL,
+                  appUs / 1000UL, (appUs % 1000UL) / 10UL,
+                  fwUs / 1000UL, (fwUs % 1000UL) / 10UL,
+                  TICK_INTERVAL, periodMs);
+  }
+
+  if (now - _diagWindowStart < DIAG_WINDOW_MS) return;
+
+  const unsigned long windowMs = now - _diagWindowStart;
+  const uint32_t avgUs = _diagDispatchSumUs / _diagTicks;
+  Serial.printf("[tickdiag] %lums ticks=%lu rate=%lu.%luHz dispatch avg=%lu.%02lums "
+                "max=%lu.%02lums (on_tick max=%lu.%02lu framework max=%lu.%02lu) "
+                "period max=%lums overruns=%lu late=%lu\n",
+                windowMs, (unsigned long)_diagTicks,
+                (unsigned long)(_diagTicks * 10000UL / windowMs) / 10UL,
+                (unsigned long)(_diagTicks * 10000UL / windowMs) % 10UL,
+                avgUs / 1000UL, (avgUs % 1000UL) / 10UL,
+                _diagDispatchMaxUs / 1000UL, (_diagDispatchMaxUs % 1000UL) / 10UL,
+                _diagAppMaxUs / 1000UL, (_diagAppMaxUs % 1000UL) / 10UL,
+                _diagFwMaxUs / 1000UL, (_diagFwMaxUs % 1000UL) / 10UL,
+                _diagPeriodMaxMs, (unsigned long)_diagOverruns,
+                (unsigned long)_diagLate);
+
+  _diagWindowStart = now;
+  _diagTicks = 0;
+  _diagOverruns = 0;
+  _diagLate = 0;
+  _diagDispatchSumUs = 0;
+  _diagDispatchMaxUs = 0;
+  _diagAppMaxUs = 0;
+  _diagFwMaxUs = 0;
+  _diagPeriodMaxMs = 0;
+}
+
+// ── Execution-budget hook cost ───────────────────────────────────────────
+//
+// Lua 5.4 keeps a `trap` flag per call frame: while ANY count hook is armed
+// every VM instruction is routed through luaG_traceexec, whether or not the
+// hook body fires. So the budget has two separable costs — arming it at all,
+// and the body firing once per `count` instructions — and only the second one
+// moves when the count changes. Both hooks below complete rather than raise,
+// so a run is always comparable.
+
+uint32_t Sandbox::_benchFires = 0;
+uint32_t Sandbox::_benchDeadlineUs = 0;
+
+void Sandbox::benchCountHook(lua_State* L, lua_Debug* ar)
+{
+  (void)L;
+  (void)ar;
+  _benchFires++;
+}
+
+void Sandbox::benchDeadlineHook(lua_State* L, lua_Debug* ar)
+{
+  (void)ar;
+  _benchFires++;
+  // Wrap-safe deadline compare — the work a time-based budget would do here.
+  if ((int32_t)(micros() - _benchDeadlineUs) < 0) return;
+  lua_sethook(L, nullptr, 0, 0);
+  luaL_error(L, "execution budget exceeded");
+}
+
+uint32_t Sandbox::runBenchChunk(int chunkRef)
+{
+  lua_rawgeti(_lua, LUA_REGISTRYINDEX, chunkRef);
+  uint32_t t0 = micros();
+  int r = lua_pcall(_lua, 0, 0, 0);
+  uint32_t elapsed = micros() - t0;
+  if (r != 0) {
+    Serial.printf("[hookbench] chunk error: %s\n", lua_tostring(_lua, -1));
+    lua_pop(_lua, 1);
+  }
+  return elapsed;
+}
+
+// Per-dispatch cost of arming and disarming each guard, which is what a
+// free-running periodic timer would trade away: it pays nothing per dispatch
+// but wakes the esp_timer task on every period for the life of the device,
+// and quantises the abort to that period.
+void Sandbox::benchmarkGuardArming()
+{
+  const int kReps = 2000;
+
+  const uint32_t savedBudget = _config.executionBudget;
+  const uint32_t savedDeadline = _config.executionDeadlineMs;
+  const uint32_t savedSoft = _config.executionSoftDeadlineMs;
+  _config.executionSoftDeadlineMs = 0;   // reporting is not part of the cost
+
+  struct Cell { const char* name; uint32_t budget; uint32_t deadlineMs; };
+  static const Cell kCells[] = {
+    {"none",         0,       0},
+    {"instructions", 2000000, 0},
+    {"deadline",     0,       1000},
+  };
+
+  for (const Cell& cell : kCells) {
+    _config.executionBudget = cell.budget;
+    setExecutionDeadlineMs(cell.deadlineMs);
+    uint32_t t0 = micros();
+    for (int i = 0; i < kReps; i++) {
+      armExecutionBudget();
+      disarmExecutionBudget();
+    }
+    uint32_t total = micros() - t0;
+    Serial.printf("[hookbench] arm+disarm %-13s %lu ns/dispatch\n", cell.name,
+                  (unsigned long)((uint64_t)total * 1000ULL / kReps));
+  }
+
+  _config.executionBudget = savedBudget;
+  _config.executionSoftDeadlineMs = savedSoft;
+  setExecutionDeadlineMs(savedDeadline);
+}
+
+void Sandbox::benchmarkExecutionBudget()
+{
+  if (!_lua) {
+    Serial.println("[hookbench] no lua state");
+    return;
+  }
+
+  benchmarkGuardArming();
+
+  struct Workload { const char* name; const char* code; };
+  static const Workload kWorkloads[] = {
+    {"arith", "local a=0.0 for i=1,40000 do a=a+(i%7)*1.000001 end return a"},
+    {"table", "local t={} for i=1,40000 do t[(i%64)+1]=i end return #t"},
+    {"call",  "local function f(x) return x+1 end local a=0 "
+              "for i=1,40000 do a=f(a) end return a"},
+  };
+  struct Config { const char* name; lua_Hook hook; int count; };
+  static const Config kConfigs[] = {
+    {"off",       nullptr,           0},
+    {"count 2M",  benchCountHook,    2000000},
+    {"count 10k", benchCountHook,    10000},
+    {"count 1k",  benchCountHook,    1000},
+    {"count 100", benchCountHook,    100},
+    {"count 10",  benchCountHook,    10},
+    {"time 100",  benchDeadlineHook, 100},
+    {"time 10",   benchDeadlineHook, 10},
+  };
+  const int kWorkloadCount = sizeof(kWorkloads) / sizeof(kWorkloads[0]);
+  const int kConfigCount = sizeof(kConfigs) / sizeof(kConfigs[0]);
+  const int kReps = 3;
+
+  Serial.printf("[hookbench] %d workloads x %d configs x %d reps; "
+                "reporting the min of each cell\n",
+                kWorkloadCount, kConfigCount, kReps);
+
+  for (int w = 0; w < kWorkloadCount; w++) {
+    if (luaL_loadstring(_lua, kWorkloads[w].code) != 0) {
+      Serial.printf("[hookbench] %s: compile failed: %s\n",
+                    kWorkloads[w].name, lua_tostring(_lua, -1));
+      lua_pop(_lua, 1);
+      continue;
+    }
+    int chunkRef = luaL_ref(_lua, LUA_REGISTRYINDEX);
+
+    uint32_t best[kConfigCount];
+    uint32_t fires[kConfigCount];
+    for (int c = 0; c < kConfigCount; c++) { best[c] = UINT32_MAX; fires[c] = 0; }
+
+    // Round-robin the configs so slow drift (WiFi, audio, thermals) lands on
+    // all of them alike; the per-cell minimum then rejects preemption.
+    for (int rep = 0; rep < kReps; rep++) {
+      for (int c = 0; c < kConfigCount; c++) {
+        _benchFires = 0;
+        _benchDeadlineUs = micros() + 60000000UL;   // never reached
+        if (kConfigs[c].hook) {
+          lua_sethook(_lua, kConfigs[c].hook, LUA_MASKCOUNT, kConfigs[c].count);
+        } else {
+          lua_sethook(_lua, nullptr, 0, 0);
+        }
+        uint32_t us = runBenchChunk(chunkRef);
+        lua_sethook(_lua, nullptr, 0, 0);
+        if (us < best[c]) { best[c] = us; fires[c] = _benchFires; }
+        delay(2);   // let the other tasks on this core run between cells
+      }
+    }
+
+    // The finest count that fired gives the chunk's instruction total, which
+    // is what the current instruction budget is actually rationing.
+    uint32_t instructions = 0;
+    for (int c = kConfigCount - 1; c >= 0; c--) {
+      if (kConfigs[c].hook == benchCountHook && fires[c] > 0) {
+        instructions = fires[c] * (uint32_t)kConfigs[c].count;
+        break;
+      }
+    }
+    Serial.printf("[hookbench] --- %s: ~%lu instructions ---\n",
+                  kWorkloads[w].name, (unsigned long)instructions);
+    for (int c = 0; c < kConfigCount; c++) {
+      long pct = (long)((best[c] - best[0]) * 1000ULL / best[0]);
+      Serial.printf("[hookbench] %-9s %8luus  %+ld.%ld%%  fires=%lu\n",
+                    kConfigs[c].name, (unsigned long)best[c],
+                    pct / 10, labs(pct) % 10, (unsigned long)fires[c]);
+    }
+    luaL_unref(_lua, LUA_REGISTRYINDEX, chunkRef);
+  }
+  Serial.println("[hookbench] done");
+}
+#endif
 
 void Sandbox::loadApp(const char* luaCode)
 {
