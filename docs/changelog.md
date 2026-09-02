@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.8.0-dev
+## v0.8.0
 
 Theme: the device speaks first. A device hello announces protocol, limits and
 identity on every connect; telemetry and events ride channelled frames with a
