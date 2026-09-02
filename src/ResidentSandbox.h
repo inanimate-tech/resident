@@ -74,12 +74,9 @@ public:
     void loop();  // runs on_tick
 
 #if RESIDENT_TICK_DIAGS
-    // Measures what a Lua hook costs. Three costs are separated: the
-    // per-dispatch arm/disarm pair, arming a count hook at all (which puts the
-    // whole VM in trap mode, routing every instruction through
-    // luaG_traceexec), and the hook body firing once per `count` instructions.
-    // Blocking, several seconds; the caller is a diagnostics build's serial
-    // command.
+    // Measures what a Lua hook costs: the per-dispatch arm/disarm pair, and
+    // each hook configuration against an unhooked baseline. Blocking, several
+    // seconds; the caller is a diagnostics build's serial command.
     void benchmarkExecutionGuard();
     // Retunes the execution guard live, so the same running app can be timed
     // under the guard and under none without a reflash. 0 = unguarded.
@@ -450,16 +447,9 @@ private:
     void resetAppGlobals();
 
     // ── Execution guard (R8): per-dispatch wall-clock deadline ──
-    //
-    // Armed around every protected Lua call. A non-zero
-    // SandboxConfig::executionDeadlineMs bounds one dispatch in wall-clock
-    // time; 0 leaves it unguarded. Nested arms share the outermost dispatch's
-    // guard.
     void armExecutionGuard();
     void disarmExecutionGuard();
-    // Installed by the deadline timer, never at dispatch start. Re-checks the
-    // deadline itself, so a hook that lands after its dispatch ended clears
-    // itself instead of aborting an innocent successor.
+    // Installed by the deadline timer, never at dispatch start.
     static void executionDeadlineHook(struct lua_State* L, struct lua_Debug* ar);
     // Installs executionDeadlineHook when the dispatch it was armed for is
     // still running. Callers hold the platform lock that guards _deadlineArmed.
@@ -696,9 +686,7 @@ private:
     static constexpr unsigned long DIAG_OVERRUN_LOG_MS = 1000;
     static constexpr unsigned long DIAG_LATE_PERIOD_MS = TICK_INTERVAL * 3 / 2;
     void noteTickTiming(unsigned long periodMs, uint32_t fwUs, uint32_t appUs);
-    // Benchmark hooks: neither raises, so a run always completes. The
-    // deadline variant carries a wrap-safe micros() compare, so its cost
-    // includes the work a per-fire deadline check would do.
+    // The hooks benchmarkExecutionGuard() times.
     static void benchCountHook(struct lua_State* L, struct lua_Debug* ar);
     static void benchDeadlineHook(struct lua_State* L, struct lua_Debug* ar);
     static uint32_t _benchFires;

@@ -34,9 +34,8 @@ using TelemetryCallback = std::function<void(const char* json)>;
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 // Feature test for SandboxConfig::executionDeadlineMs and
-// executionSoftDeadlineMs. A board that must also build against an older
-// published SDK guards its opt-in on this rather than on which env it is, so
-// the opt-in activates by itself once the newer SDK is in place.
+// executionSoftDeadlineMs, so a board that also builds against an older
+// published SDK can guard its use of them on the fields' presence.
 #define RESIDENT_HAS_EXECUTION_DEADLINE 1
 
 struct SandboxConfig {
@@ -107,25 +106,15 @@ struct SandboxConfig {
 
   // Per-dispatch WALL-CLOCK hard deadline, in milliseconds (0.8): init, one
   // tick, one event, one chunk, or one framework hook may run for at most this
-  // long before the dispatch is aborted with a runtime_error (the app
-  // survives — a `while true do end` kills a dispatch, not the device).
-  // The guard is lazily armed: the dispatch runs with no Lua hook at all, and
-  // a one-shot timer installs a stopping hook only once the deadline has
-  // passed, so a dispatch that finishes in time pays nothing — which is what
-  // lets it default on. The default leaves roughly 2x headroom over the
-  // heaviest legitimate dispatch measured on an ESP32-S3 (a Lua-heavy
-  // per-pixel shader at 462 ms/tick). What it protects is the loop itself: a
-  // wedged on_tick holds the loop OTA is driven from, so without it a bad app
-  // push takes away the mechanism you would recover the device with.
+  // long before the dispatch is aborted with a runtime_error — the app
+  // survives. Raise it for a board whose apps legitimately run longer.
   // Available on every platform; 0 = no hard guard.
   uint32_t executionDeadlineMs = 1000;
 
   // Per-dispatch WALL-CLOCK soft deadline, in milliseconds. A dispatch that
   // outlives it is reported — a rate-limited serial line plus a
-  // `slow_dispatch` telemetry event — and allowed to finish. Measured at
-  // dispatch end, so it also sees time spent inside a blocking C binding,
-  // which no Lua hook can observe. Independent of executionDeadlineMs and of
-  // the platform; 0 = no reporting.
+  // `slow_dispatch` telemetry event — and allowed to finish. Independent of
+  // executionDeadlineMs and of the platform; 0 = no reporting.
   uint32_t executionSoftDeadlineMs = 0;
 
   // Framework module (0.8): privileged runtime code the sandbox hosts
