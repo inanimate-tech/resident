@@ -1231,7 +1231,7 @@ void Sandbox::armExecutionBudget()
 {
   if (!_lua) return;
   // Nested protected calls share the outermost dispatch's guard: re-arming
-  // would hand the inner call a fresh budget, which is the one way a runaway
+  // would hand the inner call a fresh deadline, which is the one way a runaway
   // could evade the guard entirely.
   if (_dispatchDepth++ > 0) return;
 
@@ -2103,14 +2103,15 @@ void Sandbox::noteTickTiming(unsigned long periodMs, uint32_t fwUs, uint32_t app
   _diagPeriodMaxMs = 0;
 }
 
-// ── Execution-budget hook cost ───────────────────────────────────────────
+// ── Count-hook cost ──────────────────────────────────────────────────────
 //
 // Lua 5.4 keeps a `trap` flag per call frame: while ANY count hook is armed
 // every VM instruction is routed through luaG_traceexec, whether or not the
-// hook body fires. So the budget has two separable costs — arming it at all,
-// and the body firing once per `count` instructions — and only the second one
-// moves when the count changes. Both hooks below complete rather than raise,
-// so a run is always comparable.
+// hook body fires. A count hook therefore has two separable costs — arming it
+// at all, and the body firing once per `count` instructions — and only the
+// second one moves when the count changes. That is why the guard installs no
+// hook until its deadline passes. Both hooks below complete rather than
+// raise, so a run is always comparable.
 
 uint32_t Sandbox::_benchFires = 0;
 uint32_t Sandbox::_benchDeadlineUs = 0;
@@ -2126,10 +2127,10 @@ void Sandbox::benchDeadlineHook(lua_State* L, lua_Debug* ar)
 {
   (void)ar;
   _benchFires++;
-  // Wrap-safe deadline compare — the work a time-based budget would do here.
+  // Wrap-safe deadline compare — the work the real deadline hook does here.
   if ((int32_t)(micros() - _benchDeadlineUs) < 0) return;
   lua_sethook(L, nullptr, 0, 0);
-  luaL_error(L, "execution budget exceeded");
+  luaL_error(L, "bench deadline exceeded");
 }
 
 uint32_t Sandbox::runBenchChunk(int chunkRef)

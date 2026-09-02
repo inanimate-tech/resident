@@ -26,8 +26,8 @@ dispatch dies (and is reported), the app survives.
 
 The environment is a sandbox: there is no `os`, `io`, `require`, `load`,
 `dofile`, or `debug`. The pure libraries (`string`, `table`, `math`,
-`coroutine`, `utf8`) are all present. Each callback runs under an instruction
-budget — an unbounded loop aborts that dispatch, not the device.
+`coroutine`, `utf8`) are all present. Each callback runs under a wall-clock
+deadline — an unbounded loop aborts that dispatch, not the device.
 
 ## ctx table
 

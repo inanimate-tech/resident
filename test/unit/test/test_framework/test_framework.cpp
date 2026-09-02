@@ -1,4 +1,4 @@
-// Framework module hosting (R16) + the execution budget (R8).
+// Framework module hosting (R16) + the execution deadline (R8).
 //
 // A framework module is privileged Lua hosted OUTSIDE the app: private
 // environment (bare assignments stay framework-local; _G.x is the explicit
