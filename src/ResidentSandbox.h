@@ -74,18 +74,15 @@ public:
     void loop();  // runs on_tick
 
 #if RESIDENT_TICK_DIAGS
-    // Measures what each execution guard costs. Three costs are separated:
-    // the per-dispatch arm/disarm pair, arming a count hook at all (which puts
-    // the whole VM in trap mode, routing every instruction through
+    // Measures what a Lua hook costs. Three costs are separated: the
+    // per-dispatch arm/disarm pair, arming a count hook at all (which puts the
+    // whole VM in trap mode, routing every instruction through
     // luaG_traceexec), and the hook body firing once per `count` instructions.
     // Blocking, several seconds; the caller is a diagnostics build's serial
     // command.
     void benchmarkExecutionBudget();
     // Retunes the execution guard live, so the same running app can be timed
-    // under either guard, and under none, without a reflash. 0 = unlimited.
-    void setExecutionBudget(uint32_t instructions) {
-        _config.executionBudget = instructions;
-    }
+    // under the guard and under none without a reflash. 0 = unguarded.
     void setExecutionDeadlineMs(uint32_t ms);
     void setExecutionSoftDeadlineMs(uint32_t ms) {
         _config.executionSoftDeadlineMs = ms;
@@ -452,28 +449,37 @@ private:
     void snapshotBaselineGlobals();
     void resetAppGlobals();
 
-    // ── Execution guard (R8): per-dispatch instruction cap or deadline ──
+    // ── Execution guard (R8): per-dispatch wall-clock deadline ──
     //
-    // Armed around every protected Lua call. Which guard runs is decided by
-    // SandboxConfig: a non-zero executionDeadlineMs selects the wall-clock
-    // deadline, otherwise a non-zero executionBudget selects the instruction
-    // cap. Nested arms share the outermost dispatch's guard.
+    // Armed around every protected Lua call. A non-zero
+    // SandboxConfig::executionDeadlineMs bounds one dispatch in wall-clock
+    // time; 0 leaves it unguarded. Nested arms share the outermost dispatch's
+    // guard.
     void armExecutionBudget();
     void disarmExecutionBudget();
-    static void executionBudgetHook(struct lua_State* L, struct lua_Debug* ar);
     // Installed by the deadline timer, never at dispatch start. Re-checks the
     // deadline itself, so a hook that lands after its dispatch ended clears
     // itself instead of aborting an innocent successor.
     static void executionDeadlineHook(struct lua_State* L, struct lua_Debug* ar);
-    // Fires on the esp_timer task once a dispatch outlives executionDeadlineMs.
+    // Installs executionDeadlineHook when the dispatch it was armed for is
+    // still running. Callers hold the platform lock that guards _deadlineArmed.
+    //
     // Setting a hook from outside the running VM is Lua's own idiom for this
     // (lua.c's SIGINT handler); ldebug.c documents the fields as safe to write
     // asynchronously, and OP_FORLOOP refreshes `trap` so a tight loop notices.
+    void installDeadlineHook();
+#ifdef ESP_PLATFORM
+    // esp_timer callback; fires on the timer task once a dispatch outlives
+    // executionDeadlineMs. The host worker installs the hook inline instead.
     static void executionDeadlineTimeout(void* arg);
+#endif
     // Creates/destroys the deadline timer. Called from initialize() and the
     // destructor, never from the arm path.
     void createExecutionDeadlineTimer();
     void destroyExecutionDeadlineTimer();
+    // Starts/stops the one-shot that will fire at _dispatchDeadlineUs.
+    void startDeadlineTimer();
+    void stopDeadlineTimer();
     // Rate-limited report of a dispatch that outlived executionSoftDeadlineMs.
     void reportSlowDispatch(uint32_t elapsedUs);
 
@@ -487,13 +493,18 @@ private:
     uint32_t _slowDispatchBurst = 0;
     static constexpr unsigned long SLOW_DISPATCH_COOLDOWN = 5000;
     static constexpr uint32_t SLOW_DISPATCH_MAX_BURST = 3;
-#ifdef ESP_PLATFORM
-    void* _deadlineTimer = nullptr;        // esp_timer_handle_t
+    // The one-shot that installs the stopping hook: an esp_timer_handle_t on
+    // device, a condition-variable worker thread on host. Opaque either way.
+    void* _deadlineTimer = nullptr;
     // True between the outermost arm and its disarm. Written and read under
-    // _deadlineMux so the timer task never installs a hook for a dispatch
+    // the platform lock so the timer never installs a hook for a dispatch
     // that has already returned.
     volatile bool _deadlineArmed = false;
+#ifdef ESP_PLATFORM
     portMUX_TYPE _deadlineMux = portMUX_INITIALIZER_UNLOCKED;
+#else
+    // Body of the host worker thread; arg is the opaque timer.
+    static void hostDeadlineWorker(void* timer);
 #endif
 
     // Shared ctx builder for event/framework dispatch.

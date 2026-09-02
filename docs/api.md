@@ -48,8 +48,7 @@ void loop()  { sandbox.loop(); }
 | `gateTickOnConnection` | `bool` | `false` | Pause `on_tick` and event dispatch while disconnected. The default is offline-first: the app keeps running; only network sends wait. |
 | `openUnsafeLibs` | `bool` | `false` | Give the app environment the full Lua stdlib. The default removes `os`/`io`/`package`/`require`/`load`/`dofile`/`loadstring`/`loadfile`/`debug`. |
 | `freshAppEnvironment` | `bool` | `true` | Reset app globals to the runtime baseline on every `loadApp` — nothing from the previous app survives except the store slot. Set `false` for builds whose apps need globals to persist across loads. |
-| `executionBudget` | `uint32_t` | `2000000` | Lua instruction cap per dispatch (init / one tick / one event / one chunk / each framework hook). Over-budget aborts the dispatch with a `runtime_error`; the app survives. `0` = unlimited. |
-| `executionDeadlineMs` | `uint32_t` | `0` | Per-dispatch **wall-clock** hard deadline, in milliseconds. Non-zero takes precedence over `executionBudget`: no Lua hook is installed at dispatch start, and a one-shot timer installs a stopping hook once the deadline passes. Over-deadline aborts the dispatch with a `runtime_error` (`execution deadline exceeded (N ms)`); the app survives. Device builds only (needs `esp_timer`); `0` = use `executionBudget`. |
+| `executionDeadlineMs` | `uint32_t` | `0` | Per-dispatch **wall-clock** hard deadline, in milliseconds (init / one tick / one event / one chunk / each framework hook). No Lua hook is installed at dispatch start; a one-shot timer installs a stopping hook once the deadline passes. Over-deadline aborts the dispatch with a `runtime_error` (`execution deadline exceeded (N ms)`); the app survives. Available on every platform; `0` = no hard guard. |
 | `executionSoftDeadlineMs` | `uint32_t` | `0` | Per-dispatch **wall-clock** soft deadline, in milliseconds. A dispatch that outlives it is reported — a rate-limited serial line plus a `slow_dispatch` telemetry event — and allowed to finish. Measured at disarm, so it also covers time spent inside a blocking C binding, where no Lua hook fires. Independent of `executionDeadlineMs` and available on every platform; `0` = no reporting. |
 | `framework` | `std::optional<FrameworkConfig>` | unset | Embed a framework module: `{name, version, source}` — privileged Lua the sandbox hosts outside the app (see [Framework modules](#framework-modules)). |
 | `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
@@ -1235,15 +1234,15 @@ Errors in framework hooks are contained like app errors (`runtime_error`, dispat
 
 ## The execution guard
 
-Every protected Lua call — `init`, one tick, one event, one chunk, each framework hook — runs inside an arm/disarm pair. Exceeding the guard aborts *that dispatch* with a `runtime_error`; the app and the device carry on. Nested protected calls share the outermost dispatch's guard, so an inner call never gets a fresh budget.
+Every protected Lua call — `init`, one tick, one event, one chunk, each framework hook — runs inside an arm/disarm pair. Exceeding the guard aborts *that dispatch* with a `runtime_error`; the app and the device carry on. Nested protected calls share the outermost dispatch's guard, so an inner call never gets a fresh deadline.
 
-`SandboxConfig` selects one hard guard of two. `executionBudget` caps Lua VM instructions per dispatch and is the default (2,000,000, `0` = unlimited); it is deterministic and available on every platform. A non-zero `executionDeadlineMs` supersedes it with a wall-clock deadline in milliseconds, and is device-only — it needs `esp_timer`. Host builds always take the instruction path.
+`SandboxConfig::executionDeadlineMs` is the hard guard: a wall-clock deadline in milliseconds, `0` (the default) leaving the dispatch unguarded. It is available on every platform — a one-shot `esp_timer` on device, a worker thread on host.
 
-Both hard guards abort through a Lua hook, so an abort always lands on a VM instruction. For the deadline the hook is installed by a one-shot timer once the deadline has passed, so the abort lands at or after it, never before; the message is `execution deadline exceeded (N ms)`.
+The abort rides a Lua hook, so it always lands on a VM instruction. The hook is installed by the one-shot timer once the deadline has passed, so the abort lands at or after it, never before; the message is `execution deadline exceeded (N ms)`.
 
-`executionSoftDeadlineMs` is independent of both and available on every platform. Elapsed time is compared against it at disarm: a dispatch that outlives it is reported — a rate-limited serial line plus a `slow_dispatch` telemetry event, `SLOW_DISPATCH_MAX_BURST` then one per `SLOW_DISPATCH_COOLDOWN` — and allowed to finish. Nothing is aborted.
+`executionSoftDeadlineMs` is independent of it and available on every platform. Elapsed time is compared against it at disarm: a dispatch that outlives it is reported — a rate-limited serial line plus a `slow_dispatch` telemetry event, `SLOW_DISPATCH_MAX_BURST` then one per `SLOW_DISPATCH_COOLDOWN` — and allowed to finish. Nothing is aborted.
 
-**What the guard does not bound.** Neither hard guard can interrupt a dispatch blocked inside a C binding — no Lua instruction executes, so no hook fires. Only the soft deadline sees that time, and only once the binding has returned. Both wall-clock limits measure elapsed time rather than CPU time, so a dispatch held off by a higher-priority task overshoots by however long it was descheduled and aborts when the Lua task next runs. Nothing bounds the total across one `loop()` iteration: each protected call arms its own guard, so a single iteration can spend several deadlines.
+**What the guard does not bound.** The hard deadline cannot interrupt a dispatch blocked inside a C binding — no Lua instruction executes, so no hook fires. Only the soft deadline sees that time, and only once the binding has returned. Both limits measure elapsed wall-clock time rather than CPU time, so a dispatch held off by a higher-priority task overshoots by however long it was descheduled and aborts when the Lua task next runs. Nothing bounds the total across one `loop()` iteration: each protected call arms its own guard, so a single iteration can spend several deadlines.
 
 ## Writing a Driver
 
@@ -1431,8 +1430,7 @@ ESP-IDF CMake component graph.
 | `RESIDENT_STORE_JSON_MAX` | `2048` | Serialized size cap on the whole persisted `store` blob. Build-flag overridable |
 | `StoreModule::STORE_NS_MAX` | `32` | Maximum `storeNs` length in characters |
 | Event `name` max | `32 chars` | `Event::name` buffer size — driver event names longer than 31 bytes are truncated |
-| `SandboxConfig::executionBudget` | `2000000` | Lua instructions per dispatch (`0` = unlimited) |
-| `SandboxConfig::executionDeadlineMs` | `0` | Wall-clock milliseconds per dispatch before abort (`0` = use the instruction cap) |
+| `SandboxConfig::executionDeadlineMs` | `0` | Wall-clock milliseconds per dispatch before abort (`0` = no hard guard) |
 | `SandboxConfig::executionSoftDeadlineMs` | `0` | Wall-clock milliseconds per dispatch before reporting (`0` = no reporting) |
 | `SLOW_DISPATCH_COOLDOWN` | `5000 ms` | Minimum interval between `slow_dispatch` reports after the initial burst |
 | `SLOW_DISPATCH_MAX_BURST` | `3` | `slow_dispatch` reports allowed before the cooldown applies |

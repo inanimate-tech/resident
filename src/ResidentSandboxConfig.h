@@ -105,22 +105,14 @@ struct SandboxConfig {
   // global leakage.
   bool freshAppEnvironment = true;
 
-  // Per-dispatch Lua instruction budget (0.8): init, one tick, one event,
-  // or one chunk may execute at most this many VM instructions before the
-  // dispatch is aborted with a runtime_error (the app survives — a
-  // `while true do end` kills a dispatch, not the device). 0 = unlimited.
-  uint32_t executionBudget = 2000000;
-
-  // Per-dispatch WALL-CLOCK hard deadline, in milliseconds. Non-zero takes
-  // precedence over executionBudget and inverts how the guard is armed: the
-  // dispatch runs with no Lua hook at all, and a one-shot timer installs a
-  // stopping hook only once the deadline has passed. A dispatch that finishes
-  // in time therefore pays nothing, where an instruction budget puts the VM
-  // in trap mode for its whole duration. Over-deadline aborts that dispatch
-  // with a runtime_error, exactly as the instruction budget does.
-  // Device builds only (needs esp_timer); 0 = use executionBudget. A board
-  // that sets this and leaves executionBudget non-zero keeps the instruction
-  // cap as its fallback if the timer cannot be created (logged at boot).
+  // Per-dispatch WALL-CLOCK hard deadline, in milliseconds (0.8): init, one
+  // tick, one event, one chunk, or one framework hook may run for at most this
+  // long before the dispatch is aborted with a runtime_error (the app
+  // survives — a `while true do end` kills a dispatch, not the device).
+  // The guard is lazily armed: the dispatch runs with no Lua hook at all, and
+  // a one-shot timer installs a stopping hook only once the deadline has
+  // passed, so a dispatch that finishes in time pays nothing. Available on
+  // every platform; 0 = no hard guard.
   uint32_t executionDeadlineMs = 0;
 
   // Per-dispatch WALL-CLOCK soft deadline, in milliseconds. A dispatch that

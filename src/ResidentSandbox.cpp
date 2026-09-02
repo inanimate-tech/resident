@@ -14,6 +14,14 @@ extern "C" {
   #include "lua/lauxlib.h"
 }
 
+#ifndef ESP_PLATFORM
+// Host one-shot for the execution deadline (esp_timer's stand-in).
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#endif
+
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -974,33 +982,31 @@ void Sandbox::drainOutboundEvents()
   }
 }
 
-// ── Execution guard (R8): a per-dispatch instruction cap or deadline ─────
+// ── Execution guard (R8): a per-dispatch wall-clock deadline ─────────────
 //
 // Armed around every protected Lua call (init, one tick, one event, one
 // chunk, framework hooks): a runaway aborts THAT dispatch with a
 // runtime_error — the app and the device survive.
 //
-// Two guards share the arm/disarm pair, and SandboxConfig picks one.
+// executionDeadlineMs bounds one dispatch in wall-clock time, and the guard
+// is lazily armed. No hook is installed at dispatch start; a one-shot timer
+// installs a stopping hook only once the deadline has passed. A dispatch that
+// finishes in time is completely unhooked and pays nothing, so only a runaway
+// is taxed. That matters because Lua 5.4 raises a per-frame `trap` flag while
+// any hook is armed, routing every instruction through luaG_traceexec for the
+// whole dispatch — measured at +79% to +165% on VM-bound Lua.
 //
-// executionBudget counts VM instructions. It is deterministic, so it is what
-// host tests want, but it is not a time bound (the same 2 M instructions land
-// anywhere from ~740 ms to ~1.05 s depending on the instruction mix) and it
-// is not free: Lua 5.4 raises a per-frame `trap` flag while any count hook is
-// armed, routing every instruction through luaG_traceexec for the whole
-// dispatch — measured at +79% to +165% on VM-bound Lua.
+// The one-shot is an esp_timer on device and a condition-variable worker
+// thread on host, behind one arm/disarm pair, so the same guard runs
+// everywhere and the native suite covers it.
 //
-// executionDeadlineMs bounds wall-clock instead, and inverts the arming. No
-// hook is installed at dispatch start; a one-shot esp_timer installs a
-// stopping hook only once the deadline has passed. A dispatch that finishes
-// in time is completely unhooked and pays nothing, so only a runaway is
-// taxed.
-//
-// A third, passive check sits alongside both: executionSoftDeadlineMs is
+// A second, passive check sits alongside it: executionSoftDeadlineMs is
 // compared against the elapsed time at disarm and only reports. Because it
 // measures after the fact it also sees time spent inside a blocking C
 // binding, where no Lua instruction executes and therefore no hook can fire.
 
-// Wall-clock microseconds. Only ever differenced, so 32-bit wrap is safe.
+// Wall-clock microseconds for the soft deadline. Only ever differenced, so
+// 32-bit wrap is safe.
 static inline uint32_t dispatchClockUs()
 {
 #ifdef ESP_PLATFORM
@@ -1012,6 +1018,20 @@ static inline uint32_t dispatchClockUs()
 #endif
 }
 
+// Monotonic microseconds for the hard deadline. Distinct from
+// dispatchClockUs() because the timer and the hook must agree on real elapsed
+// time, where the soft deadline rides the host harness's faked millis().
+static inline uint32_t deadlineClockUs()
+{
+#ifdef ESP_PLATFORM
+  return (uint32_t)esp_timer_get_time();
+#else
+  return (uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+#endif
+}
+
 static Sandbox* sandboxFromState(lua_State* L)
 {
   lua_getfield(L, LUA_REGISTRYINDEX, REGISTRY_KEY);
@@ -1020,47 +1040,43 @@ static Sandbox* sandboxFromState(lua_State* L)
   return self;
 }
 
-void Sandbox::executionBudgetHook(lua_State* L, lua_Debug* ar)
-{
-  (void)ar;
-  lua_sethook(L, nullptr, 0, 0);   // one shot — disarm before raising
-  luaL_error(L, "execution budget exceeded");
-}
-
 void Sandbox::executionDeadlineHook(lua_State* L, lua_Debug* ar)
 {
   (void)ar;
   lua_sethook(L, nullptr, 0, 0);   // one shot — disarm before raising
 
   Sandbox* self = sandboxFromState(L);
-  // A hook the timer task installed just as its dispatch returned lands on
+  // A hook the timer installed just as its dispatch returned lands on
   // whatever runs next. Re-checking the deadline makes that harmless: an
   // in-time dispatch simply loses the one fire above.
-  if (self && (int32_t)(dispatchClockUs() - self->_dispatchDeadlineUs) < 0) return;
+  if (self && (int32_t)(deadlineClockUs() - self->_dispatchDeadlineUs) < 0) return;
 
   const uint32_t ms = self ? self->_config.executionDeadlineMs : 0;
   luaL_error(L, "execution deadline exceeded (%d ms)", (int)ms);
 }
 
+// The dispatch may have finished between the timer firing and this call;
+// _deadlineArmed is cleared under the same lock the caller holds, so the
+// check is honest.
+void Sandbox::installDeadlineHook()
+{
+  if (_deadlineArmed && _lua) {
+    lua_sethook(_lua, executionDeadlineHook, LUA_MASKCOUNT, 1);
+  }
+}
+
+#ifdef ESP_PLATFORM
+
 void Sandbox::executionDeadlineTimeout(void* arg)
 {
-#ifdef ESP_PLATFORM
   Sandbox* self = static_cast<Sandbox*>(arg);
   portENTER_CRITICAL(&self->_deadlineMux);
-  // The dispatch may have finished between the timer firing and this line;
-  // _deadlineArmed is cleared under the same lock, so the check is honest.
-  if (self->_deadlineArmed && self->_lua) {
-    lua_sethook(self->_lua, executionDeadlineHook, LUA_MASKCOUNT, 1);
-  }
+  self->installDeadlineHook();
   portEXIT_CRITICAL(&self->_deadlineMux);
-#else
-  (void)arg;
-#endif
 }
 
 void Sandbox::createExecutionDeadlineTimer()
 {
-#ifdef ESP_PLATFORM
   if (_deadlineTimer || _config.executionDeadlineMs == 0) return;
   esp_timer_create_args_t args = {};
   args.callback = &Sandbox::executionDeadlineTimeout;
@@ -1075,18 +1091,132 @@ void Sandbox::createExecutionDeadlineTimer()
   _deadlineTimer = h;
   Serial.printf("Resident::Sandbox: execution deadline %lu ms (lazy-armed)\n",
                 (unsigned long)_config.executionDeadlineMs);
-#endif
 }
 
 void Sandbox::destroyExecutionDeadlineTimer()
 {
-#ifdef ESP_PLATFORM
   if (!_deadlineTimer) return;
   esp_timer_stop((esp_timer_handle_t)_deadlineTimer);
   esp_timer_delete((esp_timer_handle_t)_deadlineTimer);
   _deadlineTimer = nullptr;
-#endif
 }
+
+void Sandbox::startDeadlineTimer()
+{
+  portENTER_CRITICAL(&_deadlineMux);
+  _deadlineArmed = true;
+  portEXIT_CRITICAL(&_deadlineMux);
+  esp_timer_start_once((esp_timer_handle_t)_deadlineTimer,
+                       (uint64_t)_config.executionDeadlineMs * 1000ULL);
+}
+
+void Sandbox::stopDeadlineTimer()
+{
+  // Stop first, then clear under the lock: a callback already running blocks
+  // here until it has installed its hook, which the clear below then undoes.
+  esp_timer_stop((esp_timer_handle_t)_deadlineTimer);
+  portENTER_CRITICAL(&_deadlineMux);
+  _deadlineArmed = false;
+  if (_lua) lua_sethook(_lua, nullptr, 0, 0);
+  portEXIT_CRITICAL(&_deadlineMux);
+}
+
+#else   // host
+
+namespace {
+
+// The host one-shot. `generation` distinguishes successive dispatches, so a
+// worker that wakes holding a stale deadline stands down instead of stopping
+// the dispatch that re-armed after it.
+struct HostDeadlineTimer {
+  Sandbox* owner = nullptr;
+  std::mutex mu;
+  std::condition_variable cv;
+  std::thread worker;
+  bool running = true;
+  bool pending = false;
+  uint64_t generation = 0;
+  std::chrono::steady_clock::time_point deadline;
+};
+
+}  // namespace
+
+void Sandbox::hostDeadlineWorker(void* timer)
+{
+  HostDeadlineTimer* t = static_cast<HostDeadlineTimer*>(timer);
+  std::unique_lock<std::mutex> lock(t->mu);
+  while (true) {
+    t->cv.wait(lock, [t] { return t->pending || !t->running; });
+    if (!t->running) return;
+    const uint64_t gen = t->generation;
+    const auto deadline = t->deadline;
+    // Returns true only when the arming was superseded — disarmed, re-armed,
+    // or shut down — so a plain timeout falls through to the install below.
+    const bool superseded = t->cv.wait_until(lock, deadline, [t, gen] {
+      return !t->running || !t->pending || t->generation != gen;
+    });
+    if (superseded) continue;
+    t->pending = false;
+    t->owner->installDeadlineHook();
+  }
+}
+
+void Sandbox::createExecutionDeadlineTimer()
+{
+  if (_deadlineTimer || _config.executionDeadlineMs == 0) return;
+  HostDeadlineTimer* t = new HostDeadlineTimer();
+  t->owner = this;
+  _deadlineTimer = t;
+  t->worker = std::thread(&Sandbox::hostDeadlineWorker, (void*)t);
+}
+
+void Sandbox::destroyExecutionDeadlineTimer()
+{
+  if (!_deadlineTimer) return;
+  HostDeadlineTimer* t = static_cast<HostDeadlineTimer*>(_deadlineTimer);
+  {
+    std::lock_guard<std::mutex> lock(t->mu);
+    t->running = false;
+    t->pending = false;
+    t->generation++;
+  }
+  t->cv.notify_all();
+  if (t->worker.joinable()) t->worker.join();
+  delete t;
+  _deadlineTimer = nullptr;
+}
+
+void Sandbox::startDeadlineTimer()
+{
+  HostDeadlineTimer* t = static_cast<HostDeadlineTimer*>(_deadlineTimer);
+  {
+    std::lock_guard<std::mutex> lock(t->mu);
+    _deadlineArmed = true;
+    t->pending = true;
+    t->generation++;
+    t->deadline = std::chrono::steady_clock::now() +
+                  std::chrono::milliseconds(_config.executionDeadlineMs);
+  }
+  t->cv.notify_all();
+}
+
+void Sandbox::stopDeadlineTimer()
+{
+  HostDeadlineTimer* t = static_cast<HostDeadlineTimer*>(_deadlineTimer);
+  {
+    // The lock also serialises against a worker mid-install: it holds the
+    // same lock while installing, so the clear below either precedes it (and
+    // installDeadlineHook stands down) or undoes it.
+    std::lock_guard<std::mutex> lock(t->mu);
+    _deadlineArmed = false;
+    t->pending = false;
+    t->generation++;
+    if (_lua) lua_sethook(_lua, nullptr, 0, 0);
+  }
+  t->cv.notify_all();
+}
+
+#endif
 
 #if RESIDENT_TICK_DIAGS
 void Sandbox::setExecutionDeadlineMs(uint32_t ms)
@@ -1107,22 +1237,13 @@ void Sandbox::armExecutionBudget()
 
   _dispatchStartUs = dispatchClockUs();
 
-#ifdef ESP_PLATFORM
+  // No Lua hook here — the whole point. The timer installs one only if the
+  // deadline passes with the dispatch still running.
   if (_deadlineTimer) {
     _dispatchDeadlineUs =
-        _dispatchStartUs + _config.executionDeadlineMs * 1000UL;
-    portENTER_CRITICAL(&_deadlineMux);
-    _deadlineArmed = true;
-    portEXIT_CRITICAL(&_deadlineMux);
-    esp_timer_start_once((esp_timer_handle_t)_deadlineTimer,
-                         (uint64_t)_config.executionDeadlineMs * 1000ULL);
-    return;   // no Lua hook — the whole point
+        deadlineClockUs() + _config.executionDeadlineMs * 1000UL;
+    startDeadlineTimer();
   }
-#endif
-
-  if (_config.executionBudget == 0) return;
-  lua_sethook(_lua, executionBudgetHook, LUA_MASKCOUNT,
-              (int)_config.executionBudget);
 }
 
 void Sandbox::disarmExecutionBudget()
@@ -1130,17 +1251,7 @@ void Sandbox::disarmExecutionBudget()
   if (_dispatchDepth == 0) return;
   if (--_dispatchDepth > 0) return;
 
-#ifdef ESP_PLATFORM
-  // Stop first, then clear under the lock: a callback already running blocks
-  // here until it has installed its hook, which the clear below then undoes.
-  if (_deadlineTimer) esp_timer_stop((esp_timer_handle_t)_deadlineTimer);
-  portENTER_CRITICAL(&_deadlineMux);
-  _deadlineArmed = false;
-  if (_lua) lua_sethook(_lua, nullptr, 0, 0);
-  portEXIT_CRITICAL(&_deadlineMux);
-#else
-  if (_lua) lua_sethook(_lua, nullptr, 0, 0);
-#endif
+  if (_deadlineTimer) stopDeadlineTimer();
 
   if (_config.executionSoftDeadlineMs == 0) return;
   const uint32_t elapsedUs = dispatchClockUs() - _dispatchStartUs;
@@ -2042,20 +2153,17 @@ void Sandbox::benchmarkGuardArming()
 {
   const int kReps = 2000;
 
-  const uint32_t savedBudget = _config.executionBudget;
   const uint32_t savedDeadline = _config.executionDeadlineMs;
   const uint32_t savedSoft = _config.executionSoftDeadlineMs;
   _config.executionSoftDeadlineMs = 0;   // reporting is not part of the cost
 
-  struct Cell { const char* name; uint32_t budget; uint32_t deadlineMs; };
+  struct Cell { const char* name; uint32_t deadlineMs; };
   static const Cell kCells[] = {
-    {"none",         0,       0},
-    {"instructions", 2000000, 0},
-    {"deadline",     0,       1000},
+    {"none",     0},
+    {"deadline", 1000},
   };
 
   for (const Cell& cell : kCells) {
-    _config.executionBudget = cell.budget;
     setExecutionDeadlineMs(cell.deadlineMs);
     uint32_t t0 = micros();
     for (int i = 0; i < kReps; i++) {
@@ -2067,7 +2175,6 @@ void Sandbox::benchmarkGuardArming()
                   (unsigned long)((uint64_t)total * 1000ULL / kReps));
   }
 
-  _config.executionBudget = savedBudget;
   _config.executionSoftDeadlineMs = savedSoft;
   setExecutionDeadlineMs(savedDeadline);
 }
@@ -2088,7 +2195,7 @@ void Sandbox::benchmarkExecutionBudget()
     {"call",  "local function f(x) return x+1 end local a=0 "
               "for i=1,40000 do a=f(a) end return a"},
   };
-  struct Config { const char* name; lua_Hook hook; int count; };
+  struct Config { const char* name = nullptr; lua_Hook hook = nullptr; int count = 0; };
   static const Config kConfigs[] = {
     {"off",       nullptr,           0},
     {"count 2M",  benchCountHook,    2000000},
