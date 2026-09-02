@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.8.1
+
+Courier 0.7.0 support. No Resident source changes — this is the dependency
+bump and the build verification behind it.
+
+- The Courier floor moves to `^0.7.0` in `library.json` and
+  `idf_component.yml`. Resident calls none of Courier 0.7.0's new surface
+  (MQTT binary publish, topic-scoped binary receive, a client-lifetime lock),
+  but a caret range on a `0.x` version excludes the next minor: while Resident
+  pinned `^0.6.0`, a consumer could not depend on Resident and Courier 0.7.0
+  at the same time. **This forces consumers to Courier 0.7.0** — `^0.7.0` no
+  longer admits 0.6.x.
+- `examples/espidf-basic` follows the same bump.
+- Verified against Courier 0.7.0 ahead of its release: the full example matrix
+  (7 PlatformIO envs plus `espidf-basic` under ESP-IDF 5.5.3) builds, and
+  `m5stick-voice` runs on an M5StickS3 — drivers register, Wi-Fi joins, NTP
+  syncs, and the reconnect state machine backs off as before.
+
+---
+
 ## v0.8.0
 
 Theme: the device speaks first. A device hello announces protocol, limits and

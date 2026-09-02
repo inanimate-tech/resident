@@ -12,18 +12,11 @@ dependencies:
   espressif/arduino-esp32:
     version: "^3.0.0"
 
-  # Courier 0.6.0+ (receive parallels send: Client::onMessage delivers the
-  # default transport only — required by resident's channel routing).
-  #
-  # TEMPORARY: tools/fetch-deps.sh currently clones courier PR #26 into
-  # components/inanimate__courier, which overrides this registry pin (a local
-  # component wins over a managed one, and over resident's own transitive
-  # `^0.6.0`). Putting `git:` here instead does NOT work — resident also
-  # requires inanimate/courier, and the solver picks the registry 0.6.0 while
-  # the build still goes green. Drop the override from fetch-deps.sh, and bump
-  # this to `^0.7.0`, once courier publishes.
+  # Courier 0.7.0+ (MQTT binary publish and topic-scoped binary receive; the
+  # 0.6.0 floor was receive-parallels-send, which resident's channel routing
+  # requires).
   inanimate/courier:
-    version: "^0.6.0"
+    version: "^0.7.0"
 
   bblanchon/arduinojson:
     version: "^7.0.0"
