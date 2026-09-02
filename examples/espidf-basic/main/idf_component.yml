@@ -12,10 +12,11 @@ dependencies:
   espressif/arduino-esp32:
     version: "^3.0.0"
 
-  # Courier 0.6.0+ (receive parallels send: Client::onMessage delivers the
-  # default transport only — required by resident's channel routing).
+  # Courier 0.7.0+ (MQTT binary publish and topic-scoped binary receive; the
+  # 0.6.0 floor was receive-parallels-send, which resident's channel routing
+  # requires).
   inanimate/courier:
-    version: "^0.6.0"
+    version: "^0.7.0"
 
   bblanchon/arduinojson:
     version: "^7.0.0"

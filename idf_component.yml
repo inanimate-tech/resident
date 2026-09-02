@@ -1,4 +1,4 @@
-version: "0.8.0"
+version: "0.8.1"
 description: "Sandbox with hardware IO and hot reload for ESP32 devices"
 url: "https://github.com/inanimate-tech/resident"
 
@@ -11,12 +11,17 @@ dependencies:
   # sync (robust HTTPS-Date fallback), larger receivable payloads on no-PSRAM
   # boards, and per-transport endpoint state (Resident sets the WS endpoint via
   # _ws.setEndpoint() inside onTransportsWillConnect(), which requires that
-  # surface). Pinned to ^0.6.0, which makes Client::onMessage deliver the
-  # default transport only (receive parallels send) — required so channel
-  # routing (Resident's `channel` envelope field) sees one coherent message
-  # stream per transport instead of everything funnelled through onMessage.
+  # surface) — and 0.6.0 made Client::onMessage deliver the default transport
+  # only (receive parallels send), so channel routing (Resident's `channel`
+  # envelope field) sees one coherent message stream per transport instead of
+  # everything funnelled through onMessage.
+  #
+  # The floor is ^0.7.0 because a caret range on 0.x excludes the next minor:
+  # while Resident pinned ^0.6.0, a consumer that wanted courier 0.7.0 (MQTT
+  # binary publish, topic-scoped binary receive) could not have both. Resident
+  # calls none of that new surface itself.
   inanimate/courier:
-    version: "^0.6.0"
+    version: "^0.7.0"
   bblanchon/arduinojson:
     version: "^7.0.0"
   # Esp32Lua is not on the ESP component registry. Consumers must provide it
