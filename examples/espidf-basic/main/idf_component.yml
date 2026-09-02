@@ -15,12 +15,15 @@ dependencies:
   # Courier 0.6.0+ (receive parallels send: Client::onMessage delivers the
   # default transport only — required by resident's channel routing).
   #
-  # TEMPORARY: pinned to courier PR #26 (MQTT binary publish + topic-scoped
-  # binary receive) to build-verify Resident against it ahead of the merge.
-  # Revert to `version: "^0.6.0"` (or a released tag) once that PR lands.
+  # TEMPORARY: tools/fetch-deps.sh currently clones courier PR #26 into
+  # components/inanimate__courier, which overrides this registry pin (a local
+  # component wins over a managed one, and over resident's own transitive
+  # `^0.6.0`). Putting `git:` here instead does NOT work — resident also
+  # requires inanimate/courier, and the solver picks the registry 0.6.0 while
+  # the build still goes green. Drop the override from fetch-deps.sh, and bump
+  # this to `^0.7.0`, once courier publishes.
   inanimate/courier:
-    git: https://github.com/inanimate-tech/courier.git
-    version: genmon/mqtt-broker-hardening
+    version: "^0.6.0"
 
   bblanchon/arduinojson:
     version: "^7.0.0"
