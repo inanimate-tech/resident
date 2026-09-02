@@ -111,9 +111,14 @@ struct SandboxConfig {
   // survives — a `while true do end` kills a dispatch, not the device).
   // The guard is lazily armed: the dispatch runs with no Lua hook at all, and
   // a one-shot timer installs a stopping hook only once the deadline has
-  // passed, so a dispatch that finishes in time pays nothing. Available on
-  // every platform; 0 = no hard guard.
-  uint32_t executionDeadlineMs = 0;
+  // passed, so a dispatch that finishes in time pays nothing — which is what
+  // lets it default on. The default leaves roughly 2x headroom over the
+  // heaviest legitimate dispatch measured on an ESP32-S3 (a Lua-heavy
+  // per-pixel shader at 462 ms/tick). What it protects is the loop itself: a
+  // wedged on_tick holds the loop OTA is driven from, so without it a bad app
+  // push takes away the mechanism you would recover the device with.
+  // Available on every platform; 0 = no hard guard.
+  uint32_t executionDeadlineMs = 1000;
 
   // Per-dispatch WALL-CLOCK soft deadline, in milliseconds. A dispatch that
   // outlives it is reported — a rate-limited serial line plus a

@@ -64,7 +64,7 @@ void build(const char* fwSource = FRAMEWORK_V1, uint32_t deadlineMs = 0) {
   cfg.deviceType = "native-test";
   cfg.persistApps = false;
   cfg.persistentStore = store;
-  cfg.executionDeadlineMs = deadlineMs;
+  if (deadlineMs) cfg.executionDeadlineMs = deadlineMs;   // 0 keeps the default
   if (fwSource) {
     Resident::SandboxConfig::FrameworkConfig fw;
     fw.name = "testfw";
