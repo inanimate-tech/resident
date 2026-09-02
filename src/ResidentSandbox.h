@@ -80,7 +80,7 @@ public:
     // luaG_traceexec), and the hook body firing once per `count` instructions.
     // Blocking, several seconds; the caller is a diagnostics build's serial
     // command.
-    void benchmarkExecutionBudget();
+    void benchmarkExecutionGuard();
     // Retunes the execution guard live, so the same running app can be timed
     // under the guard and under none without a reflash. 0 = unguarded.
     void setExecutionDeadlineMs(uint32_t ms);
@@ -455,8 +455,8 @@ private:
     // SandboxConfig::executionDeadlineMs bounds one dispatch in wall-clock
     // time; 0 leaves it unguarded. Nested arms share the outermost dispatch's
     // guard.
-    void armExecutionBudget();
-    void disarmExecutionBudget();
+    void armExecutionGuard();
+    void disarmExecutionGuard();
     // Installed by the deadline timer, never at dispatch start. Re-checks the
     // deadline itself, so a hook that lands after its dispatch ended clears
     // itself instead of aborting an innocent successor.
@@ -483,7 +483,7 @@ private:
     // Rate-limited report of a dispatch that outlived executionSoftDeadlineMs.
     void reportSlowDispatch(uint32_t elapsedUs);
 
-    // Nesting depth of armExecutionBudget/disarmExecutionBudget pairs.
+    // Nesting depth of armExecutionGuard/disarmExecutionGuard pairs.
     uint8_t _dispatchDepth = 0;
     // Microsecond clock at the outermost arm, and the absolute microsecond
     // deadline derived from it. Both wrap-safe: only differences are compared.

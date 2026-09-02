@@ -1227,7 +1227,7 @@ void Sandbox::setExecutionDeadlineMs(uint32_t ms)
 }
 #endif
 
-void Sandbox::armExecutionBudget()
+void Sandbox::armExecutionGuard()
 {
   if (!_lua) return;
   // Nested protected calls share the outermost dispatch's guard: re-arming
@@ -1246,7 +1246,7 @@ void Sandbox::armExecutionBudget()
   }
 }
 
-void Sandbox::disarmExecutionBudget()
+void Sandbox::disarmExecutionGuard()
 {
   if (_dispatchDepth == 0) return;
   if (--_dispatchDepth > 0) return;
@@ -1317,9 +1317,9 @@ bool Sandbox::loadFramework(const char* code, const char* name, int version,
   }
   lua_pushvalue(_lua, -2);                   // env
   lua_setupvalue(_lua, -2, 1);               // chunk _ENV = env
-  armExecutionBudget();
+  armExecutionGuard();
   int r = lua_pcall(_lua, 0, 0, 0);
-  disarmExecutionBudget();
+  disarmExecutionGuard();
   if (r != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: framework execution failed: %s\n", errMsg);
@@ -1454,9 +1454,9 @@ bool Sandbox::callFrameworkNoArg(int ref, const char* what)
 {
   if (!_lua || ref == LUA_NOREF) return true;
   lua_rawgeti(_lua, LUA_REGISTRYINDEX, ref);
-  armExecutionBudget();
+  armExecutionGuard();
   int r = lua_pcall(_lua, 0, 0, 0);
-  disarmExecutionBudget();
+  disarmExecutionGuard();
   if (r != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: %s error: %s\n", what, errMsg);
@@ -1473,9 +1473,9 @@ void Sandbox::callFrameworkTick(unsigned long dt_ms)
   lua_rawgeti(_lua, LUA_REGISTRYINDEX, _fwTickRef);
   pushCtxTable();
   lua_pushinteger(_lua, dt_ms);
-  armExecutionBudget();
+  armExecutionGuard();
   int r = lua_pcall(_lua, 2, 0, 0);
-  disarmExecutionBudget();
+  disarmExecutionGuard();
   if (r != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: framework_tick error: %s\n", errMsg);
@@ -2168,8 +2168,8 @@ void Sandbox::benchmarkGuardArming()
     setExecutionDeadlineMs(cell.deadlineMs);
     uint32_t t0 = micros();
     for (int i = 0; i < kReps; i++) {
-      armExecutionBudget();
-      disarmExecutionBudget();
+      armExecutionGuard();
+      disarmExecutionGuard();
     }
     uint32_t total = micros() - t0;
     Serial.printf("[hookbench] arm+disarm %-13s %lu ns/dispatch\n", cell.name,
@@ -2180,7 +2180,7 @@ void Sandbox::benchmarkGuardArming()
   setExecutionDeadlineMs(savedDeadline);
 }
 
-void Sandbox::benchmarkExecutionBudget()
+void Sandbox::benchmarkExecutionGuard()
 {
   if (!_lua) {
     Serial.println("[hookbench] no lua state");
@@ -2247,7 +2247,7 @@ void Sandbox::benchmarkExecutionBudget()
     }
 
     // The finest count that fired gives the chunk's instruction total, which
-    // is what the current instruction budget is actually rationing.
+    // is the scale the penalties below are relative to.
     uint32_t instructions = 0;
     for (int c = kConfigCount - 1; c >= 0; c--) {
       if (kConfigs[c].hook == benchCountHook && fires[c] > 0) {
@@ -2398,9 +2398,9 @@ bool Sandbox::loadChunk(const char* code)
     lua_pop(_lua, 1);
     return false;
   }
-  armExecutionBudget();
+  armExecutionGuard();
   int chunkResult = lua_pcall(_lua, 0, 0, 0);
-  disarmExecutionBudget();
+  disarmExecutionGuard();
   if (chunkResult != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: chunk execution failed: %s\n", errMsg);
@@ -2834,9 +2834,9 @@ bool Sandbox::compileApp(const char* code)
   int loadResult = luaL_loadstring(_lua, code);
 
   if (loadResult == 0) {
-    armExecutionBudget();
+    armExecutionGuard();
     int execResult = lua_pcall(_lua, 0, 0, 0);
-    disarmExecutionBudget();
+    disarmExecutionGuard();
     if (execResult != 0) {
       const char* errMsg = lua_tostring(_lua, -1);
       Serial.printf("Resident::Sandbox: execution failed: %s\n", errMsg);
@@ -2930,9 +2930,9 @@ bool Sandbox::callInit()
   // Time-of-day fields
   pushLocalTimeFields();
 
-  armExecutionBudget();
+  armExecutionGuard();
   int result = lua_pcall(_lua, 1, 0, 0);
-  disarmExecutionBudget();
+  disarmExecutionGuard();
   if (result != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: init() error: %s\n", errMsg);
@@ -2963,9 +2963,9 @@ void Sandbox::callOnTick(unsigned long dt_ms)
 
   lua_pushinteger(_lua, dt_ms);
 
-  armExecutionBudget();
+  armExecutionGuard();
   int result = lua_pcall(_lua, 2, 0, 0);
-  disarmExecutionBudget();
+  disarmExecutionGuard();
   if (result != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: on_tick() error: %s\n", errMsg);
@@ -3032,9 +3032,9 @@ void Sandbox::processNextEvent()
       lua_pop(_lua, 2);   // hook fn + ctx
       return;
     }
-    armExecutionBudget();
+    armExecutionGuard();
     int r = lua_pcall(_lua, 2, 1, 0);
-    disarmExecutionBudget();
+    disarmExecutionGuard();
     if (r != 0) {
       const char* errMsg = lua_tostring(_lua, -1);
       Serial.printf("Resident::Sandbox: framework_event error: %s\n", errMsg);
@@ -3056,9 +3056,9 @@ void Sandbox::processNextEvent()
     return;
   }
 
-  armExecutionBudget();
+  armExecutionGuard();
   int callResult = lua_pcall(_lua, 2, 0, 0);
-  disarmExecutionBudget();
+  disarmExecutionGuard();
   if (callResult != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: on_event() error: %s\n", errMsg);
