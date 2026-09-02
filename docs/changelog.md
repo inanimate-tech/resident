@@ -5,12 +5,13 @@
 Theme: the device speaks first. A device hello announces protocol, limits and
 identity on every connect; telemetry and events ride channelled frames with a
 queue behind them; the sandbox closes (fresh environment, closed stdlib,
-execution budget) and grows a persistent store, in-place chunk updates,
+dispatch deadline) and grows a persistent store, in-place chunk updates,
 framework hosting, and library-agnostic render targets.
 
 ### Breaking changes
 
 - Driver events deliver their payload as `event.data`, matching wire events; top-level scalars are still mirrored onto the event table for one deprecation window.
+- A Lua dispatch that runs longer than `SandboxConfig::executionDeadlineMs` — new, and defaulting to 1000 ms — aborts with `runtime_error` while the app keeps running; set it to `0` for the unguarded 0.7 behaviour.
 - Ticking and event dispatch no longer gate on connectivity; set `SandboxConfig::gateTickOnConnection = true` to gate them again.
 - The app environment no longer gets `os`/`io`/`package`/`require`/`load`/`dofile`/`loadstring`/`loadfile`/`debug`; set `SandboxConfig::openUnsafeLibs = true` to open them.
 - `loadApp` resets globals to the runtime baseline; set `SandboxConfig::freshAppEnvironment = false` for apps that relied on cross-load leakage.
@@ -27,7 +28,8 @@ framework hosting, and library-agnostic render targets.
 - Outbound events queue when rate-limited or offline (`RESIDENT_EVENT_QUEUE_SIZE`, default 16) and drain in order; `opts.keep = true` marks a message overflow eviction never removes.
 - **Framework modules**: `SandboxConfig::framework = {name, version, source}` hosts privileged Lua outside the app, with a private environment, the `runtime.send` capability, and `framework_install`/`framework_tick`/`framework_event`/`framework_app_loaded` hooks.
 - The framework slot — `{channel:"system", type:"framework", name, version, code}` — persists a replacement that wins over the built-in at boot; empty `code` reverts.
-- **Execution budget**: `SandboxConfig::executionBudget` (default 2,000,000 instructions, 0 = unlimited) aborts a runaway dispatch with `runtime_error` and leaves the app running.
+- **Wall-clock dispatch deadline**: `SandboxConfig::executionDeadlineMs` (default 1000 ms, 0 = off) aborts a dispatch that outlives it with `runtime_error` and leaves the app running; the guard is lazily armed, so a dispatch that keeps to its deadline runs with no Lua hook at all.
+- **Slow-dispatch reporting**: `SandboxConfig::executionSoftDeadlineMs` (default 0 = off) reports a dispatch that outlives it — a rate-limited serial line plus a `slow_dispatch` telemetry event — without aborting it.
 - **Lua `store` module**: `store.get/set/keys/clear/remaining` over scalars, persisted to NVS under `resident/store` and namespaced by the load message's `storeNs` (same namespace survives `loadApp` and reboot; a different one clears the slot).
 - **`loadChunk(code)`** / `{channel:"system", type:"chunk"}` runs a chunk in the running app's `lua_State` — globals, timers and events survive, `init()` is not re-called, and a failing chunk leaves the app running.
 - **Render targets**: `Resident::RenderTargets` + `PanelTarget` (geometry plus a synchronous big-endian RGB565 `blit`) is the one place a board declares its panels; the graphics modules build their own machinery over it.

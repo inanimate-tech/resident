@@ -1,4 +1,4 @@
-// Framework module hosting (R16) + the execution budget (R8).
+// Framework module hosting (R16) + the execution deadline (R8).
 //
 // A framework module is privileged Lua hosted OUTSIDE the app: private
 // environment (bare assignments stay framework-local; _G.x is the explicit
@@ -59,12 +59,12 @@ std::vector<std::string>* events = nullptr;
 std::vector<std::string>* frames = nullptr;
 std::vector<std::string>* telemetry = nullptr;
 
-void build(const char* fwSource = FRAMEWORK_V1, uint32_t budget = 2000000) {
+void build(const char* fwSource = FRAMEWORK_V1, uint32_t deadlineMs = 0) {
   Resident::SandboxConfig cfg;
   cfg.deviceType = "native-test";
   cfg.persistApps = false;
   cfg.persistentStore = store;
-  cfg.executionBudget = budget;
+  if (deadlineMs) cfg.executionDeadlineMs = deadlineMs;   // 0 keeps the default
   if (fwSource) {
     Resident::SandboxConfig::FrameworkConfig fw;
     fw.name = "testfw";
@@ -263,23 +263,40 @@ void test_framework_empty_code_reverts_to_builtin(void) {
   TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("back"));
 }
 
-void test_execution_budget_kills_the_dispatch_not_the_device(void) {
-  build(FRAMEWORK_V1, /*budget=*/100000);
+void test_execution_deadline_kills_the_dispatch_not_the_device(void) {
+  build(FRAMEWORK_V1, /*deadlineMs=*/50);
   loadApp(
       "ticks = 0\n"
       "function on_tick(ctx, dt)\n"
       "  ticks = ticks + 1\n"
-      "  if ticks == 2 then while true do end end\n"
+      "  if ticks == 2 then local a = 0 while true do a = a + 1 end end\n"
       "end\n");
   pump();                 // tick 1: fine
-  pump();                 // tick 2: runaway — aborted by the budget
+  pump();                 // tick 2: runaway — aborted at the deadline
   TEST_ASSERT_TRUE(telemetryHas("runtime_error"));
-  bool budgetMsg = false;
+  bool deadlineMsg = false;
   for (auto& t : *telemetry)
-    if (t.find("execution budget exceeded") != std::string::npos) budgetMsg = true;
-  TEST_ASSERT_TRUE(budgetMsg);
+    if (t.find("execution deadline exceeded") != std::string::npos) deadlineMsg = true;
+  TEST_ASSERT_TRUE(deadlineMsg);
   pump();                 // tick 3: the app is still alive
   TEST_ASSERT_EQUAL_INT(3, sandbox->luaGlobalIntForTest("ticks"));
+}
+
+// The hook the timer installs is one-shot and re-checks the deadline, so a
+// dispatch that keeps to its deadline is never touched — including the one
+// immediately after an abort.
+void test_execution_deadline_leaves_an_in_time_dispatch_alone(void) {
+  build(FRAMEWORK_V1, /*deadlineMs=*/2000);
+  loadApp(
+      "ticks = 0\n"
+      "function on_tick(ctx, dt)\n"
+      "  ticks = ticks + 1\n"
+      "  local a = 0\n"
+      "  for i = 1, 20000 do a = a + i end\n"
+      "end\n");
+  for (int i = 0; i < 5; i++) pump();
+  TEST_ASSERT_EQUAL_INT(5, sandbox->luaGlobalIntForTest("ticks"));
+  TEST_ASSERT_FALSE(telemetryHas("runtime_error"));
 }
 
 int main(int, char**) {
@@ -291,6 +308,7 @@ int main(int, char**) {
   RUN_TEST(test_framework_slot_update_applies_persists_and_survives_reboot);
   RUN_TEST(test_framework_bad_slot_code_keeps_current);
   RUN_TEST(test_framework_empty_code_reverts_to_builtin);
-  RUN_TEST(test_execution_budget_kills_the_dispatch_not_the_device);
+  RUN_TEST(test_execution_deadline_kills_the_dispatch_not_the_device);
+  RUN_TEST(test_execution_deadline_leaves_an_in_time_dispatch_alone);
   return UNITY_END();
 }

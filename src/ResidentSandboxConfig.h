@@ -33,6 +33,11 @@ using TelemetryCallback = std::function<void(const char* json)>;
 // synthesized without triggering the warning.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+// Feature test for SandboxConfig::executionDeadlineMs and
+// executionSoftDeadlineMs, so a board that also builds against an older
+// published SDK can guard its use of them on the fields' presence.
+#define RESIDENT_HAS_EXECUTION_DEADLINE 1
+
 struct SandboxConfig {
   // Identifies the physical board (used for AP name and protocol path
   // defaults). Stays at top-level — it labels the device, not the network.
@@ -99,11 +104,18 @@ struct SandboxConfig {
   // global leakage.
   bool freshAppEnvironment = true;
 
-  // Per-dispatch Lua instruction budget (0.8): init, one tick, one event,
-  // or one chunk may execute at most this many VM instructions before the
-  // dispatch is aborted with a runtime_error (the app survives — a
-  // `while true do end` kills a dispatch, not the device). 0 = unlimited.
-  uint32_t executionBudget = 2000000;
+  // Per-dispatch WALL-CLOCK hard deadline, in milliseconds (0.8): init, one
+  // tick, one event, one chunk, or one framework hook may run for at most this
+  // long before the dispatch is aborted with a runtime_error — the app
+  // survives. Raise it for a board whose apps legitimately run longer.
+  // Available on every platform; 0 = no hard guard.
+  uint32_t executionDeadlineMs = 1000;
+
+  // Per-dispatch WALL-CLOCK soft deadline, in milliseconds. A dispatch that
+  // outlives it is reported — a rate-limited serial line plus a
+  // `slow_dispatch` telemetry event — and allowed to finish. Independent of
+  // executionDeadlineMs and of the platform; 0 = no reporting.
+  uint32_t executionSoftDeadlineMs = 0;
 
   // Framework module (0.8): privileged runtime code the sandbox hosts
   // OUTSIDE the app — its own environment, the runtime-channel sender,

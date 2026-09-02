@@ -73,6 +73,19 @@ public:
     void initialize();
     void loop();  // runs on_tick
 
+#if RESIDENT_TICK_DIAGS
+    // Measures what a Lua hook costs: the per-dispatch arm/disarm pair, and
+    // each hook configuration against an unhooked baseline. Blocking, several
+    // seconds; the caller is a diagnostics build's serial command.
+    void benchmarkExecutionGuard();
+    // Retunes the execution guard live, so the same running app can be timed
+    // under the guard and under none without a reflash. 0 = unguarded.
+    void setExecutionDeadlineMs(uint32_t ms);
+    void setExecutionSoftDeadlineMs(uint32_t ms) {
+        _config.executionSoftDeadlineMs = ms;
+    }
+#endif
+
     // Public lifecycle — replaces the old Device::setup()/loop().
     // Standalone mode (no cfg.network): just initialises the Lua state.
     // Networked mode: also fires onConfigureNetwork, kicks off Courier.
@@ -433,10 +446,56 @@ private:
     void snapshotBaselineGlobals();
     void resetAppGlobals();
 
-    // ── Execution budget (R8): per-dispatch instruction cap ──
-    void armExecutionBudget();
-    void disarmExecutionBudget();
-    static void executionBudgetHook(struct lua_State* L, struct lua_Debug* ar);
+    // ── Execution guard (R8): per-dispatch wall-clock deadline ──
+    void armExecutionGuard();
+    void disarmExecutionGuard();
+    // Installed by the deadline timer, never at dispatch start.
+    static void executionDeadlineHook(struct lua_State* L, struct lua_Debug* ar);
+    // Installs executionDeadlineHook when the dispatch it was armed for is
+    // still running. Callers hold the platform lock that guards _deadlineArmed.
+    //
+    // Setting a hook from outside the running VM is Lua's own idiom for this
+    // (lua.c's SIGINT handler); ldebug.c documents the fields as safe to write
+    // asynchronously, and OP_FORLOOP refreshes `trap` so a tight loop notices.
+    void installDeadlineHook();
+#ifdef ESP_PLATFORM
+    // esp_timer callback; fires on the timer task once a dispatch outlives
+    // executionDeadlineMs. The host worker installs the hook inline instead.
+    static void executionDeadlineTimeout(void* arg);
+#endif
+    // Creates/destroys the deadline timer. Called from initialize() and the
+    // destructor, never from the arm path.
+    void createExecutionDeadlineTimer();
+    void destroyExecutionDeadlineTimer();
+    // Starts/stops the one-shot that will fire at _dispatchDeadlineUs.
+    void startDeadlineTimer();
+    void stopDeadlineTimer();
+    // Rate-limited report of a dispatch that outlived executionSoftDeadlineMs.
+    void reportSlowDispatch(uint32_t elapsedUs);
+
+    // Nesting depth of armExecutionGuard/disarmExecutionGuard pairs.
+    uint8_t _dispatchDepth = 0;
+    // Microsecond clock at the outermost arm, and the absolute microsecond
+    // deadline derived from it. Both wrap-safe: only differences are compared.
+    uint32_t _dispatchStartUs = 0;
+    uint32_t _dispatchDeadlineUs = 0;
+    unsigned long _lastSlowDispatchMs = 0;
+    uint32_t _slowDispatchBurst = 0;
+    static constexpr unsigned long SLOW_DISPATCH_COOLDOWN = 5000;
+    static constexpr uint32_t SLOW_DISPATCH_MAX_BURST = 3;
+    // The one-shot that installs the stopping hook: an esp_timer_handle_t on
+    // device, a condition-variable worker thread on host. Opaque either way.
+    void* _deadlineTimer = nullptr;
+    // True between the outermost arm and its disarm. Written and read under
+    // the platform lock so the timer never installs a hook for a dispatch
+    // that has already returned.
+    volatile bool _deadlineArmed = false;
+#ifdef ESP_PLATFORM
+    portMUX_TYPE _deadlineMux = portMUX_INITIALIZER_UNLOCKED;
+#else
+    // Body of the host worker thread; arg is the opaque timer.
+    static void hostDeadlineWorker(void* timer);
+#endif
 
     // Shared ctx builder for event/framework dispatch.
     void pushCtxTable();
@@ -617,6 +676,37 @@ private:
     // Frame timing
     unsigned long _lastTickTime = 0;
     static constexpr unsigned long TICK_INTERVAL = 100; // 10 FPS
+
+#if RESIDENT_TICK_DIAGS
+    // Tick-timing diagnostics (-DRESIDENT_TICK_DIAGS=1): measures how long one
+    // dispatch (framework_tick + on_tick) costs against the TICK_INTERVAL
+    // budget, and how far the realised tick period drifts from it. Reports on
+    // Serial: a rate-limited line per overrun plus a periodic window summary.
+    static constexpr unsigned long DIAG_WINDOW_MS = 5000;
+    static constexpr unsigned long DIAG_OVERRUN_LOG_MS = 1000;
+    static constexpr unsigned long DIAG_LATE_PERIOD_MS = TICK_INTERVAL * 3 / 2;
+    void noteTickTiming(unsigned long periodMs, uint32_t fwUs, uint32_t appUs);
+    // The hooks benchmarkExecutionGuard() times.
+    static void benchCountHook(struct lua_State* L, struct lua_Debug* ar);
+    static void benchDeadlineHook(struct lua_State* L, struct lua_Debug* ar);
+    static uint32_t _benchFires;
+    static uint32_t _benchDeadlineUs;
+    // One timed run of the chunk in registry slot `chunkRef`, with the hook
+    // already armed by the caller. Returns microseconds.
+    uint32_t runBenchChunk(int chunkRef);
+    // Per-dispatch cost of the arm/disarm pair under each guard.
+    void benchmarkGuardArming();
+    unsigned long _diagWindowStart = 0;
+    unsigned long _diagLastOverrunLog = 0;
+    unsigned long _diagPeriodMaxMs = 0;
+    uint32_t _diagTicks = 0;
+    uint32_t _diagOverruns = 0;
+    uint32_t _diagLate = 0;
+    uint32_t _diagDispatchSumUs = 0;
+    uint32_t _diagDispatchMaxUs = 0;
+    uint32_t _diagAppMaxUs = 0;
+    uint32_t _diagFwMaxUs = 0;
+#endif
 
     // Event queue
     struct Event {

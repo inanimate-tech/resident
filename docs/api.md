@@ -48,7 +48,8 @@ void loop()  { sandbox.loop(); }
 | `gateTickOnConnection` | `bool` | `false` | Pause `on_tick` and event dispatch while disconnected. The default is offline-first: the app keeps running; only network sends wait. |
 | `openUnsafeLibs` | `bool` | `false` | Give the app environment the full Lua stdlib. The default removes `os`/`io`/`package`/`require`/`load`/`dofile`/`loadstring`/`loadfile`/`debug`. |
 | `freshAppEnvironment` | `bool` | `true` | Reset app globals to the runtime baseline on every `loadApp` — nothing from the previous app survives except the store slot. Set `false` for builds whose apps need globals to persist across loads. |
-| `executionBudget` | `uint32_t` | `2000000` | Lua instruction cap per dispatch (init / one tick / one event / one chunk / each framework hook). Over-budget aborts the dispatch with a `runtime_error`; the app survives. `0` = unlimited. |
+| `executionDeadlineMs` | `uint32_t` | `1000` | Per-dispatch **wall-clock** hard deadline, in milliseconds (init / one tick / one event / one chunk / each framework hook). No Lua hook is installed at dispatch start; a one-shot timer installs a stopping hook once the deadline passes. Over-deadline aborts the dispatch with a `runtime_error` (`execution deadline exceeded (N ms)`); the app survives. Available on every platform; `0` = no hard guard. |
+| `executionSoftDeadlineMs` | `uint32_t` | `0` | Per-dispatch **wall-clock** soft deadline, in milliseconds. A dispatch that outlives it is reported — a rate-limited serial line plus a `slow_dispatch` telemetry event — and allowed to finish. Measured at disarm, so it also covers time spent inside a blocking C binding, where no Lua hook fires. Independent of `executionDeadlineMs` and available on every platform; `0` = no reporting. |
 | `framework` | `std::optional<FrameworkConfig>` | unset | Embed a framework module: `{name, version, source}` — privileged Lua the sandbox hosts outside the app (see [Framework modules](#framework-modules)). |
 | `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
 | `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). On M5 boards use the shipped `Resident::M5Mic` (`#include <ResidentM5Mic.h>`); otherwise implement `Resident::SystemMic`. Not a `Driver` — the pump owns its `begin()`/`end()`. |
@@ -1229,7 +1230,21 @@ Under a framework, an app **need not** define any lifecycle global (`init`/`on_t
 
 **The framework slot.** `{channel:"system", type:"framework", name, version, code}` installs a replacement, persisted via the `PersistentStore` framework-slot virtuals (NVS key `resident/framework`) and loaded at boot in preference to the built-in. Empty `code` clears the slot and reverts to the built-in. A slot blob that fails to load is discarded (`framework_error`) and the built-in runs. Because only the system channel can carry this message, no sandboxed code — app or framework — can replace the framework. Each hello announces `framework: {name, version, source: "builtin"|"slot"}`, which is how a host decides to push an update.
 
-Errors in framework hooks are contained like app errors (`runtime_error`, dispatch dies, everything survives), and every hook runs under the execution budget.
+Errors in framework hooks are contained like app errors (`runtime_error`, dispatch dies, everything survives), and every hook runs under the execution guard.
+
+## The execution guard
+
+Every protected Lua call — `init`, one tick, one event, one chunk, each framework hook — runs inside an arm/disarm pair. Exceeding the guard aborts *that dispatch* with a `runtime_error`; the app and the device carry on. Nested protected calls share the outermost dispatch's guard, so an inner call never gets a fresh deadline.
+
+`SandboxConfig::executionDeadlineMs` is the hard guard: a wall-clock deadline in milliseconds, defaulting to `1000`, with `0` leaving the dispatch unguarded. It is available on every platform — a one-shot `esp_timer` on device, a worker thread on host.
+
+It defaults on because lazy arming makes it free until it fires, and because the thing it protects is the loop itself: a wedged `on_tick` holds the loop OTA is driven from, so a bad app push would otherwise take away the mechanism you recover the device with. `1000` leaves roughly 2x headroom over the heaviest legitimate dispatch measured on an ESP32-S3. Raise it for a board whose apps legitimately run longer; set `0` to opt out.
+
+The abort rides a Lua hook, so it always lands on a VM instruction. The hook is installed by the one-shot timer once the deadline has passed, so the abort lands at or after it, never before; the message is `execution deadline exceeded (N ms)`.
+
+`executionSoftDeadlineMs` is independent of it and available on every platform. Elapsed time is compared against it at disarm: a dispatch that outlives it is reported — a rate-limited serial line plus a `slow_dispatch` telemetry event, `SLOW_DISPATCH_MAX_BURST` then one per `SLOW_DISPATCH_COOLDOWN` — and allowed to finish. Nothing is aborted.
+
+**What the guard does not bound.** The hard deadline cannot interrupt a dispatch blocked inside a C binding — no Lua instruction executes, so no hook fires. Only the soft deadline sees that time, and only once the binding has returned. Both limits measure elapsed wall-clock time rather than CPU time, so a dispatch held off by a higher-priority task overshoots by however long it was descheduled and aborts when the Lua task next runs. Nothing bounds the total across one `loop()` iteration: each protected call arms its own guard, so a single iteration can spend several deadlines.
 
 ## Writing a Driver
 
@@ -1417,7 +1432,10 @@ ESP-IDF CMake component graph.
 | `RESIDENT_STORE_JSON_MAX` | `2048` | Serialized size cap on the whole persisted `store` blob. Build-flag overridable |
 | `StoreModule::STORE_NS_MAX` | `32` | Maximum `storeNs` length in characters |
 | Event `name` max | `32 chars` | `Event::name` buffer size — driver event names longer than 31 bytes are truncated |
-| `SandboxConfig::executionBudget` | `2000000` | Lua instructions per dispatch (`0` = unlimited) |
+| `SandboxConfig::executionDeadlineMs` | `1000` | Wall-clock milliseconds per dispatch before abort (`0` = no hard guard) |
+| `SandboxConfig::executionSoftDeadlineMs` | `0` | Wall-clock milliseconds per dispatch before reporting (`0` = no reporting) |
+| `SLOW_DISPATCH_COOLDOWN` | `5000 ms` | Minimum interval between `slow_dispatch` reports after the initial burst |
+| `SLOW_DISPATCH_MAX_BURST` | `3` | `slow_dispatch` reports allowed before the cooldown applies |
 | Event rate limit | `5/s`, burst `10` | Token bucket shared by `events.send`, `runtime.send` and `publishEvent` |
 | `RUNTIME_ERROR_COOLDOWN` | `5000 ms` | Minimum interval between `runtime_error` telemetry emissions from `on_tick` |
 | `RUNTIME_ERROR_MAX_BURST` | `3` | Number of `runtime_error` telemetry events allowed before rate-limiting kicks in |
