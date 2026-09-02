@@ -14,8 +14,13 @@ dependencies:
 
   # Courier 0.6.0+ (receive parallels send: Client::onMessage delivers the
   # default transport only — required by resident's channel routing).
+  #
+  # TEMPORARY: pinned to courier PR #26 (MQTT binary publish + topic-scoped
+  # binary receive) to build-verify Resident against it ahead of the merge.
+  # Revert to `version: "^0.6.0"` (or a released tag) once that PR lands.
   inanimate/courier:
-    version: "^0.6.0"
+    git: https://github.com/inanimate-tech/courier.git
+    version: genmon/mqtt-broker-hardening
 
   bblanchon/arduinojson:
     version: "^7.0.0"
