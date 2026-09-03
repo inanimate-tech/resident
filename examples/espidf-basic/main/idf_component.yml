@@ -12,11 +12,11 @@ dependencies:
   espressif/arduino-esp32:
     version: "^3.0.0"
 
-  # Courier 0.7.0+ (MQTT binary publish and topic-scoped binary receive; the
-  # 0.6.0 floor was receive-parallels-send, which resident's channel routing
-  # requires).
+  # Courier 0.8.0+ (structured MQTT error detail; 0.7.0 added MQTT binary
+  # publish and topic-scoped binary receive, and the 0.6.0 floor was
+  # receive-parallels-send, which resident's channel routing requires).
   inanimate/courier:
-    version: "^0.7.0"
+    version: "^0.8.0"
 
   bblanchon/arduinojson:
     version: "^7.0.0"
