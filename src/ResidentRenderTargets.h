@@ -103,15 +103,25 @@ public:
     return true;
   }
 
-  // A module's declaration: "I can draw on this target." No geometry — a
-  // module declares at firmware-setup time, which is the same static-init
-  // window addPanel lives in, so asking anything its size here is the same
-  // crash. Geometry comes from size() when someone actually reads.
-  static bool declare(const char* name, const char* shape, uint8_t module) {
+  // A module's declaration: "I can draw on this target." Nothing else.
+  //
+  // No geometry, because a module declares at firmware-setup time — the same
+  // static-init window addPanel lives in, where asking anything its size is a
+  // crash. And NO SHAPE: whether a panel is round is the board's fact, stated
+  // once by addPanel. A module that also asserted a shape would overwrite it
+  // with its own default, which is exactly what happened — lgfx's `shape =
+  // "rect"` default silently flattened a board's "round" on the line after it
+  // was declared, and every consumer downstream believed it.
+  // `shape` is accepted but applied ONLY when no board panel is registered
+  // for this name — a bare sprite, where the module is the only thing that
+  // can say. The registry decides, not the caller, because the caller does
+  // not know whether a board got there first.
+  static bool declare(const char* name, uint8_t module,
+                      const char* shape = nullptr) {
     Entry* e = slot(name);
     if (!e) return false;
-    if (shape) e->shape = shape;
     e->modules |= module;
+    if (shape && !e->panel) e->shape = shape;
     return true;
   }
 

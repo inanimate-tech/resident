@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: a graphics module could overwrite a board's panel shape. `LgfxModule::addDisplay` defaults `shape = "rect"`, and its registry declaration applied that unconditionally — so a board that registered a round panel and then declared lgfx on it ended up marked rectangular, and every consumer believed it (an app laying itself out by shape drew off the edge of the glass). `RenderTargets::declare(name, module[, shape])` now applies a module's shape only when no panel is registered for that name — a bare sprite, where the module is the only source. Shape is a physical fact about the glass and the board states it once.
+
+---
+
 ## v0.8.1
 
 Courier 0.7.0 support. No Resident source changes — this is the dependency
