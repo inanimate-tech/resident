@@ -213,6 +213,11 @@ public:
   // MODULE_LGFX bit on the target in the RenderTargets registry; geometry
   // comes from the registered PanelTarget when the board registered one
   // (addPanel), else from the drawing target itself.
+  //
+  // `shape` applies ONLY to a target with no PanelTarget behind it — a bare
+  // sprite, where nothing else can say. When the board registered a panel,
+  // that panel's shape is the truth and this argument is ignored: shape is a
+  // physical fact about the glass, and the board states it once.
   bool addDisplay(const char* displayName, LgfxTarget* target,
                   const char* shape = "rect") {
     if (_count >= MAX_DISPLAYS || !displayName || !target) return false;
@@ -327,7 +332,7 @@ private:
   // hardware that does not exist yet. Readers get live geometry from
   // RenderTargets::size().
   static void declare(const Slot& s) {
-    RenderTargets::declare(s.name, s.shape, RenderTargets::MODULE_LGFX);
+    RenderTargets::declare(s.name, RenderTargets::MODULE_LGFX, s.shape);
   }
 
   // Present one frame — the R19 gate. Not the owner? Drop it silently: the

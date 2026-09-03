@@ -77,11 +77,30 @@ void test_module_declare_never_asks_the_panel_its_size(void) {
   FakePanel panel(240, 135);
   RenderTargets::addPanel("main", &panel);
   panel.sizeReads = 0;
-  RenderTargets::declare("main", nullptr, RenderTargets::MODULE_LGFX);
-  RenderTargets::declare("main", nullptr, RenderTargets::MODULE_LVGL);
+  RenderTargets::declare("main", RenderTargets::MODULE_LGFX);
+  RenderTargets::declare("main", RenderTargets::MODULE_LVGL);
   TEST_ASSERT_EQUAL_INT(0, panel.sizeReads);
   TEST_ASSERT_EQUAL_UINT8(RenderTargets::MODULE_LGFX | RenderTargets::MODULE_LVGL,
                           RenderTargets::entry(0).modules);
+}
+
+// The bug this guards, seen on glass: a board declares its panel round, the
+// lgfx module's addDisplay defaults `shape = "rect"`, and the module's
+// declaration overwrote the board on the very next line. Every consumer then
+// believed the round device was rectangular — an app that lays itself out by
+// shape drew its whole look off the edge of the circle.
+void test_a_module_cannot_flatten_a_boards_round_panel(void) {
+  FakePanel panel(466, 466);
+  RenderTargets::addPanel("main", &panel, "round");
+  RenderTargets::declare("main", RenderTargets::MODULE_LGFX, "rect");
+  TEST_ASSERT_EQUAL_STRING("round", RenderTargets::entry(0).shape);
+}
+
+// ...but a target with no panel behind it has no board to ask, so there the
+// module's shape is the only source and must apply.
+void test_a_module_shape_applies_to_a_panelless_target(void) {
+  RenderTargets::declare("sprite", RenderTargets::MODULE_LGFX, "round");
+  TEST_ASSERT_EQUAL_STRING("round", RenderTargets::entry(0).shape);
 }
 
 void test_modules_merge_onto_one_target(void) {
@@ -199,6 +218,8 @@ int main(int, char**) {
   RUN_TEST(test_add_panel_registers_geometry);
   RUN_TEST(test_add_panel_never_asks_the_panel_its_size);
   RUN_TEST(test_module_declare_never_asks_the_panel_its_size);
+  RUN_TEST(test_a_module_cannot_flatten_a_boards_round_panel);
+  RUN_TEST(test_a_module_shape_applies_to_a_panelless_target);
   RUN_TEST(test_modules_merge_onto_one_target);
   RUN_TEST(test_unowned_target_answers_false_for_everyone);
   RUN_TEST(test_bind_claims_and_last_claim_wins);

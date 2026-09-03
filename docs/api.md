@@ -1008,7 +1008,7 @@ The board's render targets ([`RenderTargets`](#residentrendertargets)), readable
 | `surfaces.list()` | array | Every registered surface, in registration order |
 | `surfaces.get(name)` | table or nil | One surface by name; `nil` when the board has no such surface |
 
-Each entry is `{ name, w, h, shape }`, with `shape` `"rect"` or `"round"`. The names are the ones `lgfx.bind(name)` and `lvgl.bind(name)` take.
+Each entry is `{ name, w, h, shape }`, with `shape` `"rect"` or `"round"`. `shape` comes from the board's `addPanel` and a graphics module cannot override it — only a target with no panel takes its shape from the module that declared it. The names are the ones `lgfx.bind(name)` and `lvgl.bind(name)` take.
 
 Geometry is read from the panel at call time; the registry caches nothing for a panel-backed target. This is deliberate: a board registers its panels in a config function that commonly runs during **static init**, before `M5.begin()` and before any display driver's `begin()`, so asking a panel its size there dereferences hardware that does not exist yet. `addPanel` therefore never asks, and every reader gets live numbers.
 
