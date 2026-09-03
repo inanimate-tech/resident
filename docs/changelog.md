@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.8.2
 
-- Fixed: a graphics module could overwrite a board's panel shape. `LgfxModule::addDisplay` defaults `shape = "rect"`, and its registry declaration applied that unconditionally — so a board that registered a round panel and then declared lgfx on it ended up marked rectangular, and every consumer believed it (an app laying itself out by shape drew off the edge of the glass). `RenderTargets::declare(name, module[, shape])` now applies a module's shape only when no panel is registered for that name — a bare sprite, where the module is the only source. Shape is a physical fact about the glass and the board states it once.
+- Courier floor moves to `^0.8.0`, no Resident source changes. A caret range on `0.x` excludes the next minor, so this forces consumers to Courier 0.8.0.
+- Fixed: a graphics module could flatten a board's round panel — `RenderTargets::declare` now applies a module's shape only when no panel is registered for that name.
 
 ---
 
