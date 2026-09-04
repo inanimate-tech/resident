@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.8.3-dev
+
+- The built-in WebSocket transport is optional. `Sandbox` cached
+  `courier().transport<WebSocketTransport>("ws")` unconditionally, but Courier
+  auto-registers `"ws"` only when `Config::host` is set **and**
+  `defaultTransport` is unset or `"ws"`. A Sandbox pointed at another default
+  lane — `defaultTransport = "mqtt"` for a device that carries everything over
+  one MQTT connection — therefore asserted at construction, and with `NDEBUG`
+  took a null reference that crashed at the first `ws()` call. `_ws` now stays
+  null in that case, `hasWs()` reports it, and the two internal `ws()` callers
+  (the WS-path default in `onCourierTransportsWillConnect`, the mic-stream
+  fallback in `updateMicStream`) are gated on it.
+
+---
+
 ## v0.8.2
 
 - Courier floor moves to `^0.8.0`, no Resident source changes. A caret range on `0.x` excludes the next minor, so this forces consumers to Courier 0.8.0.

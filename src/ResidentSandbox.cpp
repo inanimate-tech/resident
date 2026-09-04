@@ -77,7 +77,19 @@ Sandbox::Sandbox(const SandboxConfig& config) : Sandbox() {
       net.defaultTransport = "ws";
     }
     _courier.emplace(net);
-    _ws = &_courier->transport<Courier::WebSocketTransport>("ws");
+
+    // Cache the built-in WS transport ONLY when Courier actually registered
+    // it. Courier's constructor auto-registers "ws" on exactly this
+    // condition; asking for a transport it skipped trips
+    // Client::transport<T>'s assert (and, with NDEBUG, hands back a null
+    // reference that crashes at the first ws() call). A Sandbox whose default
+    // lane is another transport — "mqtt" for a Hawthorn room device — has no
+    // WS at all, and _ws stays null so ws() fails loudly rather than late.
+    bool wsRegistered = net.defaultTransport &&
+                        strcmp(net.defaultTransport, "ws") == 0 &&
+                        net.host && net.host[0] != '\0';
+    _ws = wsRegistered ? &_courier->transport<Courier::WebSocketTransport>("ws")
+                       : nullptr;
   }
 }
 
@@ -1921,10 +1933,14 @@ void Sandbox::onCourierConnected() {
 void Sandbox::onCourierTransportsWillConnect() {
   // Resident's default: built-in WS gets /agents/<deviceType>-agent/<deviceId>.
   // User callback runs after and can override (e.g. set /devices/<id>).
-  String wsPath = String("/agents/") + getDeviceType() + "-agent/" + _deviceId;
-  ws().setEndpoint(_config.network->host ? _config.network->host : "localhost",
-                   443, wsPath.c_str());
-  Serial.printf("[resident] WS path: %s\n", wsPath.c_str());
+  // Skipped entirely when there is no WS transport — a Sandbox with another
+  // default lane never registered one, and there is no endpoint to address.
+  if (_ws) {
+    String wsPath = String("/agents/") + getDeviceType() + "-agent/" + _deviceId;
+    ws().setEndpoint(_config.network->host ? _config.network->host : "localhost",
+                     443, wsPath.c_str());
+    Serial.printf("[resident] WS path: %s\n", wsPath.c_str());
+  }
 
   if (_onTransportsWillConnect) _onTransportsWillConnect();
 }
@@ -2539,7 +2555,7 @@ void Sandbox::updateMicStream()
   const uint8_t* bytes = reinterpret_cast<const uint8_t*>(_micBuf);
   size_t len = (size_t)got * sizeof(int16_t);
   if (_micSink) _micSink(bytes, len);
-  else if (_courier.has_value()) ws().sendBinary(bytes, len);
+  else if (_ws) ws().sendBinary(bytes, len);
 }
 
 bool Sandbox::isAppExtension(Extension* e) const
