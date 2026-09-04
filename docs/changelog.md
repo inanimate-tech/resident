@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.3
+
+- Fixed: `Sandbox` asserted (or crashed on a null reference under `NDEBUG`) when Courier registered no built-in `"ws"` transport — it is now cached only when present, and `hasWs()` reports it.
+- Fixed: the legacy un-channelled path logged its `[deprecated]` notice for messages `onMessageFilter` had already consumed — the filter now runs first.
+
+---
+
 ## v0.8.2
 
 - Courier floor moves to `^0.8.0`, no Resident source changes. A caret range on `0.x` excludes the next minor, so this forces consumers to Courier 0.8.0.

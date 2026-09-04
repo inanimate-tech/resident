@@ -181,12 +181,19 @@ public:
     void setTimezone(const char* ianaZone);
     bool hasTimezone() const { return _hasTimezone; }
 
-    // Network accessors. Both assert if cfg.network was not set.
+    // Network accessors. courier() asserts if cfg.network was not set; ws()
+    // additionally asserts when no WebSocket transport exists — Courier
+    // auto-registers one only when cfg.network->defaultTransport is unset or
+    // "ws", so a Sandbox with another default lane (e.g. "mqtt") has none.
+    // Gate on hasWs() before calling ws() in code that runs on both.
     Courier::Client& courier();
     Courier::WebSocketTransport& ws();
 
     // True iff cfg.network was set at construction time.
     bool hasNetwork() const { return _courier.has_value(); }
+
+    // True iff the built-in WebSocket transport was registered (see ws()).
+    bool hasWs() const { return _ws != nullptr; }
 
     // ── Setup-phase callback (register before setup()) ──
     using ConfigureNetworkCallback = std::function<void(Courier::Client&)>;
