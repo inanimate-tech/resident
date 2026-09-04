@@ -607,8 +607,15 @@ void Sandbox::onCourierMessage(const char* transportName,
     Serial.printf("Resident::Sandbox: un-channelled '%s' dropped (host speaks hello; legacy path closed)\n", type);
     return;
   }
-  Serial.printf("[deprecated] un-channelled '%s' message; sender should stamp channel\n", type);
+  // The filter runs BEFORE the deprecation notice, not after: it is the
+  // documented interposition point, and a host that consumes a message here
+  // is not taking delivery of a deprecated one. A platform wrapper whose
+  // default transport does its own routing (Hawthorn routes MQTT by topic,
+  // and Courier's client hook fires alongside the per-transport one rather
+  // than instead of it) consumes every un-channelled frame as a duplicate —
+  // logging each one as deprecated would be both noise and a lie.
   if (_messageFilter && !_messageFilter(transportName, type, doc)) return;
+  Serial.printf("[deprecated] un-channelled '%s' message; sender should stamp channel\n", type);
   bool isLoad = strcmp(type, "app") == 0 || strcmp(type, "shader") == 0;
   if (isLoad) maybeShowDescription(doc);
   if (_deferLoads && isLoad) {

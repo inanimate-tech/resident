@@ -12,6 +12,13 @@
   null in that case, `hasWs()` reports it, and the two internal `ws()` callers
   (the WS-path default in `onCourierTransportsWillConnect`, the mic-stream
   fallback in `updateMicStream`) are gated on it.
+- The legacy un-channelled path runs `onMessageFilter` **before** logging its
+  deprecation notice, not after. The filter is the documented interposition
+  point, so a host that consumes a frame there is not taking delivery of a
+  deprecated one — and a wrapper whose default transport does its own routing
+  (Courier's client hook fires alongside a per-transport hook, not instead of
+  it) consumes every such frame as a duplicate. Logging each as deprecated was
+  both noise and a lie.
 
 ---
 
