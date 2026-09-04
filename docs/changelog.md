@@ -1,24 +1,9 @@
 # Changelog
 
-## v0.8.3-dev
+## v0.8.3
 
-- The built-in WebSocket transport is optional. `Sandbox` cached
-  `courier().transport<WebSocketTransport>("ws")` unconditionally, but Courier
-  auto-registers `"ws"` only when `Config::host` is set **and**
-  `defaultTransport` is unset or `"ws"`. A Sandbox pointed at another default
-  lane — `defaultTransport = "mqtt"` for a device that carries everything over
-  one MQTT connection — therefore asserted at construction, and with `NDEBUG`
-  took a null reference that crashed at the first `ws()` call. `_ws` now stays
-  null in that case, `hasWs()` reports it, and the two internal `ws()` callers
-  (the WS-path default in `onCourierTransportsWillConnect`, the mic-stream
-  fallback in `updateMicStream`) are gated on it.
-- The legacy un-channelled path runs `onMessageFilter` **before** logging its
-  deprecation notice, not after. The filter is the documented interposition
-  point, so a host that consumes a frame there is not taking delivery of a
-  deprecated one — and a wrapper whose default transport does its own routing
-  (Courier's client hook fires alongside a per-transport hook, not instead of
-  it) consumes every such frame as a duplicate. Logging each as deprecated was
-  both noise and a lie.
+- Fixed: `Sandbox` asserted (or crashed on a null reference under `NDEBUG`) when Courier registered no built-in `"ws"` transport — it is now cached only when present, and `hasWs()` reports it.
+- Fixed: the legacy un-channelled path logged its `[deprecated]` notice for messages `onMessageFilter` had already consumed — the filter now runs first.
 
 ---
 
