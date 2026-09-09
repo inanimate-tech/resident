@@ -74,7 +74,10 @@ namespace Resident {
 
 class LvglModule : public Extension {
 public:
-  static constexpr int MAX_DISPLAYS = 4;
+  // Eight: a device may be several panels rather than one screen, each
+  // registered as its own display. A slot is a name, the options and a
+  // pointer; nothing is allocated until that display's first bind.
+  static constexpr int MAX_DISPLAYS = 8;
 
   struct DisplayOptions {
     int32_t dpi = 0;           // 0 = leave LVGL's default
