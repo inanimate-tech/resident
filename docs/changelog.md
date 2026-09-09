@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.4
+
+- `LvglModule::MAX_DISPLAYS` is 8 (was 4): a device may be several panels rather than one screen, each registered as its own display. Nothing is allocated until a display's first bind.
+
+---
+
 ## v0.8.3
 
 - Fixed: `Sandbox` asserted (or crashed on a null reference under `NDEBUG`) when Courier registered no built-in `"ws"` transport — it is now cached only when present, and `hasWs()` reports it.
