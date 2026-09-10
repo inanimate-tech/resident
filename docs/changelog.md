@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.5
+
+- `LvglModule::setFontResolver(fn)`: a board's own fonts, installed through luavgl's font extension for every fresh state. `lvgl.Font` tries built-ins first, then the resolver, then the next name in a comma list.
+- `lvgl.SYMBOL.<NAME>`: LVGL's `LV_SYMBOL_*` strings as a Lua table.
+- `LuaModule::state()`: the `lua_State` a module table is being built in.
+
+---
+
 ## v0.8.4
 
 - `LvglModule::MAX_DISPLAYS` is 8 (was 4): a device may be several panels rather than one screen, each registered as its own display. Nothing is allocated until a display's first bind.
