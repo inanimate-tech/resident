@@ -107,6 +107,13 @@ public:
     return *this;
   }
 
+  // The state this module table is being built in — for an extension that
+  // must hand it to a C library's own registration API (a luavgl font
+  // extension, say). Not for keeping: the sandbox owns the state's lifetime
+  // and it lives for the sandbox's lifetime (registerModule runs once, at
+  // setup).
+  lua_State* state() const { return _lua; }
+
 private:
   lua_State* _lua;
   void* _self;

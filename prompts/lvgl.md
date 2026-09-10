@@ -104,9 +104,12 @@ Widget-specific properties:
 
 ## Fonts
 
-`lvgl.Font(name, size)` — built-ins: `"montserrat"` (snaps to the nearest
-enabled size: 8, 14, 16, 20, 24, 28, 32, 36, 40, 48) and `"unscii"`
-(8 or 16, pixel look). Default everywhere is montserrat 14.
+`lvgl.Font(name, size)` — snaps to the nearest size the device carries. The
+device's own sheet names its families and sizes; `"montserrat"` and
+`"unscii"` (8 or 16, pixel look) are LVGL's built-ins where compiled in.
+`lvgl.SYMBOL.PLAY`, `.PAUSE`, `.OK`, `.CLOSE`, `.BELL`, `.WARNING`, `.UP`,
+`.DOWN`, `.LEFT`, `.RIGHT`, `.WIFI`, `.BATTERY_FULL` … are icon strings
+(concatenate into any `text`).
 
 ## Theme
 

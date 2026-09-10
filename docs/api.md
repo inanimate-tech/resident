@@ -555,6 +555,14 @@ m.constant("VERSION", 1)
 
 Overloads accept `int`, `double`, `const char*`, and `bool`.
 
+### The state
+
+```cpp
+lua_State* L = m.state();
+```
+
+The state the module table is being built in, for an extension that must hand it to a C library's own registration API. Do not keep it: the sandbox owns the state's lifetime, and it lives for the sandbox's lifetime (`registerModule` runs once, at setup).
+
 ### The leftmost-base rule
 
 `method<C, &C::fn>` stores your `Extension*` and casts it to `C*` at call time using `static_cast`. This is only correct when `Extension` is the leftmost base of `C` (so the pointer addresses are equal). Satisfy this by listing `Driver` (or `Extension`) first in any multi-inheritance class declaration. See [Inheritance ordering rule](#inheritance-ordering-rule) in the Driver section.
@@ -957,6 +965,8 @@ h:set_theme { screen = { bg_color = "#0b0b10" } }
 ```
 
 `lvgl.bind(name)` returns luavgl's display-scoped handle (idempotent per display): widget constructors parented to that display's active screen, `screen()`/`clean()`/`HOR_RES()`/`VER_RES()`/`mirror()`/`set_default()`/`set_theme{...}`, everything else falling through to the full luavgl module — see the fork's `docs/display-bind.md` for the handle contract and `prompts/lvgl.md` for the app-author surface. The `lvgl` global is Resident's module table (just `bind`), with a metatable falling through to luavgl's own module table — so `lvgl.Font`, `lvgl.ALIGN`, `lvgl.Anim` etc. resolve normally once the module has loaded, which happens on the first `bind` call. Two things follow: fallthrough keys are `nil` before any `bind` (bind first — apps always do), and Resident's name-based `bind` shadows luavgl's userdata-based `lvgl.bind(disp)` (use `lvgl.disp` functions if you truly need the raw form).
+
+**Fonts.** luavgl resolves `lvgl.Font(name, size, weight)` against the families compiled into `lv_conf.h` first; anything else — including a built-in family compiled out — goes to the resolver a board installs with `lvglModule.setFontResolver(fn)` (`const lv_font_t* fn(const char* family, int size, int weight)`, return `nullptr` for a family you don't carry, and luavgl tries the next name in a comma list). `lvgl.SYMBOL.<NAME>` is LVGL's `LV_SYMBOL_*` set as Lua strings (`lvgl.SYMBOL.PLAY`, `OK`, `CLOSE`, `BELL`, `WIFI`, `BATTERY_FULL` …); the glyphs render only from a font that carries LVGL's icon range, as every built-in and a board's own fonts may.
 
 **`lvgl.bind(name)` is also the ownership claim** ([bind is the claim](#bind-is-the-claim-ownership)): it creates the display if needed, takes the target from whoever held it, and invalidates the whole active screen so the takeover repaints every pixel the other library left behind. While this module does NOT own the target, the flush callback returns without touching the panel and the display's refresh timer is paused — that is how a wiped, unowned tree can no longer race a blank frame onto the glass behind the incoming app. `onAppReset` wipes the tree (`lv_obj_clean` — luavgl invalidates Lua handles on C-side deletion) and releases the claim. Handle-level caching (one handle per display) stays luavgl's business. Themes are Lua's business: the module bakes none, and apps install their own via `h:set_theme{...}`.
 

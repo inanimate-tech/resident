@@ -110,6 +110,12 @@ public:
     return true;
   }
 
+  // Fonts beyond LVGL's built-ins. Return nullptr for a family you don't
+  // carry: luavgl then tries the next name in a comma list
+  // (lvgl.Font("myface, montserrat", 24)). Set before the sandbox runs.
+  using FontResolver = make_font_cb;   // const lv_font_t* (*)(const char* family, int size, int weight)
+  void setFontResolver(FontResolver r) { _fontResolver = r; }
+
   // lv_init + the tick source. Displays come later (first bind), so a board
   // whose apps never touch LVGL pays only for the library's own init.
   void begin() override {
@@ -141,6 +147,13 @@ public:
 
   void registerModule(LuaModule& m) override {
     m.method<LvglModule, &LvglModule::bind>("bind");
+    // A body's own fonts: luavgl resolves lvgl.Font(name, size, weight)
+    // against its compiled-in built-ins first and hands everything else —
+    // including a built-in family compiled out of lv_conf.h — to the
+    // extension installed here. Installed once, when the sandbox sets up
+    // its state (registerModule runs then), so set it before setup().
+    if (_fontResolver) luavgl_set_font_extension(m.state(), _fontResolver, nullptr);
+    pushSymbols(m.state());
     // THE SHADOWING PROBLEM: the sandbox registers every extension as a
     // FRESH global table (Sandbox::initialize pass 2), so the global `lvgl`
     // would hide luavgl's own module table — its constants (lvgl.ALIGN,
@@ -190,6 +203,42 @@ private:
   Slot _slots[MAX_DISPLAYS] = {};
   int _count = 0;
   int _displays = 0;
+  FontResolver _fontResolver = nullptr;
+
+  // lvgl.SYMBOL.<NAME>: LVGL's symbol strings (lv_symbol_def.h) as a Lua
+  // table, so an app can write lvgl.SYMBOL.PLAY .. " start". The glyphs
+  // behind them exist only in a font that carries LVGL's icon range.
+  static void pushSymbols(lua_State* L) {
+    static const struct { const char* name; const char* utf8; } kSymbols[] = {
+      {"BULLET", LV_SYMBOL_BULLET}, {"AUDIO", LV_SYMBOL_AUDIO}, {"VIDEO", LV_SYMBOL_VIDEO},
+      {"LIST", LV_SYMBOL_LIST}, {"OK", LV_SYMBOL_OK}, {"CLOSE", LV_SYMBOL_CLOSE},
+      {"POWER", LV_SYMBOL_POWER}, {"SETTINGS", LV_SYMBOL_SETTINGS}, {"HOME", LV_SYMBOL_HOME},
+      {"DOWNLOAD", LV_SYMBOL_DOWNLOAD}, {"DRIVE", LV_SYMBOL_DRIVE}, {"REFRESH", LV_SYMBOL_REFRESH},
+      {"MUTE", LV_SYMBOL_MUTE}, {"VOLUME_MID", LV_SYMBOL_VOLUME_MID}, {"VOLUME_MAX", LV_SYMBOL_VOLUME_MAX},
+      {"IMAGE", LV_SYMBOL_IMAGE}, {"TINT", LV_SYMBOL_TINT}, {"PREV", LV_SYMBOL_PREV},
+      {"PLAY", LV_SYMBOL_PLAY}, {"PAUSE", LV_SYMBOL_PAUSE}, {"STOP", LV_SYMBOL_STOP},
+      {"NEXT", LV_SYMBOL_NEXT}, {"EJECT", LV_SYMBOL_EJECT}, {"LEFT", LV_SYMBOL_LEFT},
+      {"RIGHT", LV_SYMBOL_RIGHT}, {"PLUS", LV_SYMBOL_PLUS}, {"MINUS", LV_SYMBOL_MINUS},
+      {"EYE_OPEN", LV_SYMBOL_EYE_OPEN}, {"EYE_CLOSE", LV_SYMBOL_EYE_CLOSE}, {"WARNING", LV_SYMBOL_WARNING},
+      {"SHUFFLE", LV_SYMBOL_SHUFFLE}, {"UP", LV_SYMBOL_UP}, {"DOWN", LV_SYMBOL_DOWN},
+      {"LOOP", LV_SYMBOL_LOOP}, {"DIRECTORY", LV_SYMBOL_DIRECTORY}, {"UPLOAD", LV_SYMBOL_UPLOAD},
+      {"CALL", LV_SYMBOL_CALL}, {"CUT", LV_SYMBOL_CUT}, {"COPY", LV_SYMBOL_COPY},
+      {"SAVE", LV_SYMBOL_SAVE}, {"BARS", LV_SYMBOL_BARS}, {"ENVELOPE", LV_SYMBOL_ENVELOPE},
+      {"CHARGE", LV_SYMBOL_CHARGE}, {"PASTE", LV_SYMBOL_PASTE}, {"BELL", LV_SYMBOL_BELL},
+      {"KEYBOARD", LV_SYMBOL_KEYBOARD}, {"GPS", LV_SYMBOL_GPS}, {"FILE", LV_SYMBOL_FILE},
+      {"WIFI", LV_SYMBOL_WIFI}, {"BATTERY_FULL", LV_SYMBOL_BATTERY_FULL}, {"BATTERY_3", LV_SYMBOL_BATTERY_3},
+      {"BATTERY_2", LV_SYMBOL_BATTERY_2}, {"BATTERY_1", LV_SYMBOL_BATTERY_1}, {"BATTERY_EMPTY", LV_SYMBOL_BATTERY_EMPTY},
+      {"USB", LV_SYMBOL_USB}, {"BLUETOOTH", LV_SYMBOL_BLUETOOTH}, {"TRASH", LV_SYMBOL_TRASH},
+      {"EDIT", LV_SYMBOL_EDIT}, {"BACKSPACE", LV_SYMBOL_BACKSPACE}, {"SD_CARD", LV_SYMBOL_SD_CARD},
+      {"NEW_LINE", LV_SYMBOL_NEW_LINE},
+    };
+    lua_createtable(L, 0, (int)(sizeof(kSymbols) / sizeof(kSymbols[0])));
+    for (const auto& s : kSymbols) {
+      lua_pushstring(L, s.utf8);
+      lua_setfield(L, -2, s.name);
+    }
+    lua_setfield(L, -2, "SYMBOL");   // the module table is at -2 during registerModule
+  }
 
   // Create the lv_display_t over the board's panel: draw buffer, flush
   // callback, dpi. Returns false when no panel is registered for the name.

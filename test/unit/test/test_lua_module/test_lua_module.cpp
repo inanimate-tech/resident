@@ -121,6 +121,13 @@ void test_method_binds_const_member_fn(void) {
     lua_pop(L, 1);
 }
 
+void test_state_returns_the_state_the_module_builds_in(void) {
+    lua_newtable(L);
+    Resident::LuaModule m(L, nullptr);
+    TEST_ASSERT_EQUAL_PTR(L, m.state());
+    lua_pop(L, 1);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_method_binds_and_recovers_this);
@@ -128,5 +135,6 @@ int main(int, char**) {
     RUN_TEST(test_method_binds_const_member_fn);
     RUN_TEST(test_static_method);
     RUN_TEST(test_constants);
+    RUN_TEST(test_state_returns_the_state_the_module_builds_in);
     return UNITY_END();
 }
