@@ -555,6 +555,14 @@ m.constant("VERSION", 1)
 
 Overloads accept `int`, `double`, `const char*`, and `bool`.
 
+### The state
+
+```cpp
+lua_State* L = m.state();
+```
+
+The state the module table is being built in, for an extension that must hand it to a C library's own registration API. Do not keep it: the sandbox owns the state's lifetime, and `registerModule` runs again for every fresh state.
+
 ### The leftmost-base rule
 
 `method<C, &C::fn>` stores your `Extension*` and casts it to `C*` at call time using `static_cast`. This is only correct when `Extension` is the leftmost base of `C` (so the pointer addresses are equal). Satisfy this by listing `Driver` (or `Extension`) first in any multi-inheritance class declaration. See [Inheritance ordering rule](#inheritance-ordering-rule) in the Driver section.
