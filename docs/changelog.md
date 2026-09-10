@@ -2,7 +2,7 @@
 
 ## v0.8.5
 
-- `LvglModule::setFontResolver(fn)`: a board's own fonts, installed through luavgl's font extension for every fresh state. `lvgl.Font` tries built-ins first, then the resolver, then the next name in a comma list.
+- `LvglModule::setFontResolver(fn)`: a board's own fonts, installed once through luavgl's font extension when the sandbox sets up its state (set it before `setup()`). `lvgl.Font` tries built-ins first, then the resolver, then the next name in a comma list.
 - `lvgl.SYMBOL.<NAME>`: LVGL's `LV_SYMBOL_*` strings as a Lua table.
 - `LuaModule::state()`: the `lua_State` a module table is being built in.
 

@@ -150,8 +150,8 @@ public:
     // A body's own fonts: luavgl resolves lvgl.Font(name, size, weight)
     // against its compiled-in built-ins first and hands everything else —
     // including a built-in family compiled out of lv_conf.h — to the
-    // extension installed here. The state is fresh per app, so install per
-    // registration.
+    // extension installed here. Installed once, when the sandbox sets up
+    // its state (registerModule runs then), so set it before setup().
     if (_fontResolver) luavgl_set_font_extension(m.state(), _fontResolver, nullptr);
     pushSymbols(m.state());
     // THE SHADOWING PROBLEM: the sandbox registers every extension as a

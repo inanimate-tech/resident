@@ -561,7 +561,7 @@ Overloads accept `int`, `double`, `const char*`, and `bool`.
 lua_State* L = m.state();
 ```
 
-The state the module table is being built in, for an extension that must hand it to a C library's own registration API. Do not keep it: the sandbox owns the state's lifetime, and `registerModule` runs again for every fresh state.
+The state the module table is being built in, for an extension that must hand it to a C library's own registration API. Do not keep it: the sandbox owns the state's lifetime, and it lives for the sandbox's lifetime (`registerModule` runs once, at setup).
 
 ### The leftmost-base rule
 
