@@ -11,7 +11,7 @@ h:set_theme { screen = { bg_color = "#101018" } }
 local label = h.Label {
   text = "hello",
   text_color = "#ececf2",
-  text_font = lvgl.Font("montserrat", 24),
+  text_font = lvgl.Font("sans", 24),   -- a family the device's sheet names
   align = lvgl.ALIGN.CENTER,
 }
 function on_tick(ctx, dt_ms)
@@ -104,9 +104,9 @@ Widget-specific properties:
 
 ## Fonts
 
-`lvgl.Font(name, size)` — snaps to the nearest size the device carries. The
-device's own sheet names its families and sizes; `"montserrat"` and
-`"unscii"` (8 or 16, pixel look) are LVGL's built-ins where compiled in.
+`lvgl.Font(name, size)` — snaps to the nearest size the device carries. Use
+only the families the device's own sheet names, at the sizes it lists; any
+other name is a font the device does not have.
 `lvgl.SYMBOL.PLAY`, `.PAUSE`, `.OK`, `.CLOSE`, `.BELL`, `.WARNING`, `.UP`,
 `.DOWN`, `.LEFT`, `.RIGHT`, `.WIFI`, `.BATTERY_FULL` … are icon strings
 (concatenate into any `text`).
@@ -124,7 +124,7 @@ slate.
 h:set_theme {
   screen = { bg_color = "#0b0b10" },
   object = { bg_opa = 0, border_width = 0 },   -- base pass, every widget
-  label  = { text_color = "#ececf2", text_font = lvgl.Font("montserrat", 20) },
+  label  = { text_color = "#ececf2", text_font = lvgl.Font("sans", 20) },
 }
 ```
 
