@@ -71,7 +71,7 @@ This is a public open-source repo. A few things to keep out of tracked files:
 - Absolute home paths (`/Users/...`, `/home/...`). Use repo-relative paths or
   `<repo-root>` placeholders.
 - Per-developer Claude Code artefacts (`.claude/settings.local.json`,
-  `.claude/napkin.md`, `.claude/projects/`) — all `.gitignore`-d.
+  `.claude/projects/`) — all `.gitignore`-d.
 - Working files from plan/spec skills (Superpowers `writing-plans`,
   `writing-skills`, etc.). Save them outside the repo, not under
   `docs/superpowers/`. That path is `.gitignore`-d as a safety net.
