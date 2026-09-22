@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.6-dev
+
+- Fixed: an overlay claim on a dual-role surface left its last frame on the glass after it released, under a live LVGL app. The board suppresses its blit door while a claim is held, but LVGL went on rendering and getting `lv_display_flush_ready`, so it believed the dropped pixels had reached the panel; when the claim lifted nothing was dirty and only the widgets that happened to change repainted over the overlay. `LvglModule` now stands its displays down while the app is suspended and invalidates them whole when it resumes.
+- `Extension::onAppRunning(bool)`: the hook moves up from `Driver`, and `Sandbox` now calls it on every declared extension rather than only the drivers among them. A module-less extension — a graphics module — is exactly the one that needs to know the app stopped. Existing `Driver` overrides are unaffected.
+
+---
+
 ## v0.8.5
 
 - `LvglModule::setFontResolver(fn)`: a board's own fonts, installed once through luavgl's font extension when the sandbox sets up its state (set it before `setup()`). `lvgl.Font` tries built-ins first, then the resolver, then the next name in a comma list.

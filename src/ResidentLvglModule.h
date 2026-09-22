@@ -131,6 +131,29 @@ public:
     lv_timer_handler_run_in_period(5);
   }
 
+  // The app stopped, was suspended, or resumed. A suspension is the overlay
+  // arbiter taking a surface this app draws on (bar, oracle, fan-p1, face-p1's
+  // mouth — every dual-role surface in the fleet), and the board suppresses its
+  // own blit door for the duration. But suppression drops the PIXELS while LVGL
+  // still renders and still gets its lv_display_flush_ready: the library goes
+  // on believing those areas reached the glass, so when the claim lifts nothing
+  // is dirty and the overlay's last frame sits there under a live app, with
+  // only the widgets that happen to change painting over it.
+  //
+  // So stand the rendering down for the duration — the app is suspended, so
+  // nothing it draws can change anyway — and on the way back stand up, which
+  // invalidates the whole screen and repaints every pixel the overlay owned.
+  // Only for targets this module still owns: before an app's first bind there
+  // is nothing to repaint, and a target lgfx claimed is not ours to touch.
+  void onAppRunning(bool running) override {
+    for (int i = 0; i < _count; i++) {
+      if (!_slots[i].disp) continue;
+      if (!running) standDown(_slots[i]);
+      else if (RenderTargets::isOwner(_slots[i].name, RenderTargets::MODULE_LVGL))
+        standUp(_slots[i]);
+    }
+  }
+
   // App reset: wipe the outgoing app's tree and release every claim. Safe
   // with stale Lua handles — luavgl invalidates them on C-side deletion
   // (fork tests/appswap.lua). The blank frame that the wipe invalidates is

@@ -3250,9 +3250,12 @@ void Sandbox::notifyAppRunning(bool running) {
   // Declared extensions only — same intentional carve-out as onAppReset():
   // slot-only peripherals are begun/updated via the lifecycle set but don't
   // receive app-facing hooks (onAppRunning / onAppReset).
+  //
+  // Every declared extension, not only the Drivers among them: the hook is on
+  // Extension, and the module-less graphics extensions are the ones that must
+  // stand their rendering down while the app is suspended.
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
-    Driver* driver = _config.extensions.items[i]->asDriver();
-    if (driver) driver->onAppRunning(running);
+    _config.extensions.items[i]->onAppRunning(running);
   }
 }
 

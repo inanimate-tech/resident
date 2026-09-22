@@ -305,7 +305,7 @@ sandbox.clearPersistedApp();           // wipe the saved app from the persistent
 - Returns `false` on compile error, runtime error, no app loaded, or during a `deferAppLoads` window. Deferred chunks are **dropped** with a log, never stashed.
 - Never persisted. NVS keeps the base app; senders re-send chunks after a reboot.
 
-`suspendApp` pauses the Lua tick (`on_tick` and event dispatch) without unloading the app — Courier and extension `update()` keep running. While suspended, drivers receive `onAppRunning(false)` so the status display is freed for direct text (e.g. a "Listening" overlay via `SystemDisplay::displayText()`); `resumeApp` reverses this with `onAppRunning(true)`. Both are no-ops when no app is loaded, and repeated calls don't re-notify. `isAppRunning()` stays `true` while suspended — suspension is a separate axis queried via `isAppSuspended()`. Events arriving while suspended are queued, not dropped (though a long suspend can overflow the 8-slot ring, losing the oldest), and `loadApp` always clears suspension.
+`suspendApp` pauses the Lua tick (`on_tick` and event dispatch) without unloading the app — Courier and extension `update()` keep running. While suspended, every declared extension receives `onAppRunning(false)` so the status display is freed for direct text (e.g. a "Listening" overlay via `SystemDisplay::displayText()`); `resumeApp` reverses this with `onAppRunning(true)`. Both are no-ops when no app is loaded, and repeated calls don't re-notify. `isAppRunning()` stays `true` while suspended — suspension is a separate axis queried via `isAppSuspended()`. Events arriving while suspended are queued, not dropped (though a long suspend can overflow the 8-slot ring, losing the oldest), and `loadApp` always clears suspension.
 
 `onSystemButtonHold(cb)` turns the `systemButton` role slot into a runtime hold gesture: `cb(true)` fires once when the button is held past the threshold (~500 ms), `cb(false)` on release. It is inert only during the boot countdown (where a hold forgets the persisted app), so it also fires in `Ready` with no app loaded. Combined with an [Overlay](#residentoverlay) and the [SystemMic](#residentsystemmic) streaming pump it composes into push-to-talk with no per-device boilerplate — see the `m5stick-voice` example.
 
@@ -376,6 +376,7 @@ Include with:
 | `begin()` | no-op | Hardware / module init — called once by `Sandbox::setup()` |
 | `update()` | no-op | Per-loop tick at full main-loop rate (not Lua's 10 FPS) |
 | `onAppReset()` | no-op | Called before each new app is compiled |
+| `onAppRunning(bool running)` | no-op | Called when an app starts or resumes (`true`), and when it stops or is suspended (`false`) |
 
 ### Idempotent early init
 
@@ -401,9 +402,9 @@ Include with:
 
 | Method | Default | Description |
 |--------|---------|-------------|
-| `onAppRunning(bool running)` | no-op | Called when an app starts (`true`) or stops (`false`) |
+| `sendEvent(name, fields, count)` (protected) | — | Push a driver-generated event into Lua |
 
-All `Extension` methods (`name`, `registerModule`, `begin`, `update`, `onAppReset`) are inherited unchanged.
+All `Extension` methods (`name`, `registerModule`, `begin`, `update`, `onAppReset`, `onAppRunning`) are inherited unchanged. `onAppRunning` lived here until 0.8.6; it is on `Extension` now, because the extension that most needs it — a graphics module — registers no hardware.
 
 ### `sendEvent` (protected)
 
@@ -464,7 +465,7 @@ This matters because `LuaModule::method<>` casts the stored `Extension*` pointer
 ### When to use Extension vs Driver
 
 - Use `Extension` when you only register a Lua module (read sensors, control outputs from Lua, but no driver-generated events).
-- Use `Driver` when your extension needs to push events into Lua (`sendEvent`) or respond to app start/stop (`onAppRunning`).
+- Use `Driver` when your extension needs to push events into Lua (`sendEvent`). App start/stop (`onAppRunning`) reaches every declared extension, Driver or not.
 
 ### Driver lifecycle and update cadence
 

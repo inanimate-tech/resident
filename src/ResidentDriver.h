@@ -19,10 +19,9 @@ struct EventField {
 
 class Driver : public Extension {
 public:
-  // Most lifecycle (name, registerModule, begin, update, onAppReset) is
-  // inherited from Extension. Driver adds the hardware-state hook and
-  // the event-sink machinery.
-  virtual void onAppRunning(bool running) { (void)running; }
+  // Lifecycle (name, registerModule, begin, update, onAppReset,
+  // onAppRunning) is inherited from Extension. Driver adds the RTTI-free
+  // downcast and the event-sink machinery.
 
   // RTTI-free downcast support (Extension::asDriver returns nullptr by default).
   Driver* asDriver() override { return this; }

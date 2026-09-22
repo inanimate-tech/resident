@@ -16,6 +16,17 @@ public:
   void restoreContent() override { restores++; }
 };
 
+// A plain Extension — no Lua module, no Driver. LvglModule is one of these,
+// and it has to know when the app stops and starts: while it is suspended a
+// retained-mode library must stop rendering, because a surface an overlay has
+// taken swallows its flushes while it marks those pixels drawn.
+class SpyExtension : public Resident::Extension {
+public:
+  int running = 0, stopped = 0;
+  const char* name() const override { return "spyext"; }
+  void onAppRunning(bool run) override { if (run) running++; else stopped++; }
+};
+
 class FakeOverlay : public Resident::Overlay {
 public:
   int acquires = 0, releases = 0, draws = 0;
@@ -30,6 +41,7 @@ constexpr const char* APP =
 
 SpyDisplay* disp = nullptr;
 SpyDisplay* disp2 = nullptr;
+SpyExtension* ext = nullptr;
 Resident::Sandbox* sandbox = nullptr;
 
 void runLoop(int n) { for (int i = 0; i < n; i++) { testMillis() += 200; sandbox->loop(); } }
@@ -50,6 +62,7 @@ void tearDown(void) {
   delete sandbox; sandbox = nullptr;
   delete disp; disp = nullptr;
   delete disp2; disp2 = nullptr;
+  delete ext; ext = nullptr;
 }
 void setUp(void) { testMillis() = 0; }
 
@@ -237,6 +250,35 @@ void test_device_suspension_survives_overlay_cycle(void) {
   TEST_ASSERT_TRUE(sandbox->isAppSuspended());
 }
 
+// A module-less extension (the LVGL module's shape) is told about suspension
+// too, not just role-assigned drivers: it is the one that has to stop
+// rendering into a surface the overlay now owns, and repaint all of it when
+// the claim lifts.
+void test_plain_extension_hears_overlay_suspension(void) {
+  disp = new SpyDisplay();
+  ext  = new SpyExtension();
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  cfg.extensions = {disp, ext};
+  cfg.systemDisplay = disp;
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setup();
+  sandbox->loadApp(APP);
+  const int ranOnLoad = ext->running;
+
+  FakeOverlay ov;
+  sandbox->addOverlay(&ov, disp, 100);
+  sandbox->requestOverlay(&ov, true);
+  runLoop(1);
+  TEST_ASSERT_TRUE(sandbox->isAppSuspended());
+  TEST_ASSERT_EQUAL_INT(1, ext->stopped);
+
+  sandbox->requestOverlay(&ov, false);
+  runLoop(1);
+  TEST_ASSERT_FALSE(sandbox->isAppSuspended());
+  TEST_ASSERT_EQUAL_INT(ranOnLoad + 1, ext->running);
+}
+
 void test_draw_paced_on_tick_cadence(void) {
   buildDualRole();
   sandbox->loadApp(APP);
@@ -263,6 +305,7 @@ int main(int, char**) {
   RUN_TEST(test_swap_between_dual_role_overlays_keeps_suspended_no_restore);
   RUN_TEST(test_app_loaded_under_claim_starts_suspended);
   RUN_TEST(test_device_suspension_survives_overlay_cycle);
+  RUN_TEST(test_plain_extension_hears_overlay_suspension);
   RUN_TEST(test_draw_paced_on_tick_cadence);
   UNITY_END();
   return 0;

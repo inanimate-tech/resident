@@ -16,6 +16,14 @@ public:
   virtual void begin() {}                                   // hardware / module init
   virtual void update() {}                                  // per-loop tick (full rate)
   virtual void onAppReset() {}                              // app load/reload
+
+  // The app started, stopped or was suspended (the overlay arbiter suspends
+  // it while a claim sits on a surface the app draws to). Lives here rather
+  // than on Driver because the extension that most needs it owns no hardware:
+  // a retained-mode graphics module must stop rendering while the app is
+  // suspended — a suppressed surface swallows its flushes while the library
+  // marks those pixels drawn — and repaint the whole surface when it resumes.
+  virtual void onAppRunning(bool running) { (void)running; }
   virtual ~Extension() = default;
 
   // RTTI-free downcast: returns non-null only for Driver subclasses.
