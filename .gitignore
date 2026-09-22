@@ -18,7 +18,7 @@ test/unit/.pio/
 # Python bytecode (from tools/run-tests.py and friends)
 __pycache__/
 
-# Git worktrees (created by superpowers' using-git-worktrees skill)
+# Git worktrees
 .worktrees/
 
 # clangd LSP index (per-project)
@@ -33,6 +33,7 @@ __pycache__/
 # personal context, in-progress thinking, and absolute paths.
 docs/superpowers/
 examples/*/docs/superpowers/
+.claude/superpowers/
 
 # Local pack output (pio pkg pack / compote component pack)
 dist/

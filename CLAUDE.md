@@ -72,8 +72,7 @@ This is a public open-source repo. A few things to keep out of tracked files:
   `<repo-root>` placeholders.
 - Per-developer Claude Code artefacts (`.claude/settings.local.json`,
   `.claude/projects/`) — all `.gitignore`-d.
-- Working files from plan/spec skills (Superpowers `writing-plans`,
-  `writing-skills`, etc.). Save them outside the repo, not under
-  `docs/superpowers/`. That path is `.gitignore`-d as a safety net.
+- Agent plan/spec working files. Save them outside the repo; common output
+  paths are `.gitignore`-d as a safety net.
 - Personal account identifiers in URLs and example configs. For Cloudflare
   Worker hostnames, use a `YOUR-CF-ACCOUNT` placeholder.
