@@ -3,7 +3,7 @@
 ## v0.9.0
 
 - Courier floor moves to `^0.9.0`.
-- `Sandbox::onNetworkReady(cb)`: passes through Courier's `onNetworkReady` hook, fired on every entry to `Courier::State::NetworkReady` (WiFi up, time sync run, no persistent transport running) before `onTransportsWillConnect`.
+- `Sandbox::onNetworkReady(cb)`: passes through Courier's `onNetworkReady` hook, fired on every entry to `Courier::State::NetworkReady` (WiFi up, time sync attempted, no persistent transport running). Blocking: app ticks, overlays and extension updates are paused while it runs, and it must not call `Sandbox::loop()`.
 - `Sandbox::enterNetworkReady()`: forwards to `Courier::Client::enterNetworkReady()` — tears down transports and returns to `NetworkReady` without reconnecting WiFi. Returns `false` without a network.
 - `NetworkReady` shows "Network ready" on the `systemDisplay` and cyan on the `systemLED`.
 

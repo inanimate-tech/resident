@@ -213,9 +213,10 @@ public:
     void onTransportsWillConnect(TransportsWillConnectCallback cb) {
       _onTransportsWillConnect = std::move(cb);
     }
-    // Fires on every entry to Courier::State::NetworkReady: WiFi is up and
-    // time sync has run, no persistent transport is running. Blocking — the
-    // state machine moves on to onTransportsWillConnect when it returns.
+    // Fires on every entry to Courier::State::NetworkReady: WiFi is up, time
+    // sync has been attempted, no persistent transport is running. Blocking:
+    // runs inside loop(), so app ticks, overlays and extension updates are
+    // paused until it returns. Must not call loop().
     void onNetworkReady(NetworkReadyCallback cb) {
       _onNetworkReady = std::move(cb);
     }
