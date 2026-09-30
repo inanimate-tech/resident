@@ -117,7 +117,7 @@ sandbox.loop();    // call from Arduino loop()
    4. The sandbox initialises: Lua state is created, then Resident builds a de-duplicated lifecycle list of all managed objects — the `extensions[]` entries plus any role-slot peripherals (`systemDisplay`, `systemLED`, `systemButton`). Each object in that list receives `begin()` and `registerModule()` exactly once (idempotent), in registration order. Globals are registered.
    5. `Courier::Client::setup()` runs, which kicks WiFi and transports. During this:
       - `onCourierConnectionChange` fires for each state transition (`WifiConnecting` → `WifiConnected` → `NetworkReady` → `TransportsConnecting` → `Connected`, etc.). Internal handler updates `systemDisplay`/`systemLED`, then the user's `onConnectionChange(cb)` callback fires.
-      - `onCourierNetworkReady` fires on every entry to `NetworkReady` (WiFi up, time sync run, no persistent transport running). The user's `onNetworkReady(cb)` callback runs; the state machine moves on when it returns.
+      - `onCourierNetworkReady` fires on every entry to `NetworkReady` (WiFi up, time sync attempted, no persistent transport running). The user's `onNetworkReady(cb)` callback runs; the state machine moves on when it returns.
       - `onCourierTransportsWillConnect` fires once before transports begin. Internal handler sets the default `/agents/<type>-agent/<id>` WS path, then the user's `onTransportsWillConnect(cb)` callback fires (override the path here).
       - `onCourierConnected` fires when fully connected. The user's `onConnected(cb)` callback runs.
 3. **`loop()`** — in order:
@@ -211,7 +211,7 @@ sandbox.injectMessage("mqtt", "app", doc);
 
 | Callback | Signature | Fires |
 |----------|-----------|-------|
-| `onNetworkReady` | `void()` | On every entry to `Courier::State::NetworkReady`, including each reconnect cycle: WiFi is up and time sync has run, no persistent transport is running. Blocking; `onTransportsWillConnect` follows when it returns. |
+| `onNetworkReady` | `void()` | On every entry to `Courier::State::NetworkReady`, including each reconnect cycle: WiFi is up and time sync has been attempted, no persistent transport is running. Blocking: runs inside `loop()`, so app ticks, overlays and extension updates are paused until it returns; must not call `loop()`. |
 | `onTransportsWillConnect` | `void()` | Once, after Resident sets the default WS path and before transports start. Override the path here. |
 | `onMessage` | `void(const char* transport, const char* type, JsonDocument&)` | **Legacy un-channelled path only** — fires for messages with no `channel` field, and only for non-reserved types (reserved types `app`/`shader`/`app_event`/`forget` are still routed internally on that path, no super-call needed). Channelled messages (`channel:"app"`/`"system"`/custom) never reach this callback — see [Channel routing](#channel-routing). |
 | `onConnectionChange` | `void(Courier::State)` | On every state transition. Resident's internal handler updates `systemDisplay`/`systemLED` first; your callback runs alongside (does not replace). |
