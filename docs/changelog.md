@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.9.0
+
+- Courier floor moves to `^0.9.0`.
+- `Sandbox::onNetworkReady(cb)`: passes through Courier's `onNetworkReady` hook, fired on every entry to `Courier::State::NetworkReady` (WiFi up, time sync run, no persistent transport running) before `onTransportsWillConnect`.
+- `Sandbox::enterNetworkReady()`: forwards to `Courier::Client::enterNetworkReady()` — tears down transports and returns to `NetworkReady` without reconnecting WiFi. Returns `false` without a network.
+- `NetworkReady` shows "Network ready" on the `systemDisplay` and cyan on the `systemLED`.
+
+---
+
 ## v0.8.6
 
 - Fixed: an overlay claim on a dual-role surface left its last frame on the glass after it released, under a live LVGL app. The board suppresses its blit door while a claim is held, but LVGL went on rendering and getting `lv_display_flush_ready`, so it believed the dropped pixels had reached the panel; when the claim lifted nothing was dirty and only the widgets that happened to change repainted over the overlay. `LvglModule` now stands its displays down while the app is suspended and invalidates them whole when it resumes.

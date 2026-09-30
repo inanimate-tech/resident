@@ -1,4 +1,4 @@
-version: "0.8.6"
+version: "0.9.0"
 description: "Sandbox with hardware IO and hot reload for ESP32 devices"
 url: "https://github.com/inanimate-tech/resident"
 
@@ -16,13 +16,13 @@ dependencies:
   # envelope field) sees one coherent message stream per transport instead of
   # everything funnelled through onMessage.
   #
+  # 0.9.0 adds State::NetworkReady, Client::onNetworkReady and
+  # Client::enterNetworkReady, which Sandbox passes through.
+  #
   # The floor tracks Courier's latest minor because a caret range on 0.x
-  # excludes the next one: while Resident pinned ^0.7.0, a consumer that
-  # wanted courier 0.8.0 (structured MQTT error detail via
-  # MqttTransport::onError) could not have both. Resident calls none of that
-  # new surface itself — it uses Client, Config, State and WebSocketTransport.
+  # excludes the next one.
   inanimate/courier:
-    version: "^0.8.0"
+    version: "^0.9.0"
   bblanchon/arduinojson:
     version: "^7.0.0"
   # Esp32Lua is not on the ESP component registry. Consumers must provide it

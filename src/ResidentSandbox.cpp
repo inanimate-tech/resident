@@ -529,6 +529,9 @@ void Sandbox::wireInternalCourierHooks()
   _courier->onConnectionChange([this](Courier::State s) {
     onCourierConnectionChange(s);
   });
+  _courier->onNetworkReady([this]() {
+    onCourierNetworkReady();
+  });
   _courier->onTransportsWillConnect([this]() {
     onCourierTransportsWillConnect();
   });
@@ -1906,6 +1909,7 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
         break;
       }
       case S::WifiConnected:         showStatusText("WiFi connected"); break;
+      case S::NetworkReady:          showStatusText("Network ready"); break;
       case S::TransportsConnecting:  showStatusText("Connecting..."); break;
       case S::Connected:             enterIdleScreen(); break;
       case S::Reconnecting:          showStatusText("Reconnecting..."); break;
@@ -1919,6 +1923,7 @@ void Sandbox::onCourierConnectionChange(Courier::State state)
       case S::WifiConnecting:
       case S::WifiConfiguring:       systemLED()->solidColor(0xFFFF00); break;
       case S::WifiConnected:
+      case S::NetworkReady:
       case S::TransportsConnecting:  systemLED()->solidColor(0x00FFFF); break;
       case S::Connected:             systemLED()->solidColor(0x00FF00); break;
       case S::Reconnecting:          systemLED()->solidColor(0xFF8800); break;
@@ -1935,6 +1940,15 @@ void Sandbox::onCourierConnected() {
   // the receive/connect context where a WS send is unsafe — loop() drains.
   requestHello();
   if (_onConnected) _onConnected();
+}
+
+void Sandbox::onCourierNetworkReady() {
+  if (_onNetworkReady) _onNetworkReady();
+}
+
+bool Sandbox::enterNetworkReady() {
+  if (!_courier.has_value()) return false;
+  return _courier->enterNetworkReady();
 }
 
 void Sandbox::onCourierTransportsWillConnect() {

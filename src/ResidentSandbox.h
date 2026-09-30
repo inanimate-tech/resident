@@ -203,6 +203,7 @@ public:
 
     // ── Reactive callbacks (single-slot, last registration wins) ──
     using TransportsWillConnectCallback = std::function<void()>;
+    using NetworkReadyCallback = std::function<void()>;
     using MessageCallback = std::function<void(const char* transportName,
                                                 const char* type,
                                                 JsonDocument& doc)>;
@@ -212,6 +213,16 @@ public:
     void onTransportsWillConnect(TransportsWillConnectCallback cb) {
       _onTransportsWillConnect = std::move(cb);
     }
+    // Fires on every entry to Courier::State::NetworkReady: WiFi is up and
+    // time sync has run, no persistent transport is running. Blocking — the
+    // state machine moves on to onTransportsWillConnect when it returns.
+    void onNetworkReady(NetworkReadyCallback cb) {
+      _onNetworkReady = std::move(cb);
+    }
+    // Tears down transports and enters NetworkReady without reconnecting
+    // WiFi (Courier::Client::enterNetworkReady). Returns false when there is
+    // no network or Courier refuses from its current state.
+    bool enterNetworkReady();
     // Legacy un-channelled path ONLY: fires for messages with no "channel"
     // field (and, among those, only non-reserved types — app/shader/
     // app_event/forget are still routed internally). New code should use
@@ -380,6 +391,7 @@ private:
     // User-registered callbacks (single-slot, last registration wins).
     ConfigureNetworkCallback      _onConfigureNetwork;
     TransportsWillConnectCallback _onTransportsWillConnect;
+    NetworkReadyCallback          _onNetworkReady;
     MessageCallback               _onMessage;
     ConnectionChangeCallback      _onConnectionChange;
     ConnectedCallback             _onConnected;
@@ -560,6 +572,7 @@ private:
     void onCourierConnectionChange(Courier::State state);
     void onCourierConnected();
     void onCourierTransportsWillConnect();
+    void onCourierNetworkReady();
 
     // Status display helpers.
     void showStatusText(const char* text);
