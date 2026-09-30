@@ -49,6 +49,7 @@ enum class State {
   WifiConnecting,
   WifiConfiguring,
   WifiConnected,
+  NetworkReady,
   TransportsConnecting,
   Connected,
   Reconnecting,
@@ -86,9 +87,19 @@ public:
   void setAPName(const char* name) { (void)name; }
 
   void onMessage(std::function<void(const char*, const char*, JsonDocument&)>) {}
-  void onConnectionChange(std::function<void(State)>) {}
   void onTransportsWillConnect(std::function<void()>) {}
   void onConnected(std::function<void()>) {}
+
+  // Recorded so tests can fire the hooks Sandbox registers.
+  std::function<void(State)> connectionChangeCb;
+  std::function<void()> networkReadyCb;
+  void onConnectionChange(std::function<void(State)> cb) { connectionChangeCb = std::move(cb); }
+  void onNetworkReady(std::function<void()> cb) { networkReadyCb = std::move(cb); }
+
+  // enterNetworkReady() counts calls and returns enterNetworkReadyResult.
+  int enterNetworkReadyCalls = 0;
+  bool enterNetworkReadyResult = true;
+  bool enterNetworkReady() { enterNetworkReadyCalls++; return enterNetworkReadyResult; }
 
   // Default-transport send (Sandbox::publishEvent's network fallback when no
   // event sink is set). Native tests run networkless (cfg.network unset), so
