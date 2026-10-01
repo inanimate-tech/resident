@@ -584,7 +584,7 @@ cfg.extensions = {&display, &button, &imu};
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `Extensions::MAX` | `12` | Maximum number of extensions per sandbox |
+| `Extensions::MAX` | `16` | Maximum number of extensions per sandbox |
 
 Extensions are stored in registration order. `begin()`, `registerModule()`, `update()`, and `onAppReset()` are all called in registration order.
 
@@ -1438,7 +1438,7 @@ ESP-IDF CMake component graph.
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `Extensions::MAX` | `12` | Maximum extensions per sandbox |
+| `Extensions::MAX` | `16` | Maximum extensions per sandbox |
 | `RenderTargets::MAX` | `8` | Maximum registered render targets per board |
 | `Sandbox::TICK_INTERVAL` | `100 ms` | Lua `on_tick` interval (10 FPS) |
 | `RESIDENT_EVENT_RING_SIZE` | `8` | Inbound event ring depth (one slot kept free, so 7 usable); oldest event is dropped when full. Build-flag overridable |
