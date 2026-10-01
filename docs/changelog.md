@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.9.1
+
+- `Extensions::MAX` is 16 (was 12). A fully loaded device had used all 12, so a new module had to displace an existing one. The list is still truncated silently past the limit.
+
+---
+
 ## v0.9.0
 
 - Courier floor moves to `^0.9.0`.

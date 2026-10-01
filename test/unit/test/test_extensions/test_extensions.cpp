@@ -30,12 +30,17 @@ void test_initializer_list_assignment_copies_pointers(void) {
 }
 
 void test_oversize_list_clamps_to_max(void) {
-    StubExt s[12] = {StubExt(0),StubExt(1),StubExt(2),StubExt(3),
+    // Two past MAX, so the list really does overflow.
+    StubExt s[18] = {StubExt(0),StubExt(1),StubExt(2),StubExt(3),
                      StubExt(4),StubExt(5),StubExt(6),StubExt(7),
-                     StubExt(8),StubExt(9),StubExt(10),StubExt(11)};
+                     StubExt(8),StubExt(9),StubExt(10),StubExt(11),
+                     StubExt(12),StubExt(13),StubExt(14),StubExt(15),
+                     StubExt(16),StubExt(17)};
+    static_assert(18 > Resident::Extensions::MAX, "list must overflow MAX");
     Resident::Extensions e;
     e = {&s[0],&s[1],&s[2],&s[3],&s[4],&s[5],&s[6],&s[7],
-         &s[8],&s[9],&s[10],&s[11]};
+         &s[8],&s[9],&s[10],&s[11],&s[12],&s[13],&s[14],&s[15],
+         &s[16],&s[17]};
     TEST_ASSERT_EQUAL_INT(Resident::Extensions::MAX, (int)e.count);
     TEST_ASSERT_EQUAL_PTR(&s[0], e.items[0]);
     TEST_ASSERT_EQUAL_PTR(&s[Resident::Extensions::MAX - 1],
