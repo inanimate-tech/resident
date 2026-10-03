@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ezTime.h>
+#include "ResidentTimeCore.h"
 #include <map>
 #include <functional>
 #include <optional>
@@ -66,7 +67,7 @@ public:
     // wake-word hint); resident never generates it.
     void setIdleScreenTitle(const char* title) { _idleScreenTitle = title ? title : ""; }
 
-    // Current generation ID (from last app/shader message)
+    // Current generation ID (from the last app message)
     const String& generationId() const { return _generationId; }
 
     // Lifecycle
@@ -94,9 +95,6 @@ public:
 
     // Load an app from Lua source code
     void loadApp(const char* luaCode);
-
-    // Load a shader from fields (uses shader template)
-    void loadShader(const ShaderFields& fields);
 
     // Run a Lua chunk in the RUNNING app's lua_State: an in-place patch, where
     // loadApp is a restart. The app's globals, timers and event flow survive
@@ -225,8 +223,8 @@ public:
     // no network or Courier refuses from its current state.
     bool enterNetworkReady();
     // Legacy un-channelled path ONLY: fires for messages with no "channel"
-    // field (and, among those, only non-reserved types — app/shader/
-    // app_event/forget are still routed internally). New code should use
+    // field (and, among those, only non-reserved types — app/app_event/
+    // forget are still routed internally). New code should use
     // channel routing instead: handleAppMessage / handleSystemMessage /
     // onMessageWithChannel. This slot exists so senders that predate the
     // channel field keep working, and is not where new message types land.
@@ -242,7 +240,7 @@ public:
 
     // ── Message interposition ──
     // Legacy un-channelled path ONLY: runs before app-load deferral,
-    // reserved-type routing (app/shader/app_event/forget), and the user
+    // reserved-type routing (app/app_event/forget), and the user
     // onMessage callback — but only for messages with no "channel" field.
     // Channelled messages (app/system/custom) bypass this filter entirely;
     // it does not run in front of handleAppMessage / handleSystemMessage /
@@ -255,8 +253,8 @@ public:
                                               JsonDocument& doc)>;
     void onMessageFilter(MessageFilter cb) { _messageFilter = std::move(cb); }
 
-    // Defer app/shader loads (e.g. during a voice recording, when a Lua
-    // compile would stall the audio path). While set, incoming app/shader
+    // Defer app loads (e.g. during a voice recording, when a Lua
+    // compile would stall the audio path). While set, incoming app
     // messages are stashed — last one wins — instead of loaded; clearing
     // applies the stashed load immediately, routing it straight to loading
     // without re-running the filter (it already passed at receipt, so a dedup
@@ -279,7 +277,7 @@ public:
                           JsonDocument& doc);
 
     // Control-plane entry: every message on channel "system". Reserved types
-    // app/shader/forget are handled internally (deferral included); all other
+    // app/forget are handled internally (deferral included); all other
     // types fall through to the "system" channel slot.
     void handleSystemMessage(const char* transportName, const char* type,
                              JsonDocument& doc);
@@ -295,7 +293,7 @@ public:
     // network is configured or the send fails; the doc is stamped either way.
     bool sendSystem(JsonDocument& doc);
 
-    // App/shader "description" → systemDisplay on load receipt (default on).
+    // App "description" → systemDisplay on load receipt (default on).
     // Disable on devices whose system display IS the main app screen.
     void setShowDescriptions(bool show) { _showDescriptions = show; }
 
@@ -374,10 +372,13 @@ private:
     RunState _runState = RunState::Ready;
 
     // Timezone selected via registration's detectedTimezone. When
-    // _hasTimezone is true, ctx.localtime_* and time.hour/minute/second read
-    // from _tz; otherwise they fall back to UTC.
+    // _hasTimezone is true, time.localtime/mktime/strftime read the zone from
+    // _tz; otherwise local time is UTC.
     Timezone _tz;
     bool _hasTimezone = false;
+    // The time module's two zone conversions, for the Lua bindings.
+    timecore::Tm localTime(int64_t utcSeconds) const;
+    int64_t localToUtc(int64_t wallSeconds) const;
 
     // Configuration
     SandboxConfig _config;
@@ -398,7 +399,7 @@ private:
     ConnectedCallback             _onConnected;
     MessageFilter                 _messageFilter;
 
-    // Deferred app/shader load: a heap-owned serialized copy of the last
+    // Deferred app load: a heap-owned serialized copy of the last
     // stashed message (nullptr = none). Raw malloc, not String, so the stash
     // costs one allocation during the memory-sensitive window that deferral
     // exists for. Freed on apply, overwrite, and destruction.
@@ -756,9 +757,8 @@ private:
     int _nonceRingPos = 0;
     bool isDuplicateNonce(const char* nonce);
 
-    // Trigger state
+    // When the running app loaded: ctx.time_ms counts from here.
     unsigned long _triggerResetTime = 0;
-    int _triggerCount = 0;
 
     // Lua setup
     void setupLuaEnvironment();
@@ -774,7 +774,6 @@ private:
     // pushes exactly one value on success, nothing when the payload is
     // unparseable (the event drops).
     bool pushEventTable(const Event& e);
-    void pushLocalTimeFields();  // pushes utc_h/utc_m/localtime_h/localtime_m onto the Lua table at stack top
     // Sets ctx.generation_id on the table at stack top — only when the app
     // load carried a server-stamped generationId (Lua sees nil otherwise).
     void pushCtxGenerationId();
@@ -788,33 +787,22 @@ private:
                                    const EventField* fields, int fieldCount);
 
     // Lua C functions (static)
-    static int lua_rgb(lua_State* L);
-    static int lua_fract(lua_State* L);
-    static int lua_beat(lua_State* L);
-    static int lua_noise2d(lua_State* L);
     static int lua_log_info(lua_State* L);
     static int lua_log_warn(lua_State* L);
     static int lua_log_error(lua_State* L);
-    static int lua_time_is_valid(lua_State* L);
-    static int lua_time_hour(lua_State* L);
-    static int lua_time_minute(lua_State* L);
-    static int lua_time_second(lua_State* L);
-    static int lua_time_day_id(lua_State* L);
-    static int lua_time_has_timezone(lua_State* L);
+    // The `time` module (Python 3's time; MicroPython's integers and ticks
+    // where 32-bit Lua numbers bite — see ResidentTimeCore.h).
+    static int lua_time_time(lua_State* L);
+    static int lua_time_gmtime(lua_State* L);
+    static int lua_time_localtime(lua_State* L);
+    static int lua_time_mktime(lua_State* L);
+    static int lua_time_strftime(lua_State* L);
+    static int lua_time_ticks_ms(lua_State* L);
+    static int lua_time_ticks_diff(lua_State* L);
+    static int lua_time_synced(lua_State* L);
     static int lua_surfaces_list(lua_State* L);
     static int lua_surfaces_get(lua_State* L);
 
-    // Math wrapper functions
-    static int lua_math_floor(lua_State* L);
-    static int lua_math_ceil(lua_State* L);
-    static int lua_math_abs(lua_State* L);
-    static int lua_math_sin(lua_State* L);
-    static int lua_math_cos(lua_State* L);
-    static int lua_math_tan(lua_State* L);
-    static int lua_math_sqrt(lua_State* L);
-    static int lua_math_min(lua_State* L);
-    static int lua_math_max(lua_State* L);
-    static int lua_math_fmod(lua_State* L);
 };
 
 } // namespace Resident

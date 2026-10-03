@@ -32,7 +32,7 @@ Interactively author a `DEVICE-SKILL.md` for a new firmware project — the file
 
 ### `/resident:create-app`
 
-Generate a Resident Lua app from a natural-language description. Reads the embedded sandbox docs (lifecycle, `ctx`, `log.*`, `time.*`, `kv.*`, math globals) plus the firmware project's `DEVICE-SKILL.md` to know what's available, then composes Lua source. Chains through `validate-app` before reporting done; up to 3 retries if validation fails. Accepts `--device-skill <path>` for an out-of-cwd DEVICE-SKILL.md and `--ref <path>` (repeatable) for additional reference files.
+Generate a Resident Lua app from a natural-language description. Reads the embedded sandbox docs (lifecycle, `ctx`, `events.*`, `store.*`, `log.*`, `time.*`, `surfaces.*`, limits) plus the firmware project's `DEVICE-SKILL.md` to know what's available, then composes Lua source. Chains through `validate-app` before reporting done; up to 3 retries if validation fails. Accepts `--device-skill <path>` for an out-of-cwd DEVICE-SKILL.md and `--ref <path>` (repeatable) for additional reference files.
 
 ### `/resident:validate-app`
 

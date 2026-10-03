@@ -29,7 +29,12 @@ dispatch dies (and is reported), the app survives.
 
 The environment is a sandbox: there is no `os`, `io`, `require`, `load`,
 `dofile`, or `debug`. The pure libraries (`string`, `table`, `math`,
-`coroutine`) are all present.
+`coroutine`, `utf8`) are all present. Each callback runs under a wall-clock
+deadline — an unbounded loop aborts that dispatch, not the device.
+
+Numbers are 32-bit: integers wrap past ±2,147,483,647 and floats carry about
+7 significant digits. Math is `math.*` only — there are no bare `floor`,
+`sin`, `min` etc. globals (write `math.floor`, `math.sin`, `math.min`).
 
 ## ctx table
 
@@ -38,13 +43,10 @@ Identical in every callback:
 | Field | Type | Meaning |
 |-------|------|---------|
 | `time_ms` | integer | ms since this app loaded — the app's clock |
-| `trigger_count` | integer | count of `button` driver events since boot |
 | `generation_id` | string or nil | the server's id for this program version |
-| `utc_h`, `utc_m` | integer | UTC wall clock |
-| `localtime_h`, `localtime_m` | integer | local wall clock (equals UTC until a timezone is set) |
 
-Use `ctx.time_ms` for animation. Use `ctx.localtime_h/m` for time-of-day
-behavior.
+Use `ctx.time_ms` for animation. For the time of day, use the `time` module
+(`time.localtime()`).
 
 ## Events in (`on_event`)
 
@@ -114,16 +116,52 @@ log.info("hello")  log.warn("careful")  log.error("broke")
 
 ## time module
 
-NTP wall clock. UTC unless the device has a timezone.
+Python 3's `time`, with MicroPython's integers and ticks. If you know
+Python's `time`, you know this — except there is no `time.monotonic()`,
+`time.sleep()` or float seconds.
 
-`time.is_valid()` · `time.has_timezone()` · `time.hour()` · `time.minute()`
-· `time.second()` · `time.day_id()` (days since boot — a daily cache key).
+```lua
+if time.synced() then                    -- false until NTP sets the clock
+  local t = time.localtime()             -- local zone; UTC until one is set
+  log.info(time.strftime("%a %H:%M"))    -- "Sat 15:05"
+  local evening = t.tm_hour >= 18
+end
+local t0 = time.ticks_ms()
+-- later: elapsed ms, correct across the counter's wrap
+local ms = time.ticks_diff(time.ticks_ms(), t0)
+```
 
-## Always-global functions
+- `time.time()` → integer seconds since 1970, UTC. Before `time.synced()`
+  it counts from 1970 — check `synced()` before showing a clock.
+- `time.localtime([secs])`, `time.gmtime([secs])` → struct_time table:
+  `tm_year`, `tm_mon` (1..12), `tm_mday`, `tm_hour`, `tm_min`, `tm_sec`,
+  `tm_wday` (0..6, **Monday = 0**), `tm_yday` (1..366), `tm_isdst` (1/0),
+  `tm_zone` (`"BST"`), `tm_gmtoff` (seconds east of UTC).
+- `time.mktime(t)` → integer seconds for a local struct_time
+  (`tm_year`/`tm_mon`/`tm_mday` required). Out-of-range fields carry:
+  `tm_mday = t.tm_mday + 1` is tomorrow.
+- `time.strftime(fmt[, t])` → string; `t` defaults to `localtime()`.
+  `%a %A %b %B %c %d %e %H %I %j %m %M %p %S %U %w %W %x %X %y %Y %Z %z %%`
+  (C locale, English names). Max 255 bytes.
+- `time.ticks_ms()` → a wrapping ms counter; only `time.ticks_diff(a, b)`
+  (`a - b` in ms) of two readings means anything.
+- `time.localtime().tm_yday` is a good once-a-day key.
 
-`rgb(r,g,b)` (normalized floats → packed color, negative-int sentinel) ·
-`fract(x)` · `beat(bpm, t)` · `noise2d(x, y)` (-1..1) — plus bare math:
-`floor ceil abs sin cos tan sqrt min max fmod`.
+## surfaces module
+
+The board's drawable surfaces. Geometry comes from the panel itself, so it is
+never stale.
+
+```lua
+for _, s in ipairs(surfaces.list()) do
+  log.info(s.name .. " " .. s.w .. "x" .. s.h .. " " .. s.shape)
+end
+local m = surfaces.get("main")   -- nil when the board has no such surface
+```
+
+Each entry is `{ name, w, h, shape }`; `shape` is `"rect"` or `"round"`. A
+board with no screen lists nothing. These are the same names `lgfx.bind(name)`
+and `lvgl.bind(name)` take.
 
 ## Limits
 
@@ -134,6 +172,7 @@ NTP wall clock. UTC unless the device has a timezone.
 | event data (both directions) | 1024 bytes serialized, drop not truncate |
 | events.send rate | 5/s sustained, burst 10 |
 | store budget | 2048 bytes total, rejected whole |
+| work per callback | 2,000,000 Lua instructions, then the dispatch is aborted |
 | repeated on_tick errors | 3, then one per 5 s |
 
 Keep apps short. A tight app survives device memory limits; a sprawling one

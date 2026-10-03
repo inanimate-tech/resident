@@ -207,7 +207,7 @@ void test_fresh_environment_clears_app_globals(void) {
   loadApp(
       "gone = (leak == nil) and (helper == nil)\n"
       "baseline_ok = (events ~= nil) and (store ~= nil) and (log ~= nil)\n"
-      "  and (rgb ~= nil) and (string ~= nil)\n"
+      "  and (time ~= nil) and (string ~= nil)\n"
       "function on_tick(ctx, dt) end\n");
   TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("gone"));
   TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("baseline_ok"));

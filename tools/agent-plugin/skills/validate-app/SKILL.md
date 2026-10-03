@@ -52,8 +52,12 @@ Exit codes:
 
 The validator does NOT run the actual device firmware. It uses **loose
 stubs**:
-- Sandbox built-ins (`log.*`, `time.*`, math globals, shader helpers) are
-  hardcoded with neutral return values.
+- Sandbox built-ins (`log.*`, `time.*`) are hardcoded with neutral return
+  values; `time.*` has the real module's shape (`time.localtime()` returns
+  a full struct_time table, `time.ticks_ms()` an integer, etc.).
+- There are no bare math globals (`floor`, `sin`, …) and no
+  `rgb`/`fract`/`beat`/`noise2d`, because the sandbox has none: an app
+  calling one fails validation. Apps use `math.*`.
 - Device modules (whatever DEVICE-SKILL.md mentions) get a permissive
   metatable that returns a no-op function for any access.
 

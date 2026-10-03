@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.10.0 (unreleased)
+
+Theme: a standard library an author already knows. Shader mode and its globals go; the `time` module becomes Python 3's `time`, with MicroPython's answers where the VM's 32-bit numbers bite.
+
+### Breaking changes
+
+- **Shader mode is removed.** `{type:"shader"}` is no longer a reserved type: on the `"system"` channel it falls through to the `"system"` slot, and on the legacy un-channelled path to `onMessage`, like any other unknown type. `SandboxConfig::shaderTemplate`, `Sandbox::loadShader`, `ShaderFields` and `ShaderTemplateFn` are gone; a board that set a shader template deletes it, and a host that sent shader expressions sends a Lua app instead. `deferAppLoads` now stashes only `app` loads.
+- **The shader globals are removed**: `rgb`, `fract`, `beat`, `noise2d`, and the bare math globals `floor` `ceil` `abs` `sin` `cos` `tan` `sqrt` `min` `max` `fmod`. Apps use `math.floor`, `math.sin`, … (`fract(x)` is `x - math.floor(x)`; `noise2d` has no replacement — carry a small noise function in the app).
+- **`ctx` loses its time fields**: `trigger_count`, `utc_h`, `utc_m`, `localtime_h`, `localtime_m`. `ctx` is now `{ time_ms, generation_id? }`; the `"button"` driver event no longer counts anything.
+- **The `time` module is replaced.** Old → new:
+  - `time.hour()` / `time.minute()` / `time.second()` → `time.localtime().tm_hour` / `.tm_min` / `.tm_sec`
+  - `ctx.localtime_h` / `ctx.localtime_m` → `time.localtime().tm_hour` / `.tm_min`
+  - `ctx.utc_h` / `ctx.utc_m` → `time.gmtime().tm_hour` / `.tm_min`
+  - `time.is_valid()` → `time.synced()`
+  - `time.has_timezone()` → gone from Lua (`Sandbox::hasTimezone()` remains in C++); `time.localtime().tm_zone` reads `"UTC"` until a zone is set
+  - `time.day_id()` (days since boot, `millis() / 86400000`) → gone; for a once-a-day key use `time.localtime().tm_yday`, which changes at local midnight rather than at boot anniversaries
+  - `ctx.trigger_count` → gone; count `button` events in the app
+
+### New features
+
+- **Lua `time` module, modelled on Python 3's `time`**: `time.time()` (integer seconds since the epoch, UTC), `time.gmtime([secs])` / `time.localtime([secs])` (a `struct_time` table: `tm_year`, `tm_mon` 1..12, `tm_mday`, `tm_hour`, `tm_min`, `tm_sec`, `tm_wday` 0..6 with Monday = 0, `tm_yday` 1..366, `tm_isdst`, `tm_zone`, `tm_gmtoff`), `time.mktime(t)` (local fields → integer epoch seconds, out-of-range fields carrying as C's `mktime` does), `time.strftime(fmt[, t])` (C locale, `%a %A %b %B %c %d %e %H %I %j %m %M %p %S %U %w %W %x %X %y %Y %Z %z %%`, unknown directives passed through, output capped at 255 bytes), `time.ticks_ms()` / `time.ticks_diff(a, b)` (a wrapping millisecond counter and a difference that is right across the wrap), and `time.synced()`. `localtime` uses the zone `setTimezone` resolved, with DST applied for the instant asked about.
+- Python's names and fields so authors and models already know them; MicroPython's integer seconds and ticks because Lua here is `LUA_32BITS` — a float epoch is good only to 128 s, and a float seconds-since-boot loses its milliseconds within hours, which is why there is deliberately no `time.monotonic()`. Seconds are int32, good until 2038-01-19.
+- `ResidentTimeCore.h`: the module's pure half — proleptic-Gregorian calendar conversion (Hinnant's `days_from_civil`/`civil_from_days`) and `strftime` — with no clock, no zone database and no Lua, so the device, the browser sim and the native tests agree to the byte. Native-tested in `test_time_module`.
+
+---
 ## v0.9.1
 
 - `Extensions::MAX` is 16 (was 12). A fully loaded device had used all 12, so a new module had to displace an existing one. The list is still truncated silently past the limit.

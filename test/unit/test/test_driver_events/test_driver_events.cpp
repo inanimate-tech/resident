@@ -146,17 +146,17 @@ void test_driver_event_channel_is_driver(void) {
   TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("is_driver"));
 }
 
-void test_button_events_still_count_triggers(void) {
+// ctx.trigger_count (a button-press counter for the retired shader templates)
+// is gone: a button is an event, and an app counts its own.
+void test_ctx_has_no_trigger_count(void) {
   build();
   loadApp(
       "function on_event(ctx, e)\n"
-      "  triggers = ctx.trigger_count\n"
+      "  absent = (ctx.trigger_count == nil)\n"
       "end\n");
   driver->emitButton(0);
   pump();
-  driver->emitButton(1);
-  pump();
-  TEST_ASSERT_EQUAL_INT(2, sandbox->luaGlobalIntForTest("triggers"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("absent"));
 }
 
 int main(int, char**) {
@@ -165,6 +165,6 @@ int main(int, char**) {
   RUN_TEST(test_driver_shadow_never_clobbers_envelope_keys);
   RUN_TEST(test_wire_events_get_no_shadow);
   RUN_TEST(test_driver_event_channel_is_driver);
-  RUN_TEST(test_button_events_still_count_triggers);
+  RUN_TEST(test_ctx_has_no_trigger_count);
   return UNITY_END();
 }

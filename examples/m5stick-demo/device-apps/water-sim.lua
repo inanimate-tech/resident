@@ -1,4 +1,25 @@
 -- Water Sim: lo-fi sloshing tank with fish + bubbles, driven by IMU + buttons
+local floor, ceil, abs, sqrt = math.floor, math.ceil, math.abs, math.sqrt
+local sin, cos, min, max = math.sin, math.cos, math.min, math.max
+local function fract(x) return x - math.floor(x) end
+-- 2D value noise in -1..1: a hashed integer lattice, bilinear between points.
+-- Integer maths wraps at 32 bits on the device; the mask keeps a 64-bit Lua
+-- (a desktop validator) on the same 32-bit hash.
+local function hash2(x, y)
+  local h = (x * 0x8da6b343 ~ y * 0xd8163841) & 0xFFFFFFFF
+  h = h ~ (h >> 13)
+  h = (h * 0xc2b2ae35) & 0xFFFFFFFF
+  h = h ~ (h >> 16)
+  return (h & 0xFFFFFF) / 0xFFFFFF
+end
+
+local function noise2d(x, y)
+  local xi, yi = math.floor(x), math.floor(y)
+  local xf, yf = x - xi, y - yi
+  local a = hash2(xi, yi) + (hash2(xi + 1, yi) - hash2(xi, yi)) * xf
+  local b = hash2(xi, yi + 1) + (hash2(xi + 1, yi + 1) - hash2(xi, yi + 1)) * xf
+  return (a + (b - a) * yf) * 2 - 1
+end
 local N = 32
 local W, H
 -- smoothed gravity (stable orientation)

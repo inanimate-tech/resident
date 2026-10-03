@@ -82,7 +82,7 @@ curl -X POST https://resident.inanimate.tech/devices/abc12345/send \
 
 The relay validates the JSON shape, then forwards it verbatim to the device's WebSocket. The Resident sandbox on the device parses the message, compiles the Lua, and runs it. Any previously-loaded app is stopped first.
 
-`type: "shader"` and `type: "app_event"` work the same way — the relay forwards any well-formed JSON object; it never inspects the contents.
+`type: "app_event"` works the same way — the relay forwards any well-formed JSON object; it never inspects the contents.
 
 ---
 

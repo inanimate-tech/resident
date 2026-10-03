@@ -7,13 +7,39 @@ log = {
   error = function(_) end,
 }
 
+-- time: Python 3's time module shape (see the sandbox docs). Fixed values —
+-- a synced clock reading Saturday 2026-10-03 12:00:00 UTC, zone UTC — so
+-- apps that do arithmetic on the results run.
+local STUB_EPOCH = 1791028800
+local STUB_TM = {
+  tm_year = 2026, tm_mon = 10, tm_mday = 3,
+  tm_hour = 12, tm_min = 0, tm_sec = 0,
+  tm_wday = 5, tm_yday = 276, tm_isdst = 0,
+  tm_zone = "UTC", tm_gmtoff = 0,
+}
+local function stub_tm()
+  local t = {}
+  for k, v in pairs(STUB_TM) do t[k] = v end
+  return t
+end
+local stub_ticks = 0
+
 time = {
-  is_valid     = function() return true end,
-  has_timezone = function() return false end,
-  hour         = function() return 12 end,
-  minute       = function() return 0 end,
-  second       = function() return 0 end,
-  day_id       = function() return 1 end,
+  time       = function() return STUB_EPOCH end,
+  gmtime     = function(_) return stub_tm() end,
+  localtime  = function(_) return stub_tm() end,
+  mktime     = function(t)
+    assert(type(t) == "table" and t.tm_year and t.tm_mon and t.tm_mday,
+      "time.mktime: tm_year, tm_mon and tm_mday are required")
+    return STUB_EPOCH
+  end,
+  strftime   = function(fmt, _)
+    assert(type(fmt) == "string", "time.strftime: format must be a string")
+    return fmt
+  end,
+  ticks_ms   = function() stub_ticks = stub_ticks + 100; return stub_ticks end,
+  ticks_diff = function(a, b) return a - b end,
+  synced     = function() return true end,
 }
 
 -- kv may or may not be present on a given device, but apps that use it
@@ -23,20 +49,6 @@ kv = {
   set = function(_, _) return true end,
 }
 
--- Shader-compatible globals (also valid in apps).
-function rgb(_, _, _) return -1 end       -- negative integer = "this is a color"
-function fract(x) return x - math.floor(x) end
-function beat(bpm, t) return t / (60000 / bpm) end
-function noise2d(_, _) return 0 end
-
--- Math globals registered without the math. prefix.
-floor = math.floor
-ceil  = math.ceil
-abs   = math.abs
-sin   = math.sin
-cos   = math.cos
-tan   = math.tan
-sqrt  = math.sqrt
-min   = math.min
-max   = math.max
-fmod  = math.fmod
+-- There are deliberately NO bare math globals (floor, sin, min, ...) and no
+-- rgb/fract/beat/noise2d: the sandbox doesn't provide them, so an app that
+-- calls one must fail here too. Apps use math.*.

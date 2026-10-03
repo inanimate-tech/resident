@@ -199,11 +199,3 @@ button = setmetatable({
   press_count = function() return 0 end,
 }, { __index = function() return function() end end })
 ```
-
-## App mode / Shader mode
-
-In app mode this device uses the normal app lifecycle (`init`, `on_tick`,
-`on_event`) against the `screen`, `led`, and `battery` modules described
-above.
-
-Shader mode is not available on this device — only app mode is supported.

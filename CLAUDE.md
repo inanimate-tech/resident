@@ -46,7 +46,7 @@ The runner self-installs its Python deps via `uv` (PEP 723 inline metadata).
   envelope `channel` field that routes them onto a plane: `"app"` (data
   plane) reaches `Sandbox::handleAppMessage` → Lua `on_event`; `"system"`
   (control plane) reaches `Sandbox::handleSystemMessage`, which still handles
-  the reserved `app`/`shader`/`forget` types and falls through to a
+  the reserved `app`/`forget` types and falls through to a
   `"system"` slot for anything else; any other channel name goes to a slot
   registered via `Sandbox::onMessageWithChannel(name, cb)`. Messages with no
   `channel` field take the legacy un-channelled path (`onMessage` /
@@ -55,6 +55,13 @@ The runner self-installs its Python deps via `uv` (PEP 723 inline metadata).
   `Sandbox::publishEvent(name, dataJson)` / the Lua `events.send(name, data)`
   for rate-limited data-plane events. See `docs/api.md`'s "Channel routing"
   section for the full picture.
+- **Lua runs with `LUA_32BITS`** (32-bit integers and floats). Apps load
+  only Lua source — there is no shader-expression mode (removed in 0.10) and
+  no bare math globals; apps use `math.*`. The `time` module follows Python
+  3's `time` (names, `struct_time` fields, `strftime`) with MicroPython's
+  integer seconds and `ticks_ms`/`ticks_diff` where 32-bit numbers bite; its
+  calendar maths and `strftime` are `src/ResidentTimeCore.h`, pure and
+  native-tested, so device, sim and tests agree.
 - **Examples are independent PlatformIO projects.** Each has its own
   `platformio.ini` and uses `lib_deps = symlink://../../..` to pull in this
   library from the repo root. They should build standalone.

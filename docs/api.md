@@ -38,7 +38,6 @@ void loop()  { sandbox.loop(); }
 | `firmwareVersion` | `const char*` | `nullptr` | The board build's version string, announced in the device hello (see [Hello](#hello)). Omitted from the hello when null. |
 | `profileRef` | `const char*` | `nullptr` | Name+version of this device type's out-of-band authoring document (e.g. `"m5stick@2"`), announced in the device hello. Omitted when null. |
 | `extensions` | `Extensions` | `{}` | Drivers and extensions registered with the sandbox (registration order is preserved across `begin()` / `registerModule()` / `update()` / `onAppReset()`) |
-| `shaderTemplate` | `ShaderTemplateFn` | `nullptr` | Function that converts shader fields into Lua source (see [Message Protocol](#message-protocol)) |
 | `telemetry` | `TelemetryCallback` | `nullptr` | Called with outgoing telemetry JSON strings (also settable later via `sandbox.setTelemetryCallback`) |
 | `timezone` | `const char*` | `nullptr` | IANA timezone string applied at construction (e.g. `"Europe/London"`); also settable later via `sandbox.setTimezone` |
 | `systemDisplay` | `SystemDisplay*` | `nullptr` | Optional text display; Resident's internal handler calls `displayText()` automatically on connection state changes |
@@ -179,7 +178,7 @@ Three tools for platform wrappers that need to sit in front of the sandbox's mes
 ```cpp
 // Pre-routing filter (single-slot), legacy un-channelled path only (no
 // "channel" field). Runs before app-load deferral, reserved-type routing
-// (app/shader/app_event/forget), and the user onMessage callback. Return
+// (app/app_event/forget), and the user onMessage callback. Return
 // true to continue routing; false to consume the message. Channelled
 // messages never reach this filter.
 sandbox.onMessageFilter([](const char* transport, const char* type, JsonDocument& doc) {
@@ -188,16 +187,16 @@ sandbox.onMessageFilter([](const char* transport, const char* type, JsonDocument
     return true;
 });
 
-// Defer app/shader loads during a memory/CPU-sensitive window (e.g. voice
-// recording — a Lua compile would stall the audio path). Applies to app/
-// shader loads on the legacy path AND the "system" channel (handleSystemMessage
+// Defer app loads during a memory/CPU-sensitive window (e.g. voice
+// recording — a Lua compile would stall the audio path). Applies to app
+// loads on the legacy path AND the "system" channel (handleSystemMessage
 // checks the same defer flag). Stash is last-one-wins; clearing applies it
 // immediately. Other message types flow normally. The applied stash routes
 // straight to loading — the filter already ran at receipt (legacy path only),
 // so a dedup filter like the one above won't drop it a second time.
 sandbox.deferAppLoads(true);
 // ... later ...
-sandbox.deferAppLoads(false);          // applies any stashed app/shader now
+sandbox.deferAppLoads(false);          // applies any stashed app now
 sandbox.hasDeferredAppLoad();          // pending stash?
 
 // Route a message through the sandbox's full receive pipeline exactly as if
@@ -213,7 +212,7 @@ sandbox.injectMessage("mqtt", "app", doc);
 |----------|-----------|-------|
 | `onNetworkReady` | `void()` | On every entry to `Courier::State::NetworkReady`, including each reconnect cycle: WiFi is up and time sync has been attempted, no persistent transport is running. Blocking: runs inside `loop()`, so app ticks, overlays and extension updates are paused until it returns; must not call `loop()`. |
 | `onTransportsWillConnect` | `void()` | Once, after Resident sets the default WS path and before transports start. Override the path here. |
-| `onMessage` | `void(const char* transport, const char* type, JsonDocument&)` | **Legacy un-channelled path only** — fires for messages with no `channel` field, and only for non-reserved types (reserved types `app`/`shader`/`app_event`/`forget` are still routed internally on that path, no super-call needed). Channelled messages (`channel:"app"`/`"system"`/custom) never reach this callback — see [Channel routing](#channel-routing). |
+| `onMessage` | `void(const char* transport, const char* type, JsonDocument&)` | **Legacy un-channelled path only** — fires for messages with no `channel` field, and only for non-reserved types (reserved types `app`/`app_event`/`forget` are still routed internally on that path, no super-call needed). Channelled messages (`channel:"app"`/`"system"`/custom) never reach this callback — see [Channel routing](#channel-routing). |
 | `onConnectionChange` | `void(Courier::State)` | On every state transition. Resident's internal handler updates `systemDisplay`/`systemLED` first; your callback runs alongside (does not replace). |
 | `onConnected` | `void()` | When fully connected. Often used to load a bootstrap app — guard with a function-local `static bool loaded` to avoid re-firing on reconnect. |
 
@@ -230,7 +229,7 @@ Incoming messages carry an envelope `channel` field that steers them onto one of
 | `channel` value | Routes to | Notes |
 |-----------------|-----------|-------|
 | `"app"` | `handleAppMessage` → Lua `on_event(ctx, event)` with `event.name = type` | Data plane. No reserved types here — `type:"forget"` on this channel is just an event, not a persistence op. Self-echo (`from == getDeviceId()`) and duplicate `nonce` (16-entry ring, exact match) are dropped before delivery. Gated like `sendAppEvent`: dropped when no app is loaded or the app defines no `on_event`. The legacy `app_event` envelope (`{"type":"app_event","name":...,"data":...}`) is still accepted here for one release, logging `[deprecated] app_event wrapper; send channel:"app" with type=<event name>` — until a [host hello](#hello) arrives, after which it is dropped and counted. |
-| `"system"` | `handleSystemMessage` | Control plane. Reserved types are handled internally: `app` / `shader` (with `deferAppLoads` and the `description` display below), [`chunk`](#sandbox-controls), `forget`, [`framework`](#framework-modules), [`hello`](#hello), `goodbye`. Any other type falls through to the single `"system"` slot registered via `onMessageWithChannel("system", cb)`. |
+| `"system"` | `handleSystemMessage` | Control plane. Reserved types are handled internally: `app` (with `deferAppLoads` and the `description` display below), [`chunk`](#sandbox-controls), `forget`, [`framework`](#framework-modules), [`hello`](#hello), `goodbye`. Any other type falls through to the single `"system"` slot registered via `onMessageWithChannel("system", cb)`. |
 | anything else | the matching slot registered via `onMessageWithChannel(name, cb)` | Single slot per channel name (exact string match), last registration wins. An unregistered channel is logged (`Resident::Sandbox: no handler for channel '<channel>' (type '<type>'); dropped`) and the message is dropped. Up to 8 slots (`onMessageWithChannel` does not include `"app"` — the data plane belongs to the Lua app, not a C++ slot). |
 | *(absent)* | the legacy un-channelled path | Logs `[deprecated] un-channelled '<type>' message; sender should stamp channel`, then `onMessageFilter` → deferral → reserved-type routing → `onMessage`. Closed once a [host hello](#hello) arrives: dropped and counted instead. |
 
@@ -257,13 +256,12 @@ sandbox.setEventSink([](JsonDocument& doc) {
 });
 ```
 
-**Description-on-load display** — when an `app`/`shader` load message (on either the legacy path or the `"system"` channel) carries a `description` field, it's shown on `systemDisplay` via `displayText()` at receipt (before any `deferAppLoads` stash is applied — a deferred load's description was already shown at receipt, so the deferred-apply path shows nothing). On by default; call `sandbox.setShowDescriptions(false)` to disable — e.g. on devices whose `systemDisplay` *is* the main app screen.
+**Description-on-load display** — when an `app` load message (on either the legacy path or the `"system"` channel) carries a `description` field, it's shown on `systemDisplay` via `displayText()` at receipt (before any `deferAppLoads` stash is applied — a deferred load's description was already shown at receipt, so the deferred-apply path shows nothing). On by default; call `sandbox.setShowDescriptions(false)` to disable — e.g. on devices whose `systemDisplay` *is* the main app screen.
 
 ### Sandbox controls
 
 ```cpp
 sandbox.loadApp(luaCode);              // compile and run a Lua source string
-sandbox.loadShader(fields);            // generate Lua via ShaderTemplateFn, then loadApp
 sandbox.loadChunk(luaChunk);           // run a chunk in the RUNNING app's state (surgical update)
 sandbox.sendAppEvent(name, dataJson[, channel]); // queue an event to the running app (default channel "driver")
 sandbox.onMessageWithChannel(name, cb); // register a channel slot (see Channel routing)
@@ -274,7 +272,7 @@ sandbox.setEventSink(fn);              // override publishEvent's/events.send's 
 sandbox.setSystemSink(fn);             // override sendSystem's destination (hello + telemetry included)
 sandbox.requestHello();                // re-queue the device hello
 sandbox.hostHelloSeen();               // true once a host hello arrived this boot
-sandbox.setShowDescriptions(show);     // toggle description → systemDisplay on app/shader load
+sandbox.setShowDescriptions(show);     // toggle description → systemDisplay on app load
 sandbox.setTimezone("Europe/London");  // IANA zone — performs UDP lookup on first use
 sandbox.hasTimezone();                 // true after a successful setTimezone call
 sandbox.isAppRunning();                // true when an app is compiled and active
@@ -291,14 +289,12 @@ sandbox.startMicStream();              // stream systemMic frames, no brackets (
 sandbox.stopMicStream();               // stop streaming
 sandbox.isMicStreaming();              // true while streaming
 sandbox.setMicStreamSink(fn);          // override the binary frame sink
-sandbox.generationId();                // const String& — ID of the last loaded app/shader
+sandbox.generationId();                // const String& — ID of the last loaded app
 sandbox.setTelemetryCallback(cb);      // wire telemetry JSON to your transport
 sandbox.clearPersistedApp();           // wipe the saved app from the persistent store
 ```
 
 `loadApp` stops any running app, calls `onAppReset()` on all extensions, generates a new `generationId`, and compiles the new app. An app must define at least one of `init`, `on_tick`, or `on_event` — compilation is rejected otherwise.
-
-`loadShader` requires `SandboxConfig::shaderTemplate` to be set; it converts the `ShaderFields` map to Lua source, then calls `loadApp`.
 
 `loadChunk(code)` runs a Lua chunk **in the running app's `lua_State`** — an in-place patch, where `loadApp` is a restart. Globals, queued events and timing survive, and `init()` is **not** re-called, so a chunk that reassigns a function or a table entry swaps it without costing the app its state. Wire entry: `channel:"system", type:"chunk", code:"..."`.
 
@@ -313,7 +309,7 @@ sandbox.clearPersistedApp();           // wipe the saved app from the persistent
 
 `addOverlay` / `requestOverlay` / `removeOverlay` and `startMicStream` / `stopMicStream` / `isMicStreaming` / `setMicStreamSink` are covered under [Resident::Overlay](#residentoverlay) and [Resident::SystemMic](#residentsystemmic).
 
-`setTimezone` is a no-op on `nullptr` or empty input. Success means ezTime resolved the zone (either from its own cache or via one UDP lookup to `timezoned.rop.nl`); failure logs and leaves `hasTimezone() == false`. Affects `ctx.localtime_h`, `ctx.localtime_m`, `time.hour()`, `time.minute()`, and `time.second()` in Lua.
+`setTimezone` is a no-op on `nullptr` or empty input. Success means ezTime resolved the zone (either from its own cache or via one UDP lookup to `timezoned.rop.nl`); failure logs and leaves `hasTimezone() == false`. Affects the Lua [`time` module](#time-module)'s `time.localtime()`, `time.mktime()` and `time.strftime()`; until it succeeds, local time is UTC.
 
 ### Identity and state accessors
 
@@ -428,8 +424,6 @@ EventField fields[] = {
 };
 sendEvent("button", fields, 4);
 ```
-
-The event name `"button"` is special: it increments `ctx.trigger_count`.
 
 ### EventField struct
 
@@ -842,14 +836,9 @@ All callbacks receive a `ctx` table. `on_tick` also receives `dt_ms` (integer, m
 | Field | Type | Description |
 |-------|------|-------------|
 | `time_ms` | integer | Milliseconds since the current app was loaded |
-| `trigger_count` | integer | Number of `"button"` driver events since BOOT (not reset by app loads; kept for shader compatibility) |
 | `generation_id` | string? | The `generationId` the server stamped on the app load message — `nil` when the load didn't carry one (direct C++ loads, NVS restores) |
-| `utc_h` | integer | Current UTC hour (0–23) |
-| `utc_m` | integer | Current UTC minute (0–59) |
-| `localtime_h` | integer | Local hour — equals `utc_h` unless a timezone has been set |
-| `localtime_m` | integer | Local minute — equals `utc_m` unless a timezone has been set |
 
-The table is IDENTICAL in every callback. `localtime_h` / `localtime_m` reflect local time only after `Sandbox::setTimezone` succeeds; otherwise they equal `utc_h` / `utc_m`.
+The table is IDENTICAL in every callback. The wall clock is not on `ctx`: read it from the [`time` module](#time-module) (`time.localtime()`).
 
 ### `event` table
 
@@ -993,26 +982,58 @@ An app-scoped **persistent** KV slot of scalars — state here survives `loadApp
 
 ### `time` module
 
-Reads wall-clock time from NTP (via ezTime). Functions return UTC unless a timezone is set via `Sandbox::setTimezone`.
+Modelled on Python 3's [`time`](https://docs.python.org/3/library/time.html): the same function names, the same `struct_time` field names and ranges, the same `strftime` directives — so an author (or a model) who knows Python already knows this module. Where Python's answer depends on 64-bit numbers it takes MicroPython's instead, because the Lua here is built with `LUA_32BITS` (32-bit integers *and* 32-bit floats): wall-clock seconds are **integers**, and elapsed time is a wrapping millisecond counter, `ticks_ms()`, read through `ticks_diff()`. A float epoch would be good only to 128 s, and a float seconds-since-boot would lose its milliseconds within hours of uptime — which is why there is deliberately no `time.monotonic()`. The calendar arithmetic and `strftime` are Resident's own code (`ResidentTimeCore.h`), not the C library's, so the device, the browser sim and the native tests give byte-identical answers.
 
 | Function | Returns | Description |
 |----------|---------|-------------|
-| `time.is_valid()` | boolean | `true` if NTP time has been acquired |
-| `time.hour()` | integer | Current hour (0–23), local if timezone set |
-| `time.minute()` | integer | Current minute (0–59), local if timezone set |
-| `time.second()` | integer | Current second (0–59), local if timezone set |
-| `time.day_id()` | integer | Days since device boot (`millis() / 86400000`) — useful as a cache key for daily state |
-| `time.has_timezone()` | boolean | `true` if `setTimezone` succeeded |
+| `time.time()` | integer | Whole seconds since the Unix epoch, UTC. An int32, good until 2038-01-19. Counts from 1970 until the clock is synced. |
+| `time.gmtime([secs])` | struct_time | `secs` (default: now) broken down in UTC |
+| `time.localtime([secs])` | struct_time | `secs` (default: now) broken down in the device's zone — the one `Sandbox::setTimezone` resolved; UTC until then. DST is applied for the instant asked about, so it is right on both sides of a change. |
+| `time.mktime(t)` | integer | Epoch seconds for a struct_time read as **local** time. `tm_year`, `tm_mon`, `tm_mday` are required (a table without them raises); the time of day defaults to midnight. Out-of-range fields carry, as C's `mktime` does: `tm_hour = 24` is midnight the next day, `tm_mon = 13` January of the next year, `tm_mday = 0` the last day of the previous month. `tm_wday`/`tm_yday` are ignored. |
+| `time.strftime(fmt[, t])` | string | Format a struct_time (default: `time.localtime()`) in the C locale. Unknown directives pass through as written. Output is capped at 255 bytes. |
+| `time.ticks_ms()` | integer | A millisecond counter that **wraps**. Only a difference taken with `ticks_diff` means anything. |
+| `time.ticks_diff(a, b)` | integer | `a - b` in milliseconds, correct across the wrap (for spans under ~24.8 days either way). |
+| `time.synced()` | boolean | `true` once the wall clock has been set (NTP, or Courier's HTTP-Date fallback). Not in Python: an embedded clock starts at the epoch, and an app has to be able to tell. |
+
+**struct_time** is a plain table (build one by hand to pass to `mktime`/`strftime`):
+
+| Field | Range | Notes |
+|-------|-------|-------|
+| `tm_year` | e.g. `2026` | Full year |
+| `tm_mon` | 1..12 | January = 1 (not C's 0..11) |
+| `tm_mday` | 1..31 | |
+| `tm_hour` | 0..23 | |
+| `tm_min` | 0..59 | |
+| `tm_sec` | 0..59 | |
+| `tm_wday` | 0..6 | **Monday = 0** (Python's, not C's Sunday = 0) |
+| `tm_yday` | 1..366 | Day of the year |
+| `tm_isdst` | 1 / 0 | Daylight saving in effect |
+| `tm_zone` | string | Zone abbreviation, e.g. `"BST"`, `"UTC"` |
+| `tm_gmtoff` | integer | Offset in seconds **east** of UTC, e.g. `3600` for BST |
+
+**strftime directives:** `%a` `%A` (weekday, short/full) · `%b` `%B` (month, short/full) · `%c` (`Sat Oct  3 15:05:09 2026`) · `%d` (day, `03`) · `%e` (day, space-padded, ` 3`) · `%H` `%I` (hour, 24/12) · `%j` (day of year, `276`) · `%m` (month, `10`) · `%M` (minute) · `%p` (`AM`/`PM`) · `%S` (second) · `%U` `%W` (week of year, weeks from Sunday/Monday) · `%w` (weekday, **Sunday = 0**, as in C and Python's `strftime`) · `%x` (`10/03/26`) · `%X` (`15:05:09`) · `%y` `%Y` (year, 2/4 digits) · `%Z` (`BST`) · `%z` (`+0100`) · `%%`.
 
 ```lua
 function on_tick(ctx, dt_ms)
-    if time.is_valid() then
-        local h = time.hour()
-        local m = time.minute()
-        -- display h:m
-    end
+    if not time.synced() then return end      -- still 1970: draw nothing yet
+    local t = time.localtime()
+    local label = time.strftime("%a %H:%M")   -- "Sat 15:05"
+    local morning = t.tm_hour < 12
+    local today = t.tm_yday                   -- a per-day key that changes at local midnight
 end
+
+-- Elapsed time: ticks, never subtracted directly.
+local started = time.ticks_ms()
+-- ... later ...
+if time.ticks_diff(time.ticks_ms(), started) > 5000 then --[[ 5 s have passed ]] end
+
+-- Seconds until local midnight:
+local t = time.localtime()
+local midnight = time.mktime({ tm_year = t.tm_year, tm_mon = t.tm_mon, tm_mday = t.tm_mday + 1 })
+local wait = midnight - time.time()
 ```
+
+For animation, `ctx.time_ms` (milliseconds since the app loaded) is still the simplest clock.
 
 ### `surfaces` module
 
@@ -1036,32 +1057,6 @@ if m and m.shape == "round" then
 end
 ```
 
-### Shader-compatible globals
-
-These functions are always in scope — they are designed for use in shader expressions as well as full apps.
-
-| Function | Returns | Description |
-|----------|---------|-------------|
-| `rgb(r, g, b)` | integer | Pack normalized floats (0–1) into a color value. Returns a **negative** packed int; the convention is that a negative return from a shader function signals "this is a color". |
-| `fract(x)` | number | Fractional part: `x - floor(x)` |
-| `beat(bpm, t)` | number | `t / (60000 / bpm)` — beat phase in beats; `fract(beat(120, ctx.time_ms))` gives a 0–1 sawtooth at 120 BPM |
-| `noise2d(x, y)` | number | Deterministic 2D value noise, returns `-1` to `+1` |
-
-Bare math functions are also registered as globals (so shader expressions don't need the `math.` prefix):
-
-| Global | Equivalent |
-|--------|-----------|
-| `floor(x)` | `math.floor(x)` |
-| `ceil(x)` | `math.ceil(x)` |
-| `abs(x)` | `math.abs(x)` |
-| `sin(x)` | `math.sin(x)` |
-| `cos(x)` | `math.cos(x)` |
-| `tan(x)` | `math.tan(x)` |
-| `sqrt(x)` | `math.sqrt(x)` |
-| `min(a, b)` | `math.min(a, b)` |
-| `max(a, b)` | `math.max(a, b)` |
-| `fmod(a, b)` | `math.fmod(a, b)` |
-
 ### Driver-provided modules
 
 Each extension is registered as a global table named by `Extension::name()`. For example, a driver returning `"imu"` from `name()` makes `imu.accel()` available:
@@ -1079,7 +1074,7 @@ See [Writing a Driver](#writing-a-driver) for the C++ side of this.
 
 ## Message Protocol
 
-This section describes the reserved types on the legacy un-channelled path (no `channel` field) — see [Channel routing](#channel-routing) for the full envelope picture, including the `"app"` data plane and custom channels. Resident routes four JSON message types (`app`, `shader`, `app_event`, `forget`) internally on this path — they never reach the user's `onMessage(cb)` callback. Any other type is forwarded to `onMessage` if registered. The `"system"` channel handles `app`/`shader`/`forget` identically (same `loadApp`/`loadShader`/`clearPersistedApp` calls, same deferral and description-display behavior), adds `chunk`/`framework`/`hello`/`goodbye`, and has no `app_event` — the app data plane is `channel:"app"`.
+This section describes the reserved types on the legacy un-channelled path (no `channel` field) — see [Channel routing](#channel-routing) for the full envelope picture, including the `"app"` data plane and custom channels. Resident routes three JSON message types (`app`, `app_event`, `forget`) internally on this path — they never reach the user's `onMessage(cb)` callback. Any other type is forwarded to `onMessage` if registered. The `"system"` channel handles `app`/`forget` identically (same `loadApp`/`clearPersistedApp` calls, same deferral and description-display behavior), adds `chunk`/`framework`/`hello`/`goodbye`, and has no `app_event` — the app data plane is `channel:"app"`.
 
 ### `app` — load a Lua app
 
@@ -1088,14 +1083,6 @@ This section describes the reserved types on the legacy un-channelled path (no `
 ```
 
 Calls `Sandbox::loadApp(doc["code"])`. Any previously running app is stopped first.
-
-### `shader` — load a shader expression
-
-```json
-{ "type": "shader", "expr": "rgb(fract(ctx.time_ms / 2000.0), 0, 0)" }
-```
-
-The entire JSON document (as a `ShaderFields` map of string key/value pairs) is passed to `SandboxConfig::shaderTemplate`, which must return valid Lua source. The result is passed to `loadApp`. Requires `shaderTemplate` to be set.
 
 ### `app_event` — send an event to the running app
 
@@ -1115,7 +1102,7 @@ Calls `Sandbox::clearPersistedApp()`. The next boot will not restore any app. Eq
 
 ### App persistence
 
-The last app (or shader) that loads successfully — compiles **and** runs `init()` without error — is saved to flash (NVS) and auto-reloaded on the next boot.
+The last app that loads successfully — compiles **and** runs `init()` without error — is saved to flash (NVS) and auto-reloaded on the next boot.
 
 Once the device is reachable — **connected**, or immediately in standalone mode — if a saved app exists the status display shows the device identity with a 20-second countdown before loading it (while connecting, the usual connection-status text shows instead). A networked device that never connects stays on the connection screen and does not auto-load.
 
@@ -1126,7 +1113,7 @@ Type: <deviceType>
 20s
 ```
 
-You need the device ID to push apps to the device, so the countdown is a reminder. It is a timer (not press-to-continue) because not every board has a button. An app/shader arriving over the network also ends the countdown (it loads the incoming app). If a `SystemButton` is configured, then during the countdown a **tap** loads the saved app immediately and a **long press** (≥1s) forgets it — the device then settles on the ready screen with nothing to restore.
+You need the device ID to push apps to the device, so the countdown is a reminder. It is a timer (not press-to-continue) because not every board has a button. An app arriving over the network also ends the countdown (it loads the incoming app). If a `SystemButton` is configured, then during the countdown a **tap** loads the saved app immediately and a **long press** (≥1s) forgets it — the device then settles on the ready screen with nothing to restore.
 
 When **no** app is loaded — a fresh device, or after a load fails — the status display rests on the same identity screen without the countdown line:
 
@@ -1175,7 +1162,7 @@ Every telemetry emission goes out TWO ways:
 
 | Telemetry name | Trigger |
 |----------------|---------|
-| `app_received` | `loadApp` or `loadShader` called |
+| `app_received` | `loadApp` called |
 | `app_compiled` | App compiled successfully |
 | `compile_error` | Compilation or execution failed; `data.error` contains the message |
 | `runtime_error` | A Lua callback threw an error. `on_tick` errors are rate-limited (see [Limits](#limits)); `init` and `on_event` errors are emitted immediately. |
