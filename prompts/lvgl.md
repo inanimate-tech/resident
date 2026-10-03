@@ -38,10 +38,10 @@ end
   resolve only after the first `lvgl.bind(...)` call — always bind first.
 - **Binding is claiming.** `lvgl.bind(name)` both declares the library this
   app draws that surface with and claims the surface: LVGL takes over the
-  panel (repainting everything the previous app left there), and an
-  immediate-mode `lgfx` handle on the same surface stops presenting. One
-  panel, one library — don't mix them on one name. Ownership resets when a
-  new app loads, so the next app's first bind is clean.
+  panel (repainting everything the previous app left there); on a board
+  that also offers `lgfx`, an `lgfx` handle on the same surface stops
+  presenting. One panel, one library — don't mix them on one name. Ownership
+  resets when a new app loads, so the next app's first bind is clean.
 
 ## Widgets are children with property tables
 
