@@ -1,5 +1,5 @@
 // Message interposition: onMessageFilter runs before deferral, reserved-type
-// routing, and the user onMessage callback; deferAppLoads stashes app/shader
+// routing, and the user onMessage callback; deferAppLoads stashes app
 // loads (last one wins) and applies the stash when cleared. injectMessage is
 // the transport-independent entry into that pipeline.
 #include <unity.h>

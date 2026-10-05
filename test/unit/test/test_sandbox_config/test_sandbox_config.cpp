@@ -30,7 +30,6 @@ void test_default_construction(void) {
     TEST_ASSERT_NULL(cfg.statusLED);
     TEST_ASSERT_FALSE(cfg.network.has_value());
     TEST_ASSERT_EQUAL_INT(0, (int)cfg.extensions.count);
-    TEST_ASSERT_NULL(cfg.shaderTemplate);
     TEST_ASSERT_NULL(cfg.timezone);
 }
 

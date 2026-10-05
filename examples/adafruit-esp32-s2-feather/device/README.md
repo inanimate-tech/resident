@@ -11,7 +11,7 @@ For the smaller intermediate version that brings Resident up *without* exposing 
   - Wi-Fi (WiFiManager captive portal on first boot, persisted to NVS).
   - Time sync (ezTime).
   - WebSocket transport to `resident.inanimate.tech` via Courier.
-  - Lua sandbox lifecycle and routing of inbound `app` / `shader` / `app_event` messages.
+  - Lua sandbox lifecycle and routing of inbound `app` / `app_event` messages.
 - Registers three hardware drivers with Resident as Lua modules:
   - **`screen.*`** — the TFT, backed by a 135×240 `GFXcanvas16` framebuffer. Double-buffered: draw with `clear`/`text`/`fill_rect`/etc., then `screen.flip()` to push the frame.
   - **`led.*`** — the onboard NeoPixel. `set(r,g,b)`, `set_brightness(n)`, `off()`.

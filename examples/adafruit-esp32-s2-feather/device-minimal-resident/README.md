@@ -9,7 +9,7 @@ Step 2 of the two-step walkthrough in [`docs/start-building.md`](../../../docs/s
   - Wi-Fi (WiFiManager captive portal on first boot, persisted to NVS).
   - Time sync (ezTime).
   - WebSocket transport to `resident.inanimate.tech` via Courier.
-  - Lua sandbox lifecycle and routing of inbound `app` / `shader` / `app_event` messages.
+  - Lua sandbox lifecycle and routing of inbound `app` / `app_event` messages.
 - Draws status on the TFT via a custom `TFTStatusDisplay`. Once the relay opens a WS, the 8-character device ID is shown in big green text — that's what you push apps to.
 - The NeoPixel turns green once connected (yellow otherwise); the red LED keeps blinking at 2 Hz so you can tell the firmware is alive.
 
@@ -39,7 +39,7 @@ Or, with the agent plugin installed, `/resident:push-app` does the same thing fr
 
 ## What Lua apps can do today
 
-Only the **sandbox-generic** surface — `log.*`, `time.*`, `kv.*`, math, shader globals. Hardware Lua modules (`screen.*` for the TFT, `led.*` for the NeoPixel, `battery.*` for the LC709203) are not exposed yet — they're step 3. Apps that reference `screen` (e.g. the m5stick-demo's `hello.lua`) will hit a Lua runtime error like `attempt to index a nil value (global 'screen')` and the rest of the app won't run.
+Only the **sandbox-generic** surface — `log.*`, `time.*`, `store.*`, `events.*`, and Lua's own `math`/`string`/`table`. Hardware Lua modules (`screen.*` for the TFT, `led.*` for the NeoPixel, `battery.*` for the LC709203) are not exposed yet — they're step 3. Apps that reference `screen` (e.g. the m5stick-demo's `hello.lua`) will hit a Lua runtime error like `attempt to index a nil value (global 'screen')` and the rest of the app won't run.
 
 ## Why a custom `partitions.csv`
 

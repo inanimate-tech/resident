@@ -9,7 +9,7 @@ the canonical source; consumers compose them, they don't fork them.
 Concatenate per what the board actually uses:
 
 1. `sandbox.md` — always. The universal sandbox surface: lifecycle, ctx,
-   events, store, log, time, shader globals, limits.
+   events, store, log, time, screens, limits.
 2. `lgfx.md` — when the board registers an `LgfxModule` display.
 3. `lvgl.md` — when the board registers an `LvglModule` display
    (retained-mode UI via LVGL + luavgl).

@@ -116,6 +116,27 @@ public:
   using FontResolver = make_font_cb;   // const lv_font_t* (*)(const char* family, int size, int weight)
   void setFontResolver(FontResolver r) { _fontResolver = r; }
 
+  // Widgets beyond luavgl's own: a board's C++ widget class, constructed from
+  // Lua as parent:Name{...} like any other. The installer adds the
+  // constructor to luavgl's "widgets" registry table (every object's method
+  // lookup falls through to it) and creates the class's metatable with
+  // luavgl_obj_newmetatable, so the widget's own `set` takes its own keys.
+  // It runs on every bind, after luavgl is loaded (before that the widgets
+  // table and the base metatable do not exist), so it must be idempotent —
+  // luavgl_obj_newmetatable returns an existing metatable, and setting a
+  // table field again costs nothing. Every bind rather than once per state
+  // because the sandbox clears every global made after boot when the next
+  // app loads, so a global an installer sets (a helper module) has to be
+  // put back for each app. Up to MAX_WIDGETS; set before the sandbox runs.
+  // An installer leaves the Lua stack as it found it.
+  static constexpr int MAX_WIDGETS = 8;
+  using WidgetInstaller = void (*)(lua_State* L);
+  bool addWidget(WidgetInstaller install) {
+    if (!install || _widgetCount >= MAX_WIDGETS) return false;
+    _widgets[_widgetCount++] = install;
+    return true;
+  }
+
   // lv_init + the tick source. Displays come later (first bind), so a board
   // whose apps never touch LVGL pays only for the library's own init.
   void begin() override {
@@ -203,20 +224,41 @@ public:
   // app compile/init/tick pcall and reported like any other app error.
   int bind(lua_State* L) {
     const char* name = luaL_checkstring(L, 1);
-    Slot* s = nullptr;
-    for (int i = 0; i < _count; i++) {
-      if (strcmp(_slots[i].name, name) == 0) { s = &_slots[i]; break; }
-    }
+    Slot* s = slotFor(name);
     if (!s) return luaL_error(L, "lvgl.bind: no display named '%s'", name);
     if (!s->disp && !createDisplay(*s)) {
       return luaL_error(L, "lvgl.bind: '%s' has no panel to draw on", name);
     }
     RenderTargets::claim(name, RenderTargets::MODULE_LVGL);
     standUp(*s);
-    return luavgl_bind_display(L, s->disp);
+    const int n = luavgl_bind_display(L, s->disp);
+    for (int i = 0; i < _widgetCount; i++) _widgets[i](L);
+    return n;
   }
 
 private:
+  // The slot for a display name: one the board declared with addDisplay, or
+  // — for a display driver's screen (ResidentDisplayDriver.h) — one made on
+  // first bind from the screen's own facts, so a board lists the driver and
+  // nothing else.
+  struct Slot;
+  Slot* slotFor(const char* name) {
+    for (int i = 0; i < _count; i++) {
+      if (strcmp(_slots[i].name, name) == 0) return &_slots[i];
+    }
+    const int i = RenderTargets::indexOf(name);
+    if (i < 0 || _count >= MAX_DISPLAYS) return nullptr;
+    const RenderTargets::Entry& e = RenderTargets::entry(i);
+    if (!e.panel || !e.driver) return nullptr;
+    Slot& s = _slots[_count++];
+    s.name = e.name;
+    s.opts = DisplayOptions();
+    s.opts.dpi = e.dpi;
+    s.opts.bufferRows = e.bufferRows;
+    RenderTargets::declare(e.name, RenderTargets::MODULE_LVGL);
+    return &s;
+  }
+
   struct Slot {
     const char* name = nullptr;
     lv_display_t* disp = nullptr;
@@ -227,6 +269,8 @@ private:
   int _count = 0;
   int _displays = 0;
   FontResolver _fontResolver = nullptr;
+  WidgetInstaller _widgets[MAX_WIDGETS] = {};
+  int _widgetCount = 0;
 
   // lvgl.SYMBOL.<NAME>: LVGL's symbol strings (lv_symbol_def.h) as a Lua
   // table, so an app can write lvgl.SYMBOL.PLAY .. " start". The glyphs
@@ -334,6 +378,7 @@ private:
     uint32_t n = (uint32_t)w * (uint32_t)h;
     for (uint32_t i = 0; i < n; i++) px[i] = __builtin_bswap16(px[i]);
     s->panel->blit(area->x1, area->y1, w, h, px);
+    if (lv_display_flush_is_last(disp)) s->panel->frameDone();
     lv_display_flush_ready(disp);
   }
 

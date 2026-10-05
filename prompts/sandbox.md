@@ -29,6 +29,10 @@ The environment is a sandbox: there is no `os`, `io`, `require`, `load`,
 `coroutine`, `utf8`) are all present. Each callback runs under a wall-clock
 deadline — an unbounded loop aborts that dispatch, not the device.
 
+Numbers are 32-bit: integers wrap past ±2,147,483,647 and floats carry about
+7 significant digits. Math is `math.*` only — there are no bare `floor`,
+`sin`, `min` etc. globals (write `math.floor`, `math.sin`, `math.min`).
+
 ## ctx table
 
 Identical in every callback:
@@ -36,13 +40,10 @@ Identical in every callback:
 | Field | Type | Meaning |
 |-------|------|---------|
 | `time_ms` | integer | ms since this app loaded — the app's clock |
-| `trigger_count` | integer | count of `button` driver events since boot |
 | `generation_id` | string or nil | the server's id for this program version |
-| `utc_h`, `utc_m` | integer | UTC wall clock |
-| `localtime_h`, `localtime_m` | integer | local wall clock (equals UTC until a timezone is set) |
 
-Use `ctx.time_ms` for animation. Use `ctx.localtime_h/m` for time-of-day
-behavior.
+Use `ctx.time_ms` for animation. For the date and time of day, use the
+`datetime` module (`datetime.now()`).
 
 ## Events in (`on_event`)
 
@@ -110,34 +111,96 @@ log.info("hello")  log.warn("careful")  log.error("broke")
 
 `log.error` also reports upstream as telemetry.
 
-## time module
+## datetime module
 
-NTP wall clock. UTC unless the device has a timezone.
-
-`time.is_valid()` · `time.has_timezone()` · `time.hour()` · `time.minute()`
-· `time.second()` · `time.day_id()` (days since boot — a daily cache key).
-
-## surfaces module
-
-The board's drawable surfaces. Geometry comes from the panel itself, so it is
-never stale.
+Python's `datetime`, with whole seconds. If you know Python's `datetime`, you
+know this; `datetime(...)` and `datetime.datetime(...)` both construct.
 
 ```lua
-for _, s in ipairs(surfaces.list()) do
-  log.info(s.name .. " " .. s.w .. "x" .. s.h .. " " .. s.shape)
-end
-local m = surfaces.get("main")   -- nil when the board has no such surface
+if not datetime.synced() then return end      -- until NTP sets the clock, now() is 1970
+local now = datetime.now()                    -- local time; UTC until a zone is set
+log.info(now:strftime("%a %H:%M"))            -- "Mon 13:05"
+local evening = now.hour >= 18
+local weekend = now:weekday() >= 5            -- Monday = 0
+local left = (datetime.date(2026, 12, 25) - datetime.today()).days
+local tomorrow = datetime.today() + datetime.timedelta{ days = 1 }
+local alarm = datetime(2026, 12, 25, 7, 30)   -- local
+if now >= alarm then log.info("ring") end
 ```
 
-Each entry is `{ name, w, h, shape }`; `shape` is `"rect"` or `"round"`. A
-board with no screen lists nothing. These are the same names `lgfx.bind(name)`
-and `lvgl.bind(name)` take.
+- `datetime.now([tz])` → datetime; `datetime.today()` → a **date** (local);
+  `datetime.fromtimestamp(secs[, tz])`; `datetime.synced()` → boolean.
+- `datetime(y, mo, d[, h, mi, s[, tz]])`, `datetime.date(y, mo, d)`,
+  `datetime.timedelta{ weeks, days, hours, minutes, seconds }` (a bare number
+  is days).
+- Two zones: local (the device's, DST applied) and `datetime.UTC`. A `tz`
+  argument is `datetime.UTC`, or nil for local.
+- datetime: fields `year month day hour minute second tzinfo`; `weekday()`
+  (Monday = 0), `isoweekday()` (Monday = 1), `date()`, `timestamp()`,
+  `strftime(fmt)`, `isoformat()`, `replace{ hour = 0, ... }`,
+  `astimezone([tz])`, `tzname()` (`"BST"`), `utcoffset()` (a timedelta).
+- date: fields `year month day`; `weekday()`, `isoweekday()`, `toordinal()`,
+  `strftime(fmt)`, `isoformat()`, `replace{ ... }`.
+- timedelta: fields `days`, `seconds` (0..86399; the sign is on `days`);
+  `total_seconds()`.
+- `+` `-` as in Python (datetime − datetime and date − date give a
+  timedelta), `timedelta * integer`, `==` `<` `<=`. Within one zone,
+  arithmetic is on the wall clock: noon plus a day is noon, across DST. A date
+  never equals a datetime, and ordering one against the other raises.
+- `tostring(x)` is Python's `str()`: `2026-10-05 13:05:09`, `2026-10-05`,
+  `1 day, 2:00:00`.
+- `strftime`: `%a %A %b %B %c %d %e %H %I %j %m %M %p %S %U %w %W %x %X %y %Y
+  %Z %z %%` (C locale, English names), max 255 bytes.
+- Treat values as immutable: make new ones with `replace{}` and arithmetic.
+- No microseconds. Years 1..9999; what needs epoch seconds (`now`,
+  `timestamp()`, a local `utcoffset()`, mixing zones) stops at 2038-01-19.
+- `datetime.today():toordinal()` is a good once-a-day key.
 
-## Always-global functions
+## time module
 
-`rgb(r,g,b)` (normalized floats → packed color, negative-int sentinel) ·
-`fract(x)` · `beat(bpm, t)` · `noise2d(x, y)` (-1..1) — plus bare math:
-`floor ceil abs sin cos tan sqrt min max fmod`.
+Elapsed time: a wrapping millisecond counter, read through `ticks_diff`,
+which is right across the wrap.
+
+```lua
+local t0 = time.ticks_ms()
+-- later:
+local ms = time.ticks_diff(time.ticks_ms(), t0)   -- a - b in ms
+```
+
+Use ticks for timeouts and durations: they do not jump when the clock is set,
+and `ctx.time_ms`, a plain count since load, goes wrong after ~24.8 days.
+
+`time.time`, `localtime`, `gmtime`, `mktime`, `strftime` and `synced` are
+deprecated — they still work, and warn once per app load. Use
+`datetime.now()`, `dt:timestamp()`, `datetime.fromtimestamp(secs)`,
+`datetime(...)`, `dt:strftime(fmt)` and `datetime.synced()`.
+
+## screens module
+
+The board's screens: what each glass is, and its settings. Facts come from
+the display drivers themselves, so they are never stale.
+
+```lua
+for _, s in ipairs(screens.list()) do
+  log.info(s.name .. " " .. s.w .. "x" .. s.h .. " " .. s.shape)
+end
+local m = screens.get("main")         -- nil when the board has no such screen
+screens.set("main", { brightness = 0.4 })
+```
+
+- `screens.list()` → each `{ name, w, h, shape, depth, dpi?, group? }`;
+  `shape` is `"rect"` or `"round"`, `depth` 16 (colour) or 1 (one-bit
+  glass). A board with no screen lists nothing. These are the names
+  `lvgl.bind(name)` takes.
+- `screens.get(name)` → that, plus the screen's current settings and status
+  (`brightness`, an e-paper panel's `busy`/`pending`, …).
+- `screens.set(name, { key = value, ... })` — a key the screen does not have
+  raises, naming it. `brightness` and `contrast` (0..1) are the standard
+  keys; a one-bit screen adds its own. Screens sharing a nonzero `group`
+  share the knob (one backlight rail), so setting one sets them all.
+- `screens.refresh(name)` → `true` if the screen has an "update now" (e-paper)
+  and it was asked; `false` otherwise.
+- Settings reset to the board's defaults whenever an app loads.
 
 ## Limits
 

@@ -49,7 +49,7 @@ Resident pulls in WiFi, ezTime, WiFiManager, Courier, ArduinoJson, Esp32Lua, and
 
 ## Step 2 — Add Resident
 
-**Goal:** the same hardware, now with Wi-Fi + Lua sandbox + WebSocket transport to the default relay. The device displays its 8-character device ID once connected and accepts apps over `push-app`. Apps can only call built-in modules (`log`, `time`, `store`, `events`, math globals); hardware bindings come in step 3.
+**Goal:** the same hardware, now with Wi-Fi + Lua sandbox + WebSocket transport to the default relay. The device displays its 8-character device ID once connected and accepts apps over `push-app`. Apps can only call built-in modules (`log`, `time`, `store`, `events`) and Lua's own `math`/`string`/`table`; hardware bindings come in step 3.
 
 ### What the agent should produce
 
@@ -138,7 +138,6 @@ Place at the device's project root (e.g. [`examples/adafruit-esp32-s2-feather/de
 - **Constraints** — screen resolution, colour ranges, memory considerations.
 - **Practical Tips** — board-specific gotchas an app author needs to remember (e.g. "always call `screen.flip()` after a draw sequence", "clamp NeoPixel brightness in `init()`").
 - **Validation stubs** — an optional ```lua block under `## Validation stubs` providing concrete return values for getter-style functions so the local validator doesn't return `nil` and crash apps that do arithmetic on getter results.
-- **App mode / Shader mode** — note whether shader expressions are supported on the device.
 
 The `/resident:write-device-skill` skill walks an agent through producing this file interactively if you haven't written it yet.
 

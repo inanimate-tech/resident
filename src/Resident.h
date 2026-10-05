@@ -5,6 +5,7 @@
 #include "ResidentSandbox.h"
 #include "ResidentSandboxConfig.h"
 #include "ResidentDriver.h"
+#include "ResidentDisplayDriver.h"
 #include "ResidentExtension.h"
 #include "ResidentExtensions.h"
 #include "ResidentLuaModule.h"

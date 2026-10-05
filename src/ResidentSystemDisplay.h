@@ -2,13 +2,13 @@
 #ifndef RESIDENT_SYSTEM_DISPLAY_H
 #define RESIDENT_SYSTEM_DISPLAY_H
 
-#include "ResidentDriver.h"
+#include "ResidentDisplayDriver.h"
 
 namespace Resident {
 
 // A system-managed text display, assigned via SandboxConfig::systemDisplay.
 // Lifecycle (begin/update) comes from Extension.
-class SystemDisplay : public Driver {
+class SystemDisplay : public DisplayDriver {
 public:
   virtual void displayText(const char* text) = 0;
 

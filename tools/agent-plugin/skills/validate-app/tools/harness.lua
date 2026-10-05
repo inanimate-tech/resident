@@ -1,14 +1,10 @@
 -- Driver that runs after builtins + device stubs + user app are loaded.
 -- The user app's globals (init, on_tick, on_event) are now in _G.
 
+-- ctx carries only time_ms (and generation_id, nil here as on a direct
+-- load); the wall clock is the time module's.
 local ctx = {
-  time_ms       = 0,
-  trigger_count = 0,
-  utc_h         = 12,
-  utc_m         = 0,
-  localtime_h   = 12,
-  localtime_m   = 0,
-  day_id        = 1,
+  time_ms = 0,
 }
 
 if not (init or on_tick or on_event) then

@@ -29,6 +29,9 @@ public:
   // RTTI-free downcast: returns non-null only for Driver subclasses.
   // Avoids dynamic_cast which requires -frtti (disabled by Arduino/ESP32 build).
   virtual class Driver* asDriver() { return nullptr; }
+  // Likewise for display drivers (ResidentDisplayDriver.h): the sandbox
+  // registers the screens of every extension that answers non-null.
+  virtual class DisplayDriver* asDisplayDriver() { return nullptr; }
 
   // Drive begin() at most once. Public so user code can call it early
   // (e.g. status displays that need hardware before Sandbox initialises);

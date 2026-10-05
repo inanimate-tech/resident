@@ -16,6 +16,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILTINS="$SCRIPT_DIR/builtins.lua"
+DATETIME="$SCRIPT_DIR/datetime.lua"
 HARNESS="$SCRIPT_DIR/harness.lua"
 DEDUCE="$SCRIPT_DIR/deduce-modules.sh"
 
@@ -115,6 +116,11 @@ trap 'rm -f "$tmp"' EXIT
 
 {
   cat "$BUILTINS"
+  # The device's datetime module, run over builtins.lua's primitives.
+  echo 'datetime = {}'
+  echo ';(function(...)'
+  cat "$DATETIME"
+  echo 'end)(DATETIME_PRIMITIVES, datetime)'
   echo "$device_stubs"
   echo "$validation_stubs"
   echo "$fallback_stub"

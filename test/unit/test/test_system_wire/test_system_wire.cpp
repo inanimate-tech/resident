@@ -222,12 +222,16 @@ void test_host_hello_marks_seen(void) {
   TEST_ASSERT_TRUE(sandbox->hostHelloSeen());
 }
 
-void test_on_event_ctx_has_wallclock_fields(void) {
+// The wall clock is the datetime module's (datetime.now()), not ctx's: the
+// utc_h/utc_m/localtime_h/localtime_m fields went with the shader templates.
+// ctx is the dispatch's own facts — time_ms since the app loaded.
+void test_on_event_ctx_carries_no_wallclock_fields(void) {
   build();
   loadApp(
       "function on_event(ctx, e)\n"
-      "  saw_clock = (ctx.utc_h ~= nil) and (ctx.utc_m ~= nil)\n"
-      "    and (ctx.localtime_h ~= nil) and (ctx.localtime_m ~= nil)\n"
+      "  saw_clock = (ctx.utc_h == nil) and (ctx.utc_m == nil)\n"
+      "    and (ctx.localtime_h == nil) and (ctx.localtime_m == nil)\n"
+      "    and (ctx.time_ms ~= nil)\n"
       "end\n");
   JsonDocument evt;
   evt["channel"] = "app";
@@ -247,6 +251,6 @@ int main(int, char**) {
   RUN_TEST(test_hello_never_carries_authoring_facts);
   RUN_TEST(test_render_target_registry_merges_and_serves_bind);
   RUN_TEST(test_host_hello_marks_seen);
-  RUN_TEST(test_on_event_ctx_has_wallclock_fields);
+  RUN_TEST(test_on_event_ctx_carries_no_wallclock_fields);
   return UNITY_END();
 }

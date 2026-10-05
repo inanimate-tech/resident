@@ -63,15 +63,23 @@ inline int      digitalRead(int)        { return 0; }
 // Stub esp_random (normally from esp_system.h)
 inline uint32_t esp_random()            { return 0; }
 
+// Everything Serial.printf wrote, for a test that asserts on what the author
+// would see in the log (log.warn's line, a deprecation notice). Clear it in
+// setUp().
+inline std::string& testSerialLog() { static std::string log; return log; }
+
 // Minimal Print interface (Serial derives from it in real Arduino)
 struct Print {
     virtual void write(const char* s) { fputs(s, stdout); }
     virtual void println(const char* s = "") { puts(s); }
     virtual void printf(const char* fmt, ...) {
+        char buf[512];
         va_list args;
         va_start(args, fmt);
-        vfprintf(stderr, fmt, args);
+        vsnprintf(buf, sizeof(buf), fmt, args);
         va_end(args);
+        fputs(buf, stderr);
+        testSerialLog() += buf;
     }
 };
 

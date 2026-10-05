@@ -78,7 +78,7 @@ local function eval_grid(g)
     end
   end
   local bump = 0
-  for c=1,COLS-1 do bump = bump + abs(h[c] - h[c+1]) end
+  for c=1,COLS-1 do bump = bump + math.abs(h[c] - h[c+1]) end
   local max_h = 0
   for c=1,COLS do if h[c] > max_h then max_h = h[c] end end
   local ln = 0
@@ -300,10 +300,10 @@ function on_tick(ctx, dt_ms)
     local cw = 6 * sz
     local ch = 8 * sz
     local tw = #s * cw
-    screen.text(floor((135 - tw) / 2), floor((240 - ch) / 2) - 16, s, sz, 255, 220, 0)
+    screen.text(math.floor((135 - tw) / 2), math.floor((240 - ch) / 2) - 16, s, sz, 255, 220, 0)
     local lbl = "LINES"
     local lw = #lbl * 6 * 2
-    screen.text(floor((135 - lw) / 2), floor((240 - ch) / 2) + ch + 4, lbl, 2, 220, 220, 220)
+    screen.text(math.floor((135 - lw) / 2), math.floor((240 - ch) / 2) + ch + 4, lbl, 2, 220, 220, 220)
     if ctx.time_ms - oot >= 2000 then
       reset()
       led.off()

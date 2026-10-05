@@ -7,6 +7,7 @@
 #include "chipstring.h"
 #include "ResidentNvsStore.h"   // device-only; no-op on native
 #include "ResidentRenderTargets.h"
+#include "ResidentDatetime.h"
 
 extern "C" {
   #include "lua/lua.h"
@@ -259,6 +260,11 @@ void Sandbox::initialize()
   _fwEventRef = LUA_NOREF;
   _fwAppLoadedRef = LUA_NOREF;
 
+  // Every screen of every display driver in cfg.extensions, before anything
+  // begins: drawing libraries find screens by name, and the Lua `screens`
+  // module reads them.
+  registerScreens();
+
   setupLuaEnvironment();
 
   // Build the de-duped lifecycle set (extensions[] + role slots).
@@ -285,11 +291,23 @@ void Sandbox::initialize()
   // assigned only to cfg.systemDisplay) must NOT get a Lua global — it has no
   // API surface to expose. A role object that also wants a Lua module must be
   // listed in extensions[] explicitly.
+  // An extension that registers nothing (a display driver whose screens are
+  // reached through lvgl.bind and `screens`, a sensor that only emits
+  // events) gets no global: an empty table named after a driver would read
+  // as an API that is not there.
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
     Extension* ext = _config.extensions.items[i];
     lua_newtable(_lua);
     LuaModule m(_lua, ext);
     ext->registerModule(m);
+    lua_pushnil(_lua);
+    const bool empty = lua_next(_lua, -2) == 0;
+    if (!empty) lua_pop(_lua, 2);          // the key and value lua_next pushed
+    if (empty && !lua_getmetatable(_lua, -1)) {
+      lua_pop(_lua, 1);                    // nothing in it and no fallthrough
+      continue;
+    }
+    if (empty) lua_pop(_lua, 1);           // the metatable lua_getmetatable pushed
     lua_setglobal(_lua, ext->name());
   }
 
@@ -376,24 +394,6 @@ void Sandbox::resetAppGlobals()
 
 void Sandbox::setupLuaEnvironment()
 {
-  // Shader-compatible global functions
-  lua_register(_lua, "rgb", lua_rgb);
-  lua_register(_lua, "fract", lua_fract);
-  lua_register(_lua, "beat", lua_beat);
-  lua_register(_lua, "noise2d", lua_noise2d);
-
-  // Math globals (bare functions for shader expression compatibility)
-  lua_register(_lua, "floor", lua_math_floor);
-  lua_register(_lua, "ceil", lua_math_ceil);
-  lua_register(_lua, "abs", lua_math_abs);
-  lua_register(_lua, "sin", lua_math_sin);
-  lua_register(_lua, "cos", lua_math_cos);
-  lua_register(_lua, "tan", lua_math_tan);
-  lua_register(_lua, "sqrt", lua_math_sqrt);
-  lua_register(_lua, "min", lua_math_min);
-  lua_register(_lua, "max", lua_math_max);
-  lua_register(_lua, "fmod", lua_math_fmod);
-
   // log module
   lua_newtable(_lua);
   lua_pushcfunction(_lua, lua_log_info);
@@ -418,31 +418,42 @@ void Sandbox::setupLuaEnvironment()
     }
   }
 
-  // time module
+  // time module: Python 3's time, with MicroPython's integer seconds and
+  // ticks where 32-bit Lua numbers bite (see the bindings below).
   lua_newtable(_lua);
-  lua_pushcfunction(_lua, lua_time_is_valid);
-  lua_setfield(_lua, -2, "is_valid");
-  lua_pushcfunction(_lua, lua_time_hour);
-  lua_setfield(_lua, -2, "hour");
-  lua_pushcfunction(_lua, lua_time_minute);
-  lua_setfield(_lua, -2, "minute");
-  lua_pushcfunction(_lua, lua_time_second);
-  lua_setfield(_lua, -2, "second");
-  lua_pushcfunction(_lua, lua_time_day_id);
-  lua_setfield(_lua, -2, "day_id");
-  lua_pushcfunction(_lua, lua_time_has_timezone);
-  lua_setfield(_lua, -2, "has_timezone");
+  lua_pushcfunction(_lua, lua_time_time);
+  lua_setfield(_lua, -2, "time");
+  lua_pushcfunction(_lua, lua_time_ticks_ms);
+  lua_setfield(_lua, -2, "ticks_ms");
+  lua_pushcfunction(_lua, lua_time_ticks_diff);
+  lua_setfield(_lua, -2, "ticks_diff");
+  lua_pushcfunction(_lua, lua_time_gmtime);
+  lua_setfield(_lua, -2, "gmtime");
+  lua_pushcfunction(_lua, lua_time_localtime);
+  lua_setfield(_lua, -2, "localtime");
+  lua_pushcfunction(_lua, lua_time_mktime);
+  lua_setfield(_lua, -2, "mktime");
+  lua_pushcfunction(_lua, lua_time_strftime);
+  lua_setfield(_lua, -2, "strftime");
+  lua_pushcfunction(_lua, lua_time_synced);
+  lua_setfield(_lua, -2, "synced");
   lua_setglobal(_lua, "time");
 
-  // surfaces module: the board's render targets, readable. Always present —
-  // a board with no drawable surface lists none, which is the honest answer
-  // and saves every consumer a capability check.
+  // datetime module: Python's datetime, loaded on first touch.
+  installDatetime();
+
+  // screens module: the screens of the board's display drivers — their facts
+  // and their settings. Always present: a board with no screen lists none.
   lua_newtable(_lua);
-  lua_pushcfunction(_lua, lua_surfaces_list);
+  lua_pushcfunction(_lua, lua_screens_list);
   lua_setfield(_lua, -2, "list");
-  lua_pushcfunction(_lua, lua_surfaces_get);
+  lua_pushcfunction(_lua, lua_screens_get);
   lua_setfield(_lua, -2, "get");
-  lua_setglobal(_lua, "surfaces");
+  lua_pushcfunction(_lua, lua_screens_set);
+  lua_setfield(_lua, -2, "set");
+  lua_pushcfunction(_lua, lua_screens_refresh);
+  lua_setfield(_lua, -2, "refresh");
+  lua_setglobal(_lua, "screens");
 }
 
 void Sandbox::setup()
@@ -552,7 +563,7 @@ void Sandbox::deferAppLoads(bool defer)
   if (defer || !_deferredLoadJson) return;
 
   // Apply the stashed load now. Hand ownership to a local first: loadApp /
-  // loadShader may allocate heavily, and re-entrant stashing must see a
+  // loadApp may allocate heavily, and re-entrant stashing must see a
   // clean slot.
   char* payload = _deferredLoadJson;
   _deferredLoadJson = nullptr;
@@ -619,7 +630,7 @@ void Sandbox::onCourierMessage(const char* transportName,
   // logging each one as deprecated would be both noise and a lie.
   if (_messageFilter && !_messageFilter(transportName, type, doc)) return;
   Serial.printf("[deprecated] un-channelled '%s' message; sender should stamp channel\n", type);
-  bool isLoad = strcmp(type, "app") == 0 || strcmp(type, "shader") == 0;
+  bool isLoad = strcmp(type, "app") == 0;
   if (isLoad) maybeShowDescription(doc);
   if (_deferLoads && isLoad) {
     stashDeferredLoad(doc);
@@ -695,7 +706,7 @@ bool Sandbox::isDuplicateNonce(const char* nonce)
 void Sandbox::handleSystemMessage(const char* transportName, const char* type,
                                   JsonDocument& doc)
 {
-  bool isLoad = strcmp(type, "app") == 0 || strcmp(type, "shader") == 0;
+  bool isLoad = strcmp(type, "app") == 0;
   if (isLoad) maybeShowDescription(doc);
   if (_deferLoads && isLoad) { stashDeferredLoad(doc); return; }
   if (strcmp(type, "app") == 0) {
@@ -711,21 +722,9 @@ void Sandbox::handleSystemMessage(const char* transportName, const char* type,
     }
     return;
   }
-  if (strcmp(type, "shader") == 0) {
-    ShaderFields fields;
-    for (JsonPair kv : doc.as<JsonObject>()) {
-      if (strcmp(kv.key().c_str(), "type") == 0) continue;
-      if (strcmp(kv.key().c_str(), "channel") == 0) continue;
-      if (kv.value().is<const char*>()) {
-        fields[String(kv.key().c_str())] = String(kv.value().as<const char*>());
-      }
-    }
-    loadShader(fields);
-    return;
-  }
   if (strcmp(type, "chunk") == 0) {
     // In-sandbox chunk load. Deliberately OUTSIDE the
-    // app/shader stash-deferral above: a chunk during a deferred-load
+    // app stash-deferral above: a chunk during a deferred-load
     // window is dropped inside loadChunk (see its comment), never stashed,
     // and never persisted.
     const char* code = doc["code"];
@@ -899,7 +898,7 @@ void Sandbox::drainOutboundSystem()
   }
 }
 
-// App/shader "description" field -> systemDisplay on load receipt. Called
+// App "description" field -> systemDisplay on load receipt. Called
 // once per load, before deferral is applied — a deferred load's description
 // was already shown here at receipt, so the deferred-apply path shows nothing.
 void Sandbox::maybeShowDescription(JsonDocument& doc)
@@ -1853,17 +1852,6 @@ void Sandbox::dispatchMessage(const char* transportName,
     }
     return;
   }
-  if (strcmp(type, "shader") == 0) {
-    ShaderFields fields;
-    for (JsonPair kv : doc.as<JsonObject>()) {
-      if (strcmp(kv.key().c_str(), "type") == 0) continue;
-      if (kv.value().is<const char*>()) {
-        fields[String(kv.key().c_str())] = String(kv.value().as<const char*>());
-      }
-    }
-    loadShader(fields);
-    return;
-  }
   if (strcmp(type, "app_event") == 0) {
     const char* name = doc["name"];
     char dataJson[RESIDENT_EVENT_JSON_MAX];
@@ -2772,19 +2760,6 @@ void Sandbox::clearPersistedApp()
   if (_store) _store->clear();
 }
 
-void Sandbox::loadShader(const ShaderFields& fields) {
-  if (!_config.shaderTemplate) {
-    Serial.println("[sandbox] No shader template set");
-    return;
-  }
-  String luaCode = _config.shaderTemplate(fields);
-  if (luaCode.isEmpty()) {
-    Serial.println("[sandbox] Shader template returned empty code");
-    return;
-  }
-  loadApp(luaCode.c_str());
-}
-
 // Events received while the app is suspended are still queued onto the ring
 // here; loop() defers dispatch (processNextEvent) until resumeApp(), so they
 // are deferred — not dropped — though a long suspend can overflow the 8-slot
@@ -2851,6 +2826,12 @@ bool Sandbox::compileApp(const char* code)
   // every non-baseline global goes, not just the three lifecycle names.
   // ("Fresh boot" finally means fresh.)
   if (_config.freshAppEnvironment) resetAppGlobals();
+
+  // A fresh, unloaded datetime for every app: one that never touches it pays
+  // nothing, and nothing the last app did to it survives. And the `time`
+  // deprecation notices are owed again.
+  installDatetime();
+  _timeDeprecationsWarned = 0;
 
   // Clear old global functions (covered by the reset above, but explicit —
   // and still required when freshAppEnvironment is off)
@@ -2960,12 +2941,7 @@ bool Sandbox::callInit()
   lua_newtable(_lua);
   lua_pushinteger(_lua, initT);
   lua_setfield(_lua, -2, "time_ms");
-  lua_pushinteger(_lua, _triggerCount);
-  lua_setfield(_lua, -2, "trigger_count");
   pushCtxGenerationId();
-
-  // Time-of-day fields
-  pushLocalTimeFields();
 
   armExecutionGuard();
   int result = lua_pcall(_lua, 1, 0, 0);
@@ -2991,12 +2967,7 @@ void Sandbox::callOnTick(unsigned long dt_ms)
   lua_newtable(_lua);
   lua_pushinteger(_lua, t);
   lua_setfield(_lua, -2, "time_ms");
-  lua_pushinteger(_lua, _triggerCount);
-  lua_setfield(_lua, -2, "trigger_count");
   pushCtxGenerationId();
-
-  // Time-of-day fields
-  pushLocalTimeFields();
 
   lua_pushinteger(_lua, dt_ms);
 
@@ -3019,23 +2990,6 @@ void Sandbox::callOnTick(unsigned long dt_ms)
   }
 }
 
-void Sandbox::pushLocalTimeFields()
-{
-  int utcH = UTC.hour();
-  int utcM = UTC.minute();
-  lua_pushinteger(_lua, utcH);
-  lua_setfield(_lua, -2, "utc_h");
-  lua_pushinteger(_lua, utcM);
-  lua_setfield(_lua, -2, "utc_m");
-
-  int localH = _hasTimezone ? _tz.hour()   : utcH;
-  int localM = _hasTimezone ? _tz.minute() : utcM;
-  lua_pushinteger(_lua, localH);
-  lua_setfield(_lua, -2, "localtime_h");
-  lua_pushinteger(_lua, localM);
-  lua_setfield(_lua, -2, "localtime_m");
-}
-
 // The uniform ctx table (0.8): identical in every callback and for
 // framework hooks.
 void Sandbox::pushCtxTable()
@@ -3043,10 +2997,7 @@ void Sandbox::pushCtxTable()
   lua_newtable(_lua);
   lua_pushinteger(_lua, millis() - _triggerResetTime);
   lua_setfield(_lua, -2, "time_ms");
-  lua_pushinteger(_lua, _triggerCount);
-  lua_setfield(_lua, -2, "trigger_count");
   pushCtxGenerationId();
-  pushLocalTimeFields();
 }
 
 void Sandbox::processNextEvent()
@@ -3219,11 +3170,6 @@ void Sandbox::driverEventHandler(void* ctx, const char* name,
   // on Running); in Ready/Pending there is no app, so drop them.
   if (!self->isAppRunning()) return;
 
-  // Count button events for ctx.trigger_count
-  if (strcmp(name, "button") == 0) {
-    self->_triggerCount++;
-  }
-
   // Queue the event
   int nextHead = (self->_eventHead + 1) % SANDBOX_MAX_EVENTS;
   if (nextHead == self->_eventTail) {
@@ -3343,60 +3289,6 @@ void Sandbox::emitTelemetry(const char* name, const char* error)
 
 // --- Lua C functions ---
 
-int Sandbox::lua_rgb(lua_State* L)
-{
-  double r = luaL_checknumber(L, 1);
-  double g = luaL_checknumber(L, 2);
-  double b = luaL_checknumber(L, 3);
-
-  uint8_t r8 = (uint8_t)(fmax(0.0, fmin(1.0, r)) * 255.0);
-  uint8_t g8 = (uint8_t)(fmax(0.0, fmin(1.0, g)) * 255.0);
-  uint8_t b8 = (uint8_t)(fmax(0.0, fmin(1.0, b)) * 255.0);
-
-  uint32_t packed = (r8 << 16) | (g8 << 8) | b8;
-  lua_pushnumber(L, -(double)packed);
-  return 1;
-}
-
-int Sandbox::lua_fract(lua_State* L)
-{
-  double x = luaL_checknumber(L, 1);
-  lua_pushnumber(L, x - floor(x));
-  return 1;
-}
-
-int Sandbox::lua_beat(lua_State* L)
-{
-  double bpm = luaL_checknumber(L, 1);
-  double t = luaL_checknumber(L, 2);
-  lua_pushnumber(L, t / (60000.0 / bpm));
-  return 1;
-}
-
-// noise2d(x, y) — deterministic 2D value noise, returns -1 to +1
-// Ported from SmolNoise.h (deleted in 38bb1fe)
-static inline double smolHash(int x, int y) {
-  uint32_t h = (uint32_t)x * 0x8da6b343 ^ (uint32_t)y * 0xd8163841;
-  h ^= h >> 13; h *= 0xc2b2ae35; h ^= h >> 16;
-  return (h & 0xFFFFFF) / double(0xFFFFFF);
-}
-
-int Sandbox::lua_noise2d(lua_State* L)
-{
-  double x = luaL_checknumber(L, 1);
-  double y = luaL_checknumber(L, 2);
-  int xi = (int)floor(x), yi = (int)floor(y);
-  double xf = x - xi, yf = y - yi;
-  double u = smolHash(xi,     yi    );
-  double v = smolHash(xi + 1, yi    );
-  double w = smolHash(xi,     yi + 1);
-  double z = smolHash(xi + 1, yi + 1);
-  double a = u + (v - u) * xf;
-  double b = w + (z - w) * xf;
-  lua_pushnumber(L, (a + (b - a) * yf) * 2.0 - 1.0);
-  return 1;
-}
-
 int Sandbox::lua_log_info(lua_State* L)
 {
   const char* msg = luaL_checkstring(L, 1);
@@ -3404,10 +3296,15 @@ int Sandbox::lua_log_info(lua_State* L)
   return 0;
 }
 
+// log.warn's line, which the runtime's own warnings to the author share.
+static void writeWarn(const char* msg)
+{
+  Serial.printf("[WARN] %s\n", msg);
+}
+
 int Sandbox::lua_log_warn(lua_State* L)
 {
-  const char* msg = luaL_checkstring(L, 1);
-  Serial.printf("[WARN] %s\n", msg);
+  writeWarn(luaL_checkstring(L, 1));
   return 0;
 }
 
@@ -3426,12 +3323,10 @@ int Sandbox::lua_log_error(lua_State* L)
   return 0;
 }
 
-// ── surfaces module ───────────────────────────────────────────────────────
-// The board's render targets, readable from Lua. The registry is where a
-// board declares its drawable surfaces (RenderTargets::addPanel), and this is
-// the read: a consumer that needs to know what surfaces exist and how big
-// they are can ASK instead of being told out of band. Geometry comes from the
-// panel itself, so it cannot go stale.
+// ── screens: the facts every listing carries ───────────────────────────────
+// Geometry is read from the panel at call time (RenderTargets::size), never
+// cached: a board declares its drivers during static init, before any panel
+// exists to ask.
 static void pushSurface(lua_State* L, const RenderTargets::Entry& e)
 {
   int32_t w = 0, h = 0;
@@ -3447,152 +3342,558 @@ static void pushSurface(lua_State* L, const RenderTargets::Entry& e)
   lua_setfield(L, -2, "shape");
 }
 
-// surfaces.list() -> { {name=, w=, h=, shape=}, ... } in registration order.
-int Sandbox::lua_surfaces_list(lua_State* L)
+// ── screens module ────────────────────────────────────────────────────────
+// A display driver's screens, as Lua sees them. The facts come from the
+// registry (geometry read live from the panel); settings and status come from
+// the driver that owns the screen. A panel a board registered by hand with
+// RenderTargets::addPanel is listed too, with no settings of its own.
+
+void Sandbox::registerScreens()
 {
-  const int n = RenderTargets::count();
-  lua_createtable(L, n, 0);
-  for (int i = 0; i < n; i++) {
-    pushSurface(L, RenderTargets::entry(i));
-    lua_rawseti(L, -2, i + 1);
+  for (uint8_t i = 0; i < _config.extensions.count; i++) {
+    Extension* ext = _config.extensions.items[i];
+    DisplayDriver* dd = ext ? ext->asDisplayDriver() : nullptr;
+    if (!dd) continue;
+    const int n = dd->screenCount();
+    for (int k = 0; k < n; k++) {
+      const Screen s = dd->screen(k);
+      if (!s.name || !s.target) continue;
+      if (!RenderTargets::addScreen(s.name, s.target, s.shape, s.depth, s.dpi,
+                                    s.bufferRows, s.group, dd, k)) {
+        Serial.printf("[screens] could not register '%s' (registry full?)\n", s.name);
+      }
+    }
+  }
+}
+
+static void pushScreen(lua_State* L, const RenderTargets::Entry& e)
+{
+  pushSurface(L, e);   // name, w, h, shape
+  lua_pushinteger(L, e.depth);
+  lua_setfield(L, -2, "depth");
+  if (e.dpi) { lua_pushinteger(L, e.dpi); lua_setfield(L, -2, "dpi"); }
+  if (e.group) { lua_pushinteger(L, e.group); lua_setfield(L, -2, "group"); }
+}
+
+// The screen named at stack index `idx`, or raise.
+static const RenderTargets::Entry& checkScreen(lua_State* L, int idx, const char* fn)
+{
+  const char* name = luaL_checkstring(L, idx);
+  const int i = RenderTargets::indexOf(name);
+  if (i < 0 || !RenderTargets::entry(i).panel) {
+    luaL_error(L, "screens.%s: no screen named '%s'", fn, name);
+  }
+  return RenderTargets::entry(i);
+}
+
+// screens.list() -> { {name, w, h, shape, depth, dpi?, group?}, ... }
+int Sandbox::lua_screens_list(lua_State* L)
+{
+  lua_newtable(L);
+  int out = 0;
+  for (int i = 0; i < RenderTargets::count(); i++) {
+    const RenderTargets::Entry& e = RenderTargets::entry(i);
+    if (!e.panel) continue;
+    pushScreen(L, e);
+    lua_rawseti(L, -2, ++out);
   }
   return 1;
 }
 
-// surfaces.get(name) -> the same table, or nil when the board has no such
-// surface. Absence is the honest answer: a screenless board lists nothing.
-int Sandbox::lua_surfaces_get(lua_State* L)
+// screens.get(name) -> the list entry plus the screen's current settings and
+// status, or nil when there is no such screen.
+int Sandbox::lua_screens_get(lua_State* L)
 {
   const char* name = luaL_checkstring(L, 1);
   const int i = RenderTargets::indexOf(name);
-  if (i < 0) {
-    lua_pushnil(L);
-    return 1;
-  }
-  pushSurface(L, RenderTargets::entry(i));
+  if (i < 0 || !RenderTargets::entry(i).panel) { lua_pushnil(L); return 1; }
+  const RenderTargets::Entry& e = RenderTargets::entry(i);
+  pushScreen(L, e);
+  if (e.driver) e.driver->getScreen(e.screenIndex, L);
   return 1;
 }
 
-int Sandbox::lua_time_is_valid(lua_State* L)
+// screens.set(name, { key = value, ... }) -> nothing. Each key goes to the
+// screen's driver; a key it does not have raises, naming it.
+int Sandbox::lua_screens_set(lua_State* L)
 {
+  const RenderTargets::Entry& e = checkScreen(L, 1, "set");
+  luaL_checktype(L, 2, LUA_TTABLE);
+  lua_pushnil(L);
+  while (lua_next(L, 2) != 0) {          // key at -2, value at -1
+    if (lua_type(L, -2) != LUA_TSTRING) {
+      return luaL_error(L, "screens.set: setting names are strings");
+    }
+    const char* key = lua_tostring(L, -2);
+    const int valueIdx = lua_gettop(L);
+    if (!e.driver || !e.driver->setScreen(e.screenIndex, key, L, valueIdx)) {
+      return luaL_error(L, "screens.set: '%s' has no setting '%s'", e.name, key);
+    }
+    lua_settop(L, valueIdx - 1);         // drop the value, keep the key
+  }
+  if (e.driver) e.driver->commitScreen(e.screenIndex, L);
+  return 0;
+}
+
+// screens.refresh(name) -> true when the screen took it (an e-paper panel's
+// "update now"); false for a screen with no such thing.
+int Sandbox::lua_screens_refresh(lua_State* L)
+{
+  const RenderTargets::Entry& e = checkScreen(L, 1, "refresh");
+  lua_pushboolean(L, e.driver && e.driver->refresh(e.screenIndex));
+  return 1;
+}
+
+// --- time: Python 3's time module -----------------------------------------
+//
+// Python's names, fields and semantics, except where the VM's numbers make
+// them a trap. Lua here is built with LUA_32BITS: integers and floats are
+// both 32-bit, so a float epoch is good only to 128 s and a float
+// seconds-since-boot (Python's monotonic) quietly loses its milliseconds
+// within hours of uptime. MicroPython met the same limits on the same class
+// of hardware, and its answer is taken whole: wall-clock seconds are
+// INTEGERS (exact until int32 runs out on 2038-01-19), and elapsed time is a
+// wrapping millisecond counter, ticks_ms(), read through ticks_diff(), which
+// is right across the wrap. There is deliberately no monotonic().
+//
+// The calendar maths and strftime are ResidentTimeCore.h's; what lives here
+// is where "now" and the zone come from. Now is ezTime's UTC clock (NTP, or
+// Courier's HTTP-Date fallback); the zone is the IANA location setTimezone
+// resolved, applied through ezTime's own rules for the instant in question,
+// so a localtime() across a DST change is right on both sides of it.
+//
+// The calendar half (time, gmtime, localtime, mktime, strftime, synced) is
+// deprecated for `datetime` below, which answers "tomorrow" and "days until"
+// that struct_time cannot. Those calls still work, and each warns once per
+// app load. ticks_ms/ticks_diff are not deprecated: they are the monotonic
+// clock, which datetime does not have (Python keeps monotonic in time too).
+
+namespace {
+
+struct TimeDeprecation { const char* call; const char* use; };
+const TimeDeprecation kTimeDeprecations[] = {
+  {"time.time()",      "datetime.now():timestamp()"},
+  {"time.gmtime()",    "datetime.now(datetime.UTC) / datetime.fromtimestamp(secs, datetime.UTC)"},
+  {"time.localtime()", "datetime.now() / datetime.fromtimestamp(secs)"},
+  {"time.mktime()",    "datetime(y, m, d, ...):timestamp()"},
+  {"time.strftime()",  "dt:strftime(fmt)"},
+  {"time.synced()",    "datetime.synced()"},
+};
+enum { kDepTime, kDepGmtime, kDepLocaltime, kDepMktime, kDepStrftime, kDepSynced };
+
+Sandbox* timeSandbox(lua_State* L)
+{
+  lua_getfield(L, LUA_REGISTRYINDEX, REGISTRY_KEY);
+  Sandbox* self = (Sandbox*)lua_touserdata(L, -1);
+  lua_pop(L, 1);
+  return self;
+}
+
+int64_t nowSeconds()
+{
+  return (int64_t)UTC.now();
+}
+
+// An integer argument read as an integer: through luaL_checknumber a 32-bit
+// float would round an epoch to the nearest 128 s.
+int64_t checkWhole(lua_State* L, int idx)
+{
+  if (lua_isinteger(L, idx)) return (int64_t)lua_tointeger(L, idx);
+  return (int64_t)floor((double)luaL_checknumber(L, idx));
+}
+
+int64_t optSeconds(lua_State* L, int idx)
+{
+  if (lua_isnoneornil(L, idx)) return nowSeconds();
+  return checkWhole(L, idx);
+}
+
+void pushStructTime(lua_State* L, const timecore::Tm& t)
+{
+  lua_createtable(L, 0, 11);
+  lua_pushinteger(L, t.year);   lua_setfield(L, -2, "tm_year");
+  lua_pushinteger(L, t.mon);    lua_setfield(L, -2, "tm_mon");
+  lua_pushinteger(L, t.mday);   lua_setfield(L, -2, "tm_mday");
+  lua_pushinteger(L, t.hour);   lua_setfield(L, -2, "tm_hour");
+  lua_pushinteger(L, t.min);    lua_setfield(L, -2, "tm_min");
+  lua_pushinteger(L, t.sec);    lua_setfield(L, -2, "tm_sec");
+  lua_pushinteger(L, t.wday);   lua_setfield(L, -2, "tm_wday");
+  lua_pushinteger(L, t.yday);   lua_setfield(L, -2, "tm_yday");
+  lua_pushinteger(L, t.isdst);  lua_setfield(L, -2, "tm_isdst");
+  lua_pushstring(L, t.zone);    lua_setfield(L, -2, "tm_zone");
+  lua_pushinteger(L, t.gmtoff); lua_setfield(L, -2, "tm_gmtoff");
+}
+
+int intField(lua_State* L, int idx, const char* key, int dflt, bool required)
+{
+  lua_getfield(L, idx, key);
+  int v = dflt;
+  if (lua_isinteger(L, -1)) {
+    v = (int)lua_tointeger(L, -1);
+  } else if (lua_isnumber(L, -1)) {
+    v = (int)floor((double)lua_tonumber(L, -1));
+  } else if (required || !lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    return luaL_error(L, "struct_time field '%s' must be a number", key);
+  }
+  lua_pop(L, 1);
+  return v;
+}
+
+// A struct_time table back into fields. tm_year/tm_mon/tm_mday are required;
+// the time of day defaults to midnight. Weekday and yearday are RECOMPUTED
+// from the date, so a table an app built by hand formats correctly.
+timecore::Tm checkStructTime(lua_State* L, int idx)
+{
+  luaL_checktype(L, idx, LUA_TTABLE);
+  timecore::Tm t;
+  t.year  = intField(L, idx, "tm_year", 1970, true);
+  t.mon   = intField(L, idx, "tm_mon", 1, true);
+  t.mday  = intField(L, idx, "tm_mday", 1, true);
+  t.hour  = intField(L, idx, "tm_hour", 0, false);
+  t.min   = intField(L, idx, "tm_min", 0, false);
+  t.sec   = intField(L, idx, "tm_sec", 0, false);
+  t.isdst = intField(L, idx, "tm_isdst", -1, false);
+  t.gmtoff = intField(L, idx, "tm_gmtoff", 0, false);
+  lua_getfield(L, idx, "tm_zone");
+  const char* zone = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+  snprintf(t.zone, sizeof(t.zone), "%s", zone);
+  lua_pop(L, 1);
+  timecore::weekdayAndYearday(t.year, t.mon, t.mday, t.wday, t.yday);
+  return t;
+}
+
+}  // namespace
+
+timecore::Tm Sandbox::localTime(int64_t utcSeconds) const
+{
+  if (!_hasTimezone) return timecore::breakDown(utcSeconds, 0, 0, "UTC");
+  String name;
+  bool dst = false;
+  int16_t offsetMinutesWest = 0;
+  Timezone& tz = const_cast<Timezone&>(_tz);
+  tz.tzTime((time_t)utcSeconds, UTC_TIME, name, dst, offsetMinutesWest);
+  return timecore::breakDown(utcSeconds, -(int32_t)offsetMinutesWest * 60,
+                             dst ? 1 : 0, name.c_str());
+}
+
+int64_t Sandbox::localToUtc(int64_t wallSeconds) const
+{
+  if (!_hasTimezone) return wallSeconds;
+  Timezone& tz = const_cast<Timezone&>(_tz);
+  return (int64_t)tz.tzTime((time_t)wallSeconds, LOCAL_TIME);
+}
+
+// ezTime reads a wall time in the spring-forward gap as DST, and the hour an
+// autumn change repeats as its first (DST) occurrence.
+int64_t Sandbox::resolveLocal(int64_t wallSeconds, int32_t& gmtoff, String& zone) const
+{
+  if (!_hasTimezone) {
+    gmtoff = 0;
+    zone = "UTC";
+    return wallSeconds;
+  }
+  bool dst = false;
+  int16_t offsetMinutesWest = 0;
+  Timezone& tz = const_cast<Timezone&>(_tz);
+  const int64_t utc =
+      (int64_t)tz.tzTime((time_t)wallSeconds, LOCAL_TIME, zone, dst, offsetMinutesWest);
+  gmtoff = -(int32_t)offsetMinutesWest * 60;
+  return utc;
+}
+
+// "[deprecated] time.localtime(): use datetime.now()", on log.warn's line,
+// once per app load per function.
+void Sandbox::warnDeprecatedTime(lua_State* L, int which)
+{
+  Sandbox* self = timeSandbox(L);
+  if (!self || (self->_timeDeprecationsWarned & (1u << which))) return;
+  self->_timeDeprecationsWarned |= (uint8_t)(1u << which);
+  char msg[160];
+  snprintf(msg, sizeof(msg), "[deprecated] %s: use %s",
+           kTimeDeprecations[which].call, kTimeDeprecations[which].use);
+  writeWarn(msg);
+}
+
+// time.time() -> whole seconds since the epoch (UTC), an integer.
+int Sandbox::lua_time_time(lua_State* L)
+{
+  warnDeprecatedTime(L, kDepTime);
+  lua_pushinteger(L, (lua_Integer)nowSeconds());
+  return 1;
+}
+
+// time.ticks_ms() -> a millisecond counter that wraps. Only a difference
+// taken with ticks_diff means anything. It is millis() reinterpreted as a
+// signed 32-bit value, so it wraps at the same point on every Lua build.
+int Sandbox::lua_time_ticks_ms(lua_State* L)
+{
+  lua_pushinteger(L, (lua_Integer)(int32_t)(uint32_t)millis());
+  return 1;
+}
+
+// time.ticks_diff(a, b) -> a - b in ms, right across the wrap (for spans
+// under ~24.8 days either way).
+int Sandbox::lua_time_ticks_diff(lua_State* L)
+{
+  const uint32_t a = (uint32_t)checkWhole(L, 1);
+  const uint32_t b = (uint32_t)checkWhole(L, 2);
+  lua_pushinteger(L, (lua_Integer)(int32_t)(a - b));
+  return 1;
+}
+
+// time.gmtime([secs]) -> struct_time in UTC.
+int Sandbox::lua_time_gmtime(lua_State* L)
+{
+  warnDeprecatedTime(L, kDepGmtime);
+  pushStructTime(L, timecore::breakDown(optSeconds(L, 1), 0, 0, "UTC"));
+  return 1;
+}
+
+// time.localtime([secs]) -> struct_time in the device's zone (UTC until the
+// zone is known).
+int Sandbox::lua_time_localtime(lua_State* L)
+{
+  warnDeprecatedTime(L, kDepLocaltime);
+  Sandbox* self = timeSandbox(L);
+  const int64_t secs = optSeconds(L, 1);
+  pushStructTime(L, self ? self->localTime(secs) : timecore::breakDown(secs, 0, 0, "UTC"));
+  return 1;
+}
+
+// time.mktime(t) -> epoch seconds for a struct_time read as LOCAL time.
+int Sandbox::lua_time_mktime(lua_State* L)
+{
+  warnDeprecatedTime(L, kDepMktime);
+  Sandbox* self = timeSandbox(L);
+  const timecore::Tm t = checkStructTime(L, 1);
+  const int64_t wall = timecore::wallSeconds(t);
+  lua_pushinteger(L, (lua_Integer)(self ? self->localToUtc(wall) : wall));
+  return 1;
+}
+
+// time.strftime(format[, t]) -> string; t defaults to localtime().
+int Sandbox::lua_time_strftime(lua_State* L)
+{
+  warnDeprecatedTime(L, kDepStrftime);
+  const char* fmt = luaL_checkstring(L, 1);
+  timecore::Tm t;
+  if (lua_isnoneornil(L, 2)) {
+    Sandbox* self = timeSandbox(L);
+    const int64_t secs = nowSeconds();
+    t = self ? self->localTime(secs) : timecore::breakDown(secs, 0, 0, "UTC");
+  } else {
+    t = checkStructTime(L, 2);
+  }
+  char buf[256];
+  const size_t n = timecore::format(buf, sizeof(buf), fmt, t);
+  lua_pushlstring(L, buf, n < sizeof(buf) ? n : sizeof(buf) - 1);
+  return 1;
+}
+
+// time.synced() -> true once the wall clock has been set. Not Python: an
+// embedded clock starts at the epoch, and an app has to be able to tell.
+// datetime.synced() is the same answer.
+int Sandbox::lua_time_synced(lua_State* L)
+{
+  warnDeprecatedTime(L, kDepSynced);
   lua_pushboolean(L, timeStatus() == timeSet);
   return 1;
 }
 
-int Sandbox::lua_time_hour(lua_State* L)
+// --- datetime: Python's datetime, in Lua over C primitives -----------------
+//
+// The module is Lua (ResidentDatetime.h); what lives here is what Lua cannot
+// do with 32-bit numbers or without the zone: the clock, the zone's answer
+// for an instant or a wall time, epoch seconds (int64 inside, int32 out, and
+// an error rather than a wrap past 2038), the ordinal calendar and strftime.
+// The primitives are private to the module: they go to the chunk as its
+// `...`, never into a global, so they are not API.
+//
+// Cost: loaded, the module is ~38 KB of Lua heap in the 64-bit host build
+// (test_datetime_module prints it; less on the device's 32-bit pointers).
+// Most apps would carry that for nothing, so `datetime` is installed as an
+// empty table whose metatable loads the module into it on first touch (an
+// index or a call), and is re-installed at every app load.
+
+namespace {
+
+// daysFromCivil(1, 1, 1) is -719162; Python's ordinal for that day is 1.
+constexpr int64_t kOrdinalOffset = 719163;
+
+// Raise msg at the first Lua line outside the module — the app's call,
+// however deep in the module (or behind a tail call) the check that failed.
+int raiseInApp(lua_State* L, const char* msg)
 {
-  lua_getfield(L, LUA_REGISTRYINDEX, REGISTRY_KEY);
-  Sandbox* self = (Sandbox*)lua_touserdata(L, -1);
-  lua_pop(L, 1);
-  if (self && self->_hasTimezone) {
-    lua_pushinteger(L, self->_tz.hour());
-  } else {
-    lua_pushinteger(L, UTC.hour());
+  lua_Debug ar;
+  for (int level = 1; lua_getstack(L, level, &ar); ++level) {
+    lua_getinfo(L, "Sl", &ar);
+    if (ar.currentline > 0 && strcmp(ar.source, "=datetime") != 0) {
+      lua_pushfstring(L, "%s:%d: %s", ar.short_src, ar.currentline, msg);
+      return lua_error(L);
+    }
   }
-  return 1;
+  lua_pushstring(L, msg);
+  return lua_error(L);
 }
 
-int Sandbox::lua_time_minute(lua_State* L)
+lua_Integer checkEpoch(lua_State* L, int64_t secs)
 {
-  lua_getfield(L, LUA_REGISTRYINDEX, REGISTRY_KEY);
-  Sandbox* self = (Sandbox*)lua_touserdata(L, -1);
-  lua_pop(L, 1);
-  if (self && self->_hasTimezone) {
-    lua_pushinteger(L, self->_tz.minute());
-  } else {
-    lua_pushinteger(L, UTC.minute());
+  if (secs < (int64_t)INT32_MIN || secs > (int64_t)INT32_MAX) {
+    raiseInApp(L, "datetime: outside 1901-12-13..2038-01-19, the reach of 32-bit epoch seconds");
   }
-  return 1;
+  return (lua_Integer)secs;
 }
 
-int Sandbox::lua_time_second(lua_State* L)
+timecore::Tm checkWall(lua_State* L, int first)
 {
-  lua_getfield(L, LUA_REGISTRYINDEX, REGISTRY_KEY);
-  Sandbox* self = (Sandbox*)lua_touserdata(L, -1);
-  lua_pop(L, 1);
-  if (self && self->_hasTimezone) {
-    lua_pushinteger(L, self->_tz.second());
-  } else {
-    lua_pushinteger(L, UTC.second());
+  timecore::Tm t;
+  t.year = (int)luaL_checkinteger(L, first);
+  t.mon  = (int)luaL_checkinteger(L, first + 1);
+  t.mday = (int)luaL_checkinteger(L, first + 2);
+  t.hour = (int)luaL_checkinteger(L, first + 3);
+  t.min  = (int)luaL_checkinteger(L, first + 4);
+  t.sec  = (int)luaL_checkinteger(L, first + 5);
+  return t;
+}
+
+int pushFields(lua_State* L, const timecore::Tm& t)
+{
+  lua_pushinteger(L, t.year);
+  lua_pushinteger(L, t.mon);
+  lua_pushinteger(L, t.mday);
+  lua_pushinteger(L, t.hour);
+  lua_pushinteger(L, t.min);
+  lua_pushinteger(L, t.sec);
+  return 6;
+}
+
+}  // namespace
+
+void Sandbox::installDatetime()
+{
+  lua_newtable(_lua);                       // the module, filled on first touch
+  lua_createtable(_lua, 0, 2);              // the stub's metatable
+  lua_pushcfunction(_lua, lua_datetime_stub_index);
+  lua_setfield(_lua, -2, "__index");
+  lua_pushcfunction(_lua, lua_datetime_stub_call);
+  lua_setfield(_lua, -2, "__call");
+  lua_setmetatable(_lua, -2);
+  lua_setglobal(_lua, "datetime");
+}
+
+// Run the module's source with the primitives and the table at moduleIdx,
+// which it fills in place (and gives its own metatable), so a reference an
+// app took before the first touch is the module after it.
+void Sandbox::loadDatetime(lua_State* L, int moduleIdx)
+{
+  static const luaL_Reg kPrimitives[] = {
+    {"now", [](lua_State* L) -> int {
+       lua_pushinteger(L, checkEpoch(L, (int64_t)UTC.now()));
+       return 1;
+     }},
+    {"split", [](lua_State* L) -> int {
+       const int64_t secs = (int64_t)luaL_checkinteger(L, 1);
+       Sandbox* self = timeSandbox(L);
+       if (lua_toboolean(L, 2) && self) return pushFields(L, self->localTime(secs));
+       return pushFields(L, timecore::breakDown(secs, 0, 0, "UTC"));
+     }},
+    {"epoch", [](lua_State* L) -> int {
+       lua_pushinteger(L, checkEpoch(L, timecore::wallSeconds(checkWall(L, 1))));
+       return 1;
+     }},
+    {"resolve", [](lua_State* L) -> int {
+       const int64_t wall = timecore::wallSeconds(checkWall(L, 1));
+       // A wall time a day past either end is out of reach whatever the
+       // offset: turn it away before ezTime, whose rules hold the year in a
+       // byte.
+       checkEpoch(L, wall < 0 ? wall + 86400 : wall - 86400);
+       int32_t gmtoff = 0;
+       String zone = "UTC";
+       Sandbox* self = timeSandbox(L);
+       const int64_t utc = self ? self->resolveLocal(wall, gmtoff, zone) : wall;
+       lua_pushinteger(L, checkEpoch(L, utc));
+       lua_pushinteger(L, gmtoff);
+       lua_pushstring(L, zone.c_str());
+       return 3;
+     }},
+    {"ord", [](lua_State* L) -> int {
+       lua_pushinteger(L, (lua_Integer)(timecore::daysFromCivil(
+           luaL_checkinteger(L, 1), (int)luaL_checkinteger(L, 2), (int)luaL_checkinteger(L, 3))
+           + kOrdinalOffset));
+       return 1;
+     }},
+    {"civil", [](lua_State* L) -> int {
+       int64_t y; int m, d;
+       timecore::civilFromDays((int64_t)luaL_checkinteger(L, 1) - kOrdinalOffset, y, m, d);
+       lua_pushinteger(L, (lua_Integer)y);
+       lua_pushinteger(L, m);
+       lua_pushinteger(L, d);
+       return 3;
+     }},
+    {"strftime", [](lua_State* L) -> int {
+       const char* fmt = luaL_checkstring(L, 1);
+       timecore::Tm t = checkWall(L, 2);
+       timecore::weekdayAndYearday(t.year, t.mon, t.mday, t.wday, t.yday);
+       t.hasZone = !lua_isnoneornil(L, 8);
+       if (t.hasZone) {
+         t.gmtoff = (int32_t)luaL_checkinteger(L, 8);
+         snprintf(t.zone, sizeof(t.zone), "%s", luaL_optstring(L, 9, ""));
+       }
+       char buf[256];
+       const size_t n = timecore::format(buf, sizeof(buf), fmt, t);
+       lua_pushlstring(L, buf, n < sizeof(buf) ? n : sizeof(buf) - 1);
+       return 1;
+     }},
+    {"mul", [](lua_State* L) -> int {
+       const int64_t n = (int64_t)luaL_checkinteger(L, 3);
+       int64_t days = (int64_t)luaL_checkinteger(L, 1) * n;
+       int64_t secs = (int64_t)luaL_checkinteger(L, 2) * n;
+       const int64_t carry = timecore::floorDiv(secs, 86400);
+       days += carry;
+       secs -= carry * 86400;
+       if (days < -999999999 || days > 999999999) {
+         return raiseInApp(L, "datetime.timedelta: out of range");
+       }
+       lua_pushinteger(L, (lua_Integer)days);
+       lua_pushinteger(L, (lua_Integer)secs);
+       return 2;
+     }},
+    {"synced", [](lua_State* L) -> int {
+       lua_pushboolean(L, timeStatus() == timeSet);
+       return 1;
+     }},
+    {"raise", [](lua_State* L) -> int {
+       return raiseInApp(L, luaL_checkstring(L, 1));
+     }},
+    {nullptr, nullptr},
+  };
+  moduleIdx = lua_absindex(L, moduleIdx);
+  if (luaL_loadbufferx(L, datetimelua::kSource, sizeof(datetimelua::kSource) - 1,
+                       "=datetime", "t") != LUA_OK) {
+    lua_error(L);
   }
+  luaL_newlib(L, kPrimitives);
+  lua_pushvalue(L, moduleIdx);
+  lua_call(L, 2, 0);
+}
+
+// datetime.<key> on the unloaded stub: load, then answer from the module.
+int Sandbox::lua_datetime_stub_index(lua_State* L)
+{
+  loadDatetime(L, 1);
+  lua_pushvalue(L, 2);
+  lua_rawget(L, 1);
   return 1;
 }
 
-int Sandbox::lua_time_day_id(lua_State* L)
+// datetime(...) on the unloaded stub: load, then call the module itself.
+int Sandbox::lua_datetime_stub_call(lua_State* L)
 {
-  lua_pushinteger(L, millis() / 86400000);
-  return 1;
-}
-
-int Sandbox::lua_time_has_timezone(lua_State* L)
-{
-  lua_getfield(L, LUA_REGISTRYINDEX, REGISTRY_KEY);
-  Sandbox* self = (Sandbox*)lua_touserdata(L, -1);
-  lua_pop(L, 1);
-  lua_pushboolean(L, self && self->hasTimezone());
-  return 1;
-}
-
-// --- Math wrapper globals ---
-
-int Sandbox::lua_math_floor(lua_State* L)
-{
-  lua_pushnumber(L, floor(luaL_checknumber(L, 1)));
-  return 1;
-}
-
-int Sandbox::lua_math_ceil(lua_State* L)
-{
-  lua_pushnumber(L, ceil(luaL_checknumber(L, 1)));
-  return 1;
-}
-
-int Sandbox::lua_math_abs(lua_State* L)
-{
-  lua_pushnumber(L, fabs(luaL_checknumber(L, 1)));
-  return 1;
-}
-
-int Sandbox::lua_math_sin(lua_State* L)
-{
-  lua_pushnumber(L, ::sin(luaL_checknumber(L, 1)));
-  return 1;
-}
-
-int Sandbox::lua_math_cos(lua_State* L)
-{
-  lua_pushnumber(L, ::cos(luaL_checknumber(L, 1)));
-  return 1;
-}
-
-int Sandbox::lua_math_tan(lua_State* L)
-{
-  lua_pushnumber(L, ::tan(luaL_checknumber(L, 1)));
-  return 1;
-}
-
-int Sandbox::lua_math_sqrt(lua_State* L)
-{
-  lua_pushnumber(L, ::sqrt(luaL_checknumber(L, 1)));
-  return 1;
-}
-
-int Sandbox::lua_math_min(lua_State* L)
-{
-  lua_pushnumber(L, fmin(luaL_checknumber(L, 1), luaL_checknumber(L, 2)));
-  return 1;
-}
-
-int Sandbox::lua_math_max(lua_State* L)
-{
-  lua_pushnumber(L, fmax(luaL_checknumber(L, 1), luaL_checknumber(L, 2)));
-  return 1;
-}
-
-int Sandbox::lua_math_fmod(lua_State* L)
-{
-  lua_pushnumber(L, ::fmod(luaL_checknumber(L, 1), luaL_checknumber(L, 2)));
-  return 1;
+  const int n = lua_gettop(L);
+  loadDatetime(L, 1);
+  lua_call(L, n - 1, LUA_MULTRET);
+  return lua_gettop(L);
 }
 
 } // namespace Resident

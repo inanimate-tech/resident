@@ -51,6 +51,8 @@
 
 namespace Resident {
 
+class DisplayDriver;
+
 // ── The library-agnostic panel: geometry + raw blit ──────────────────────
 //
 // Pixels are RGB565, BIG-ENDIAN (high byte first) — the byte order SPI
@@ -69,6 +71,11 @@ public:
   // reuse the buffer as soon as this returns.
   virtual void blit(int32_t x, int32_t y, int32_t w, int32_t h,
                     const uint16_t* px) = 0;
+
+  // A drawing library finished a frame: the last blit of one refresh has
+  // landed. A panel that presents whole frames (a one-bit glass quantising
+  // its shadow, an e-paper commit) does that here; most panels ignore it.
+  virtual void frameDone() {}
 };
 
 class RenderTargets {
@@ -87,6 +94,14 @@ public:
     uint8_t modules = 0;          // MODULE_* bitmask: who CAN draw here
     uint8_t owner = 0;            // MODULE_* single bit: who IS driving (0 = nobody)
     PanelTarget* panel = nullptr; // the board's addressable panel (may be null)
+    // Set when a DisplayDriver owns the screen (addScreen); null for a panel
+    // a board registered by hand with addPanel, or a module's bare sprite.
+    DisplayDriver* driver = nullptr;
+    int8_t screenIndex = -1;      // the screen's index within its driver
+    uint8_t depth = 16;           // 16 colour | 1 one-bit
+    uint16_t dpi = 0;
+    uint16_t bufferRows = 0;
+    uint8_t group = 0;            // shared-knob group; 0 = none
   };
 
   // Register or update a surface. Same name merges (geometry/shape refresh,
@@ -144,6 +159,23 @@ public:
     if (!e) return false;
     e->panel = p;
     if (shape) e->shape = shape;
+    return true;
+  }
+
+  // A display driver's screen (the sandbox calls this for every screen of
+  // every DisplayDriver in cfg.extensions, at initialize): addPanel plus the
+  // screen's facts and the driver that answers for its settings.
+  static bool addScreen(const char* name, PanelTarget* p, const char* shape,
+                        uint8_t depth, uint16_t dpi, uint16_t bufferRows,
+                        uint8_t group, DisplayDriver* driver, int index) {
+    if (!addPanel(name, p, shape)) return false;
+    Entry* e = slot(name);
+    e->driver = driver;
+    e->screenIndex = (int8_t)index;
+    e->depth = depth;
+    e->dpi = dpi;
+    e->bufferRows = bufferRows;
+    e->group = group;
     return true;
   }
 

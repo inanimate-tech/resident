@@ -18,8 +18,6 @@
 
 namespace Resident {
 
-using ShaderFields = std::map<String, String>;
-using ShaderTemplateFn = String (*)(const ShaderFields& fields);
 using TelemetryCallback = std::function<void(const char* json)>;
 
 // The struct as a whole must be wrapped (not just the deprecated fields
@@ -51,9 +49,8 @@ struct SandboxConfig {
   const char* firmwareVersion = nullptr;
   const char* profileRef = nullptr;
 
-  // Hardware bindings exposed to Lua, plus shader-expression template.
+  // Hardware bindings exposed to Lua.
   Extensions extensions;
-  ShaderTemplateFn shaderTemplate = nullptr;
 
   // Lua-side telemetry sink + per-board IANA timezone.
   TelemetryCallback telemetry = nullptr;

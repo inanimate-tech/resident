@@ -35,8 +35,7 @@ done. It does NOT push to a device; that's `push-app`'s job.
       > Exit without writing.
 3. **The embedded sandbox docs** — read
    `${CLAUDE_PLUGIN_ROOT}/skills/create-app/docs/sandbox.md`. Covers
-   lifecycle, ctx, log, time, kv, shader globals, math globals,
-   constraints. `${CLAUDE_PLUGIN_ROOT}` is set by Claude Code to the
+   lifecycle, ctx, events, store, log, time, surfaces, limits. `${CLAUDE_PLUGIN_ROOT}` is set by Claude Code to the
    absolute path of the installed plugin — always use it to reference
    bundled files; the CWD is the user's project, not the skill directory.
 4. **Optional reference files** — the caller may pass one or more

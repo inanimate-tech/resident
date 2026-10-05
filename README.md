@@ -61,7 +61,7 @@ void loop() {
 }
 ```
 
-The device connects to WiFi (via a WiFiManager captive portal), opens a WebSocket to your server, and accepts Lua apps and shader expressions as JSON messages.
+The device connects to WiFi (via a WiFiManager captive portal), opens a WebSocket to your server, and accepts Lua apps as JSON messages.
 
 > Omit `cfg.network` and the sandbox runs standalone with no WiFi pulled in — `sandbox.loop()` ticks Lua at 10 FPS unconditionally, and `isConnected()` returns `false`.
 
@@ -140,11 +140,10 @@ Every message carries an envelope `channel` field that steers it onto a plane:
 
 ```json
 { "channel": "system", "type": "app",   "code": "function on_tick(ctx, dt_ms) ... end" }
-{ "channel": "system", "type": "shader", "expr": "rgb(sin(time_ms/1000)*0.5+0.5, 0, 0)" }
 { "channel": "app",    "type": "button_press", "data": { "id": 1 } }
 ```
 
-`channel:"app"` is the data plane — it reaches the Lua `on_event`. `channel:"system"` is the control plane, where Resident handles the reserved types (`app`, `shader`, `chunk`, `forget`, `framework`, `hello`, `goodbye`) itself and hands anything else to a slot registered with `onMessageWithChannel("system", cb)`. Any other channel name gets its own slot. See [docs/api.md](docs/api.md#channel-routing) for the full picture, including the un-channelled legacy path.
+`channel:"app"` is the data plane — it reaches the Lua `on_event`. `channel:"system"` is the control plane, where Resident handles the reserved types (`app`, `chunk`, `forget`, `framework`, `hello`, `goodbye`) itself and hands anything else to a slot registered with `onMessageWithChannel("system", cb)`. Any other channel name gets its own slot. See [docs/api.md](docs/api.md#channel-routing) for the full picture, including the un-channelled legacy path.
 
 ### Sandbox lifecycle
 
@@ -152,19 +151,28 @@ Every message carries an envelope `channel` field that steers it onto a plane:
 - `on_tick(ctx, dt_ms)` — called at 10 FPS with elapsed time
 - `on_event(ctx, event)` — called for wire events and driver events, with the payload in `event.data`
 
-The `ctx` table contains: `time_ms`, `trigger_count`, `generation_id`, `utc_h`, `utc_m`, `localtime_h`, `localtime_m`.
+The `ctx` table contains: `time_ms` (milliseconds since the app loaded) and `generation_id` (when the load message carried one).
 
-`localtime_h` / `localtime_m` return local time when a timezone has been set on the sandbox via `Sandbox::setTimezone(ianaZone)` and ezTime recognised the zone; otherwise they equal `utc_h` / `utc_m`.
+### Time
 
-### Shader expressions
+The Lua `datetime` module is Python's `datetime` — `datetime.now()`, `datetime.date(...)`, `datetime.timedelta{...}`, arithmetic and comparisons between them, `strftime` — in whole seconds, because the Lua is built with 32-bit numbers. Every datetime is local (the zone `setTimezone` resolved, DST applied) or `datetime.UTC`. `datetime.synced()` says whether the wall clock has been set. See [docs/api.md](docs/api.md#datetime-module).
 
-Shader messages are converted to Lua via a template function you provide. The expression has access to `time_ms`, `trigger_count`, and time variables. Built-in helpers: `rgb(r,g,b)`, `fract(x)`, `beat(bpm,t)`, `noise2d(x,y)`.
+```lua
+if datetime.synced() then
+    local now = datetime.now()                 -- local once a timezone is set
+    log.info(now:strftime("%a %H:%M"))         -- "Mon 13:05"
+    local is_weekend = now:weekday() >= 5      -- Monday = 0
+    local days_left = (datetime.date(2026, 12, 25) - datetime.today()).days
+end
+```
+
+Elapsed time is the `time` module's MicroPython ticks, `time.ticks_ms()` / `time.ticks_diff()`. Its calendar half (`time.localtime()`, `time.strftime()`, …) is deprecated for `datetime`: it still works, and warns once per app load.
 
 ### Timezone
 
-`Sandbox::setTimezone(const char* ianaZone)` — set the sandbox's local timezone for `ctx.localtime_h/m` and the `time.*` Lua bindings. Pass an IANA zone string (e.g. `"Europe/London"`). ezTime performs a UDP lookup to `timezoned.rop.nl` on first sight of a zone and caches the POSIX string in EEPROM. On failure (null / empty / unrecognised zone), the sandbox falls back to UTC.
+`Sandbox::setTimezone(const char* ianaZone)` — set the sandbox's local timezone for `datetime` (and the deprecated `time.localtime()`). Pass an IANA zone string (e.g. `"Europe/London"`). ezTime performs a UDP lookup to `timezoned.rop.nl` on first sight of a zone and caches the POSIX string in EEPROM. On failure (null / empty / unrecognised zone), the sandbox falls back to UTC.
 
-`Sandbox::hasTimezone() const` — returns `true` after a successful `setTimezone`. Exposed to Lua as `time.has_timezone()`. When false, `time.hour()` / `time.minute()` / `time.second()` return UTC.
+`Sandbox::hasTimezone() const` — returns `true` after a successful `setTimezone`. Until then, local time is UTC (`datetime.now():tzname()` reads `"UTC"`).
 
 ## Building
 
