@@ -63,6 +63,12 @@ public:
     return false;
   }
 
+  // After every key of one screens.set call has gone through setScreen:
+  // apply them together. A driver whose settings depend on each other (a
+  // one-bit screen's black must stay below its white) stages in setScreen and
+  // validates here, raising with luaL_error; keys arrive in no set order.
+  virtual void commitScreen(int i, lua_State* L) { (void)i; (void)L; }
+
   // screens.get(name): add this screen's current settings (and any status,
   // e.g. an e-paper panel's busy/pending) as fields of the table on top of
   // the stack. Leave the stack as found.

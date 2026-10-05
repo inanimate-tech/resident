@@ -3442,6 +3442,7 @@ int Sandbox::lua_screens_set(lua_State* L)
     }
     lua_settop(L, valueIdx - 1);         // drop the value, keep the key
   }
+  if (e.driver) e.driver->commitScreen(e.screenIndex, L);
   return 0;
 }
 

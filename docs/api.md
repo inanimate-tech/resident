@@ -683,6 +683,8 @@ public:
 | `dpi`, `bufferRows` | sizing hints for a drawing library (0 = its default) |
 | `group` | screens sharing a knob share a nonzero group |
 
+Settings arrive one key at a time, in no set order, through `setScreen`; `commitScreen(i, L)` then runs once per `screens.set` call, so a driver whose settings constrain each other (a one-bit screen's `black` below its `white`) stages them and validates together, raising with `luaL_error`.
+
 `screen(i)` must be safe at static init: it states facts and pointers and measures nothing (geometry is read from the target when needed). One driver may own several screens. Every `SystemDisplay` is a `DisplayDriver` with no screens by default, so a status-only display declares none and a dual-role one (status text and the app's glass) overrides `screenCount()`/`screen()`.
 
 ## Resident::SystemDisplay
