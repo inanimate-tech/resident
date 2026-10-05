@@ -1,4 +1,6 @@
-// The `time` module: Python 3's time, in the sandbox.
+// The `time` module: Python 3's time, in the sandbox. Its calendar half is
+// deprecated for `datetime` (test_datetime_module, which also covers the
+// warning) but works unchanged, and this suite holds it to that.
 //
 // The pure half (calendar maths, strftime) is ResidentTimeCore.h and is
 // tested first, against dates whose answers are known independently: the

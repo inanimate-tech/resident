@@ -222,7 +222,7 @@ void test_host_hello_marks_seen(void) {
   TEST_ASSERT_TRUE(sandbox->hostHelloSeen());
 }
 
-// The wall clock is the time module's (time.localtime()), not ctx's: the
+// The wall clock is the datetime module's (datetime.now()), not ctx's: the
 // utc_h/utc_m/localtime_h/localtime_m fields went with the shader templates.
 // ctx is the dispatch's own facts — time_ms since the app loaded.
 void test_on_event_ctx_carries_no_wallclock_fields(void) {

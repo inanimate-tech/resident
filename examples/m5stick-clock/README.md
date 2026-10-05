@@ -6,7 +6,7 @@ But local time is harder as the device doesn't know its timezone. But the server
 
 This example demonstrates two things on top of `m5stick-demo` and `server-template`:
 
-1. **Server-supplied timezone.** The device fetches its timezone from the server on first connection and applies it via `Sandbox::setTimezone`, so Resident apps see local time in `time.localtime()`.
+1. **Server-supplied timezone.** The device fetches its timezone from the server on first connection and applies it via `Sandbox::setTimezone`, so Resident apps see local time in `datetime.now()`.
 2. **A registration step using a custom server.** The device POSTs to `/devices/<id>/register` on boot; the server returns a JSON config blob; the device applies what it cares about.
 
 This is an overlay project, not a standalone. It's three files (plus the clock app) that overlay on top of `m5stick-demo` and `server-template`.
@@ -121,4 +121,4 @@ export { ClockAgent as DeviceAgent }
 
 ### `device-apps/swiss-clock.lua`
 
-A Mondaine-style Swiss railway clock — white face, 12 bar markers, black hour and minute hands, a red lollipop second hand. Reads `time.localtime()` — `tm_hour`, `tm_min` and `tm_sec`, which respect the server-supplied timezone.
+A Mondaine-style Swiss railway clock — white face, 12 bar markers, black hour and minute hands, a red lollipop second hand. Reads `datetime.now()` — `hour`, `minute` and `second`, which respect the server-supplied timezone.

@@ -30,8 +30,8 @@ function init(ctx)
 end
 
 function on_tick(ctx, dt_ms)
-  local t = time.localtime()   -- local once the server's timezone is applied
-  local hr, mn, sc = t.tm_hour, t.tm_min, t.tm_sec
+  local t = datetime.now()   -- local once the server's timezone is applied
+  local hr, mn, sc = t.hour, t.minute, t.second
 
   local th = ((hr % 12) + mn / 60) * PI / 6
   local tm = (mn + sc / 60) * PI / 30

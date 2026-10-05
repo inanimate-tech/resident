@@ -2,7 +2,7 @@
 
 ## v0.10.0 (unreleased)
 
-Theme: a standard library an author already knows. Shader mode and its globals go; the `time` module becomes Python 3's `time`, with MicroPython's answers where the VM's 32-bit numbers bite.
+Theme: a standard library an author already knows. Shader mode and its globals go; the wall clock becomes Python's `datetime`, and the `time` module Python 3's `time`, with MicroPython's answers where the VM's 32-bit numbers bite — its calendar half deprecated for `datetime` in the same release.
 
 ### Breaking changes
 
@@ -12,22 +12,30 @@ Theme: a standard library an author already knows. Shader mode and its globals g
 - **The shader globals are removed**: `rgb`, `fract`, `beat`, `noise2d`, and the bare math globals `floor` `ceil` `abs` `sin` `cos` `tan` `sqrt` `min` `max` `fmod`. Apps use `math.floor`, `math.sin`, … (`fract(x)` is `x - math.floor(x)`; `noise2d` has no replacement — carry a small noise function in the app).
 - **`ctx` loses its time fields**: `trigger_count`, `utc_h`, `utc_m`, `localtime_h`, `localtime_m`. `ctx` is now `{ time_ms, generation_id? }`; the `"button"` driver event no longer counts anything.
 - **The `time` module is replaced.** Old → new:
-  - `time.hour()` / `time.minute()` / `time.second()` → `time.localtime().tm_hour` / `.tm_min` / `.tm_sec`
-  - `ctx.localtime_h` / `ctx.localtime_m` → `time.localtime().tm_hour` / `.tm_min`
-  - `ctx.utc_h` / `ctx.utc_m` → `time.gmtime().tm_hour` / `.tm_min`
-  - `time.is_valid()` → `time.synced()`
-  - `time.has_timezone()` → gone from Lua (`Sandbox::hasTimezone()` remains in C++); `time.localtime().tm_zone` reads `"UTC"` until a zone is set
-  - `time.day_id()` (days since boot, `millis() / 86400000`) → gone; for a once-a-day key use `time.localtime().tm_yday`, which changes at local midnight rather than at boot anniversaries
+  - `time.hour()` / `time.minute()` / `time.second()` → `datetime.now().hour` / `.minute` / `.second`
+  - `ctx.localtime_h` / `ctx.localtime_m` → `datetime.now().hour` / `.minute`
+  - `ctx.utc_h` / `ctx.utc_m` → `datetime.now(datetime.UTC).hour` / `.minute`
+  - `time.is_valid()` → `datetime.synced()`
+  - `time.has_timezone()` → gone from Lua (`Sandbox::hasTimezone()` remains in C++); `datetime.now():tzname()` reads `"UTC"` until a zone is set
+  - `time.day_id()` (days since boot, `millis() / 86400000`) → gone; for a once-a-day key use `datetime.today():toordinal()`, which changes at local midnight rather than at boot anniversaries
   - `ctx.trigger_count` → gone; count `button` events in the app
 
 ### New features
 
+- **Lua `datetime` module, Python's `datetime`**: `datetime.now([tz])`, `datetime.today()` (a date), `datetime(y, mo, d[, h, mi, s[, tz]])` (the module is callable, and is its own `datetime.datetime`), `datetime.date(y, mo, d)` (with `date.today()`, `date.fromordinal(n)`), `datetime.timedelta{ weeks, days, hours, minutes, seconds }` (a bare number is days), `datetime.fromtimestamp(secs[, tz])`, `datetime.UTC` (= `datetime.timezone.utc`), `datetime.synced()`. datetime: fields `year month day hour minute second tzinfo`, `weekday()`, `isoweekday()`, `toordinal()`, `date()`, `timestamp()`, `strftime(fmt)`, `isoformat([sep])`, `replace{...}`, `astimezone([tz])`, `tzname()`, `utcoffset()`. date: `year month day`, `weekday()`, `isoweekday()`, `toordinal()`, `strftime`, `isoformat`, `replace{...}`. timedelta: `days`, `seconds` (normalised as Python's), `total_seconds()`. `+ - unary- *integer` and comparisons exactly as Python's aware datetimes: within one zone on the wall clock, across zones through UTC; a date never equals a datetime. `tostring` is Python's `str()` (`2026-10-05 13:05:09`, `2026-10-05`, `1 day, 2:00:00`). Argument errors name the call and point at the app's line.
+- Two zones: local (what `setTimezone` resolved, DST per instant) and UTC, and every datetime is aware. Whole seconds (no microseconds). Dates run 0001..9999 by proleptic-Gregorian ordinal, so date arithmetic never overflows; what needs epoch seconds (`now`, `timestamp()`, a local offset, crossing zones) is int32 and raises past 2038-01-19 rather than wrapping.
+- Lua (`src/ResidentDatetime.h`) over a private table of C primitives handed to the chunk, never global — so device, browser sim and native tests run the same code, and validators can run the same source over stub primitives. ~38 KB of Lua heap once loaded (64-bit host figure), so `datetime` is a stub that loads on first touch, re-installed at every app load: an app that never touches it pays nothing. Native-tested in `test_datetime_module` against values printed by CPython.
 - **Lua `time` module, modelled on Python 3's `time`**: `time.time()` (integer seconds since the epoch, UTC), `time.gmtime([secs])` / `time.localtime([secs])` (a `struct_time` table: `tm_year`, `tm_mon` 1..12, `tm_mday`, `tm_hour`, `tm_min`, `tm_sec`, `tm_wday` 0..6 with Monday = 0, `tm_yday` 1..366, `tm_isdst`, `tm_zone`, `tm_gmtoff`), `time.mktime(t)` (local fields → integer epoch seconds, out-of-range fields carrying as C's `mktime` does), `time.strftime(fmt[, t])` (C locale, `%a %A %b %B %c %d %e %H %I %j %m %M %p %S %U %w %W %x %X %y %Y %Z %z %%`, unknown directives passed through, output capped at 255 bytes), `time.ticks_ms()` / `time.ticks_diff(a, b)` (a wrapping millisecond counter and a difference that is right across the wrap), and `time.synced()`. `localtime` uses the zone `setTimezone` resolved, with DST applied for the instant asked about.
 - Python's names and fields so authors and models already know them; MicroPython's integer seconds and ticks because Lua here is `LUA_32BITS` — a float epoch is good only to 128 s, and a float seconds-since-boot loses its milliseconds within hours, which is why there is deliberately no `time.monotonic()`. Seconds are int32, good until 2038-01-19.
 - **`Resident::DisplayDriver`: screens belong to drivers.** A driver that owns glass declares its screens — `screenCount()` / `screen(i)` returning a `Screen` (`name`, `target` PanelTarget, `shape`, `depth` 16|1, `dpi`, `bufferRows`, `group` for screens sharing a knob such as one backlight rail). List it in `cfg.extensions` and its screens are registered at `initialize()`: `lvgl.bind(name)` finds them with no `RenderTargets::addPanel` and no `LvglModule::addDisplay` (an explicit `addDisplay` still wins, for a board that supplies its own draw buffer). One driver may own several screens. Every `SystemDisplay` is now a `DisplayDriver` with no screens until it declares some — the panel that shows status text is very often the one apps draw on, and a second `Driver` base would have formed a diamond.
 - **Lua `screens` module**: `screens.list()` (each `{name, w, h, shape, depth, dpi?, group?}`), `screens.get(name)` (that, plus the screen's current settings and status from its driver), `screens.set(name, { key = value, ... })` (each key goes to the driver's `setScreen`; a key it does not have raises, naming it — `brightness` and `contrast`, 0..1, are the standard names) and `screens.refresh(name)` (an e-paper panel's "update now"). Drivers reset their settings in `onAppReset`, so every app starts from the board's defaults.
 - `PanelTarget::frameDone()`: called by `LvglModule` after the last flush of a refresh (`lv_display_flush_is_last`) and by `LgfxModule` after each flip, for a panel that presents whole frames (a one-bit glass, an e-paper commit).
-- `ResidentTimeCore.h`: the module's pure half — proleptic-Gregorian calendar conversion (Hinnant's `days_from_civil`/`civil_from_days`) and `strftime` — with no clock, no zone database and no Lua, so the device, the browser sim and the native tests agree to the byte. Native-tested in `test_time_module`.
+- `ResidentTimeCore.h`: the pure half of `time` and `datetime` — proleptic-Gregorian calendar conversion (Hinnant's `days_from_civil`/`civil_from_days`) and `strftime` — with no clock, no zone database and no Lua, so the device, the browser sim and the native tests agree to the byte. Native-tested in `test_time_module`. `Tm::hasZone = false` (a date) prints `%z` and `%Z` as nothing, as Python does.
+
+### Deprecations
+
+- **`time`'s calendar half is deprecated for `datetime`**: `time.time()` → `datetime.now():timestamp()`, `time.localtime([secs])` → `datetime.now()` / `datetime.fromtimestamp(secs)`, `time.gmtime([secs])` → `datetime.now(datetime.UTC)` / `datetime.fromtimestamp(secs, datetime.UTC)`, `time.mktime(t)` → `datetime(y, m, d, ...):timestamp()`, `time.strftime(fmt[, t])` → `dt:strftime(fmt)`, `time.synced()` → `datetime.synced()`. They keep working unchanged, and each logs `[deprecated] time.localtime(): use datetime.now()` (and so on) once per app load, on `log.warn`'s line. struct_time has no arithmetic, so "tomorrow" and "days until" were a page of `mktime`; Python answers that with `datetime`, which authors and models already know.
+- `time.ticks_ms()` / `time.ticks_diff()` are **not** deprecated: they are the monotonic clock, which `datetime` does not have (Python keeps `monotonic` in `time` too), and `ctx.time_ms` is not a substitute over long runs (it goes wrong after ~24.8 days).
 
 ---
 ## v0.9.1

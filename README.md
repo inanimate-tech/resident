@@ -155,20 +155,24 @@ The `ctx` table contains: `time_ms` (milliseconds since the app loaded) and `gen
 
 ### Time
 
-The Lua `time` module is modelled on Python 3's `time` — `time.time()`, `time.localtime()`, `time.gmtime()`, `time.mktime()`, `time.strftime()`, with Python's `struct_time` fields (`tm_hour`, `tm_wday`, …) — plus MicroPython's `time.ticks_ms()` / `time.ticks_diff()` for elapsed time, and `time.synced()` to tell whether the wall clock has been set. Seconds are integers, because the Lua is built with 32-bit numbers. See [docs/api.md](docs/api.md#time-module).
+The Lua `datetime` module is Python's `datetime` — `datetime.now()`, `datetime.date(...)`, `datetime.timedelta{...}`, arithmetic and comparisons between them, `strftime` — in whole seconds, because the Lua is built with 32-bit numbers. Every datetime is local (the zone `setTimezone` resolved, DST applied) or `datetime.UTC`. `datetime.synced()` says whether the wall clock has been set. See [docs/api.md](docs/api.md#datetime-module).
 
 ```lua
-if time.synced() then
-    log.info(time.strftime("%a %H:%M"))   -- "Sat 15:05", local once a timezone is set
-    local is_weekend = time.localtime().tm_wday >= 5   -- Monday = 0
+if datetime.synced() then
+    local now = datetime.now()                 -- local once a timezone is set
+    log.info(now:strftime("%a %H:%M"))         -- "Mon 13:05"
+    local is_weekend = now:weekday() >= 5      -- Monday = 0
+    local days_left = (datetime.date(2026, 12, 25) - datetime.today()).days
 end
 ```
 
+Elapsed time is the `time` module's MicroPython ticks, `time.ticks_ms()` / `time.ticks_diff()`. Its calendar half (`time.localtime()`, `time.strftime()`, …) is deprecated for `datetime`: it still works, and warns once per app load.
+
 ### Timezone
 
-`Sandbox::setTimezone(const char* ianaZone)` — set the sandbox's local timezone for `time.localtime()`, `time.mktime()` and `time.strftime()`. Pass an IANA zone string (e.g. `"Europe/London"`). ezTime performs a UDP lookup to `timezoned.rop.nl` on first sight of a zone and caches the POSIX string in EEPROM. On failure (null / empty / unrecognised zone), the sandbox falls back to UTC.
+`Sandbox::setTimezone(const char* ianaZone)` — set the sandbox's local timezone for `datetime` (and the deprecated `time.localtime()`). Pass an IANA zone string (e.g. `"Europe/London"`). ezTime performs a UDP lookup to `timezoned.rop.nl` on first sight of a zone and caches the POSIX string in EEPROM. On failure (null / empty / unrecognised zone), the sandbox falls back to UTC.
 
-`Sandbox::hasTimezone() const` — returns `true` after a successful `setTimezone`. Until then, `time.localtime()` is UTC (its `tm_zone` reads `"UTC"`).
+`Sandbox::hasTimezone() const` — returns `true` after a successful `setTimezone`. Until then, local time is UTC (`datetime.now():tzname()` reads `"UTC"`).
 
 ## Building
 

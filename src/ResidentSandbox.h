@@ -380,6 +380,9 @@ private:
     // The time module's two zone conversions, for the Lua bindings.
     timecore::Tm localTime(int64_t utcSeconds) const;
     int64_t localToUtc(int64_t wallSeconds) const;
+    // A local wall time through the zone: the instant, plus the offset and
+    // abbreviation the zone gave it (one answer, so they always agree).
+    int64_t resolveLocal(int64_t wallSeconds, int32_t& gmtoff, String& zone) const;
 
     // Configuration
     SandboxConfig _config;
@@ -801,6 +804,17 @@ private:
     static int lua_time_ticks_ms(lua_State* L);
     static int lua_time_ticks_diff(lua_State* L);
     static int lua_time_synced(lua_State* L);
+    // The calendar half of `time` is deprecated for `datetime`: each call
+    // warns once per app load. Bit i of the mask is kTimeDeprecations[i].
+    static void warnDeprecatedTime(lua_State* L, int which);
+    uint8_t _timeDeprecationsWarned = 0;
+    // The `datetime` module: Lua (ResidentDatetime.h) over C primitives,
+    // installed as a stub that loads on first touch. Re-installed at every
+    // app load, so an app that never touches it pays nothing.
+    void installDatetime();
+    static void loadDatetime(lua_State* L, int moduleIdx);
+    static int lua_datetime_stub_index(lua_State* L);
+    static int lua_datetime_stub_call(lua_State* L);
     // The `screens` module: the screens of the board's display drivers.
     static int lua_screens_list(lua_State* L);
     static int lua_screens_get(lua_State* L);

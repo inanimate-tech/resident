@@ -42,8 +42,8 @@ Identical in every callback:
 | `time_ms` | integer | ms since this app loaded — the app's clock |
 | `generation_id` | string or nil | the server's id for this program version |
 
-Use `ctx.time_ms` for animation. For the time of day, use the `time` module
-(`time.localtime()`).
+Use `ctx.time_ms` for animation. For the date and time of day, use the
+`datetime` module (`datetime.now()`).
 
 ## Events in (`on_event`)
 
@@ -111,38 +111,69 @@ log.info("hello")  log.warn("careful")  log.error("broke")
 
 `log.error` also reports upstream as telemetry.
 
-## time module
+## datetime module
 
-Python 3's `time`, with MicroPython's integers and ticks. If you know
-Python's `time`, you know this — except there is no `time.monotonic()`,
-`time.sleep()` or float seconds.
+Python's `datetime`, with whole seconds. If you know Python's `datetime`, you
+know this; `datetime(...)` and `datetime.datetime(...)` both construct.
 
 ```lua
-if time.synced() then                    -- false until NTP sets the clock
-  local t = time.localtime()             -- local zone; UTC until one is set
-  log.info(time.strftime("%a %H:%M"))    -- "Sat 15:05"
-  local evening = t.tm_hour >= 18
-end
-local t0 = time.ticks_ms()
--- later: elapsed ms, correct across the counter's wrap
-local ms = time.ticks_diff(time.ticks_ms(), t0)
+if not datetime.synced() then return end      -- until NTP sets the clock, now() is 1970
+local now = datetime.now()                    -- local time; UTC until a zone is set
+log.info(now:strftime("%a %H:%M"))            -- "Mon 13:05"
+local evening = now.hour >= 18
+local weekend = now:weekday() >= 5            -- Monday = 0
+local left = (datetime.date(2026, 12, 25) - datetime.today()).days
+local tomorrow = datetime.today() + datetime.timedelta{ days = 1 }
+local alarm = datetime(2026, 12, 25, 7, 30)   -- local
+if now >= alarm then log.info("ring") end
 ```
 
-- `time.time()` → integer seconds since 1970, UTC. Before `time.synced()`
-  it counts from 1970 — check `synced()` before showing a clock.
-- `time.localtime([secs])`, `time.gmtime([secs])` → struct_time table:
-  `tm_year`, `tm_mon` (1..12), `tm_mday`, `tm_hour`, `tm_min`, `tm_sec`,
-  `tm_wday` (0..6, **Monday = 0**), `tm_yday` (1..366), `tm_isdst` (1/0),
-  `tm_zone` (`"BST"`), `tm_gmtoff` (seconds east of UTC).
-- `time.mktime(t)` → integer seconds for a local struct_time
-  (`tm_year`/`tm_mon`/`tm_mday` required). Out-of-range fields carry:
-  `tm_mday = t.tm_mday + 1` is tomorrow.
-- `time.strftime(fmt[, t])` → string; `t` defaults to `localtime()`.
-  `%a %A %b %B %c %d %e %H %I %j %m %M %p %S %U %w %W %x %X %y %Y %Z %z %%`
-  (C locale, English names). Max 255 bytes.
-- `time.ticks_ms()` → a wrapping ms counter; only `time.ticks_diff(a, b)`
-  (`a - b` in ms) of two readings means anything.
-- `time.localtime().tm_yday` is a good once-a-day key.
+- `datetime.now([tz])` → datetime; `datetime.today()` → a **date** (local);
+  `datetime.fromtimestamp(secs[, tz])`; `datetime.synced()` → boolean.
+- `datetime(y, mo, d[, h, mi, s[, tz]])`, `datetime.date(y, mo, d)`,
+  `datetime.timedelta{ weeks, days, hours, minutes, seconds }` (a bare number
+  is days).
+- Two zones: local (the device's, DST applied) and `datetime.UTC`. A `tz`
+  argument is `datetime.UTC`, or nil for local.
+- datetime: fields `year month day hour minute second tzinfo`; `weekday()`
+  (Monday = 0), `isoweekday()` (Monday = 1), `date()`, `timestamp()`,
+  `strftime(fmt)`, `isoformat()`, `replace{ hour = 0, ... }`,
+  `astimezone([tz])`, `tzname()` (`"BST"`), `utcoffset()` (a timedelta).
+- date: fields `year month day`; `weekday()`, `isoweekday()`, `toordinal()`,
+  `strftime(fmt)`, `isoformat()`, `replace{ ... }`.
+- timedelta: fields `days`, `seconds` (0..86399; the sign is on `days`);
+  `total_seconds()`.
+- `+` `-` as in Python (datetime − datetime and date − date give a
+  timedelta), `timedelta * integer`, `==` `<` `<=`. Within one zone,
+  arithmetic is on the wall clock: noon plus a day is noon, across DST. A date
+  never equals a datetime, and ordering one against the other raises.
+- `tostring(x)` is Python's `str()`: `2026-10-05 13:05:09`, `2026-10-05`,
+  `1 day, 2:00:00`.
+- `strftime`: `%a %A %b %B %c %d %e %H %I %j %m %M %p %S %U %w %W %x %X %y %Y
+  %Z %z %%` (C locale, English names), max 255 bytes.
+- Treat values as immutable: make new ones with `replace{}` and arithmetic.
+- No microseconds. Years 1..9999; what needs epoch seconds (`now`,
+  `timestamp()`, a local `utcoffset()`, mixing zones) stops at 2038-01-19.
+- `datetime.today():toordinal()` is a good once-a-day key.
+
+## time module
+
+Elapsed time: a wrapping millisecond counter, read through `ticks_diff`,
+which is right across the wrap.
+
+```lua
+local t0 = time.ticks_ms()
+-- later:
+local ms = time.ticks_diff(time.ticks_ms(), t0)   -- a - b in ms
+```
+
+Use ticks for timeouts and durations: they do not jump when the clock is set,
+and `ctx.time_ms`, a plain count since load, goes wrong after ~24.8 days.
+
+`time.time`, `localtime`, `gmtime`, `mktime`, `strftime` and `synced` are
+deprecated — they still work, and warn once per app load. Use
+`datetime.now()`, `dt:timestamp()`, `datetime.fromtimestamp(secs)`,
+`datetime(...)`, `dt:strftime(fmt)` and `datetime.synced()`.
 
 ## screens module
 

@@ -43,7 +43,7 @@ Resident::Sandbox sandbox{makeConfig()};
 
 // POST /devices/<id>/register on the custom server and apply whatever config
 // comes back. For this example, the only thing we care about is `timezone` —
-// once applied via Sandbox::setTimezone, time.localtime() in Lua reflects it.
+// once applied via Sandbox::setTimezone, datetime.now() in Lua reflects it.
 // Runs every connect cycle, in onTransportsWillConnect (after WiFi is up,
 // before transports begin) — the same lifecycle hook Hawthorn uses.
 static void registerWithServer() {

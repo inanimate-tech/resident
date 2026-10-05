@@ -7,6 +7,7 @@
 #include "chipstring.h"
 #include "ResidentNvsStore.h"   // device-only; no-op on native
 #include "ResidentRenderTargets.h"
+#include "ResidentDatetime.h"
 
 extern "C" {
   #include "lua/lua.h"
@@ -437,6 +438,9 @@ void Sandbox::setupLuaEnvironment()
   lua_pushcfunction(_lua, lua_time_synced);
   lua_setfield(_lua, -2, "synced");
   lua_setglobal(_lua, "time");
+
+  // datetime module: Python's datetime, loaded on first touch.
+  installDatetime();
 
   // screens module: the screens of the board's display drivers — their facts
   // and their settings. Always present: a board with no screen lists none.
@@ -2823,6 +2827,12 @@ bool Sandbox::compileApp(const char* code)
   // ("Fresh boot" finally means fresh.)
   if (_config.freshAppEnvironment) resetAppGlobals();
 
+  // A fresh, unloaded datetime for every app: one that never touches it pays
+  // nothing, and nothing the last app did to it survives. And the `time`
+  // deprecation notices are owed again.
+  installDatetime();
+  _timeDeprecationsWarned = 0;
+
   // Clear old global functions (covered by the reset above, but explicit —
   // and still required when freshAppEnvironment is off)
   lua_pushnil(_lua);
@@ -3286,10 +3296,15 @@ int Sandbox::lua_log_info(lua_State* L)
   return 0;
 }
 
+// log.warn's line, which the runtime's own warnings to the author share.
+static void writeWarn(const char* msg)
+{
+  Serial.printf("[WARN] %s\n", msg);
+}
+
 int Sandbox::lua_log_warn(lua_State* L)
 {
-  const char* msg = luaL_checkstring(L, 1);
-  Serial.printf("[WARN] %s\n", msg);
+  writeWarn(luaL_checkstring(L, 1));
   return 0;
 }
 
@@ -3446,8 +3461,25 @@ int Sandbox::lua_screens_refresh(lua_State* L)
 // Courier's HTTP-Date fallback); the zone is the IANA location setTimezone
 // resolved, applied through ezTime's own rules for the instant in question,
 // so a localtime() across a DST change is right on both sides of it.
+//
+// The calendar half (time, gmtime, localtime, mktime, strftime, synced) is
+// deprecated for `datetime` below, which answers "tomorrow" and "days until"
+// that struct_time cannot. Those calls still work, and each warns once per
+// app load. ticks_ms/ticks_diff are not deprecated: they are the monotonic
+// clock, which datetime does not have (Python keeps monotonic in time too).
 
 namespace {
+
+struct TimeDeprecation { const char* call; const char* use; };
+const TimeDeprecation kTimeDeprecations[] = {
+  {"time.time()",      "datetime.now():timestamp()"},
+  {"time.gmtime()",    "datetime.now(datetime.UTC) / datetime.fromtimestamp(secs, datetime.UTC)"},
+  {"time.localtime()", "datetime.now() / datetime.fromtimestamp(secs)"},
+  {"time.mktime()",    "datetime(y, m, d, ...):timestamp()"},
+  {"time.strftime()",  "dt:strftime(fmt)"},
+  {"time.synced()",    "datetime.synced()"},
+};
+enum { kDepTime, kDepGmtime, kDepLocaltime, kDepMktime, kDepStrftime, kDepSynced };
 
 Sandbox* timeSandbox(lua_State* L)
 {
@@ -3552,9 +3584,41 @@ int64_t Sandbox::localToUtc(int64_t wallSeconds) const
   return (int64_t)tz.tzTime((time_t)wallSeconds, LOCAL_TIME);
 }
 
+// ezTime reads a wall time in the spring-forward gap as DST, and the hour an
+// autumn change repeats as its first (DST) occurrence.
+int64_t Sandbox::resolveLocal(int64_t wallSeconds, int32_t& gmtoff, String& zone) const
+{
+  if (!_hasTimezone) {
+    gmtoff = 0;
+    zone = "UTC";
+    return wallSeconds;
+  }
+  bool dst = false;
+  int16_t offsetMinutesWest = 0;
+  Timezone& tz = const_cast<Timezone&>(_tz);
+  const int64_t utc =
+      (int64_t)tz.tzTime((time_t)wallSeconds, LOCAL_TIME, zone, dst, offsetMinutesWest);
+  gmtoff = -(int32_t)offsetMinutesWest * 60;
+  return utc;
+}
+
+// "[deprecated] time.localtime(): use datetime.now()", on log.warn's line,
+// once per app load per function.
+void Sandbox::warnDeprecatedTime(lua_State* L, int which)
+{
+  Sandbox* self = timeSandbox(L);
+  if (!self || (self->_timeDeprecationsWarned & (1u << which))) return;
+  self->_timeDeprecationsWarned |= (uint8_t)(1u << which);
+  char msg[160];
+  snprintf(msg, sizeof(msg), "[deprecated] %s: use %s",
+           kTimeDeprecations[which].call, kTimeDeprecations[which].use);
+  writeWarn(msg);
+}
+
 // time.time() -> whole seconds since the epoch (UTC), an integer.
 int Sandbox::lua_time_time(lua_State* L)
 {
+  warnDeprecatedTime(L, kDepTime);
   lua_pushinteger(L, (lua_Integer)nowSeconds());
   return 1;
 }
@@ -3581,6 +3645,7 @@ int Sandbox::lua_time_ticks_diff(lua_State* L)
 // time.gmtime([secs]) -> struct_time in UTC.
 int Sandbox::lua_time_gmtime(lua_State* L)
 {
+  warnDeprecatedTime(L, kDepGmtime);
   pushStructTime(L, timecore::breakDown(optSeconds(L, 1), 0, 0, "UTC"));
   return 1;
 }
@@ -3589,6 +3654,7 @@ int Sandbox::lua_time_gmtime(lua_State* L)
 // zone is known).
 int Sandbox::lua_time_localtime(lua_State* L)
 {
+  warnDeprecatedTime(L, kDepLocaltime);
   Sandbox* self = timeSandbox(L);
   const int64_t secs = optSeconds(L, 1);
   pushStructTime(L, self ? self->localTime(secs) : timecore::breakDown(secs, 0, 0, "UTC"));
@@ -3598,6 +3664,7 @@ int Sandbox::lua_time_localtime(lua_State* L)
 // time.mktime(t) -> epoch seconds for a struct_time read as LOCAL time.
 int Sandbox::lua_time_mktime(lua_State* L)
 {
+  warnDeprecatedTime(L, kDepMktime);
   Sandbox* self = timeSandbox(L);
   const timecore::Tm t = checkStructTime(L, 1);
   const int64_t wall = timecore::wallSeconds(t);
@@ -3608,6 +3675,7 @@ int Sandbox::lua_time_mktime(lua_State* L)
 // time.strftime(format[, t]) -> string; t defaults to localtime().
 int Sandbox::lua_time_strftime(lua_State* L)
 {
+  warnDeprecatedTime(L, kDepStrftime);
   const char* fmt = luaL_checkstring(L, 1);
   timecore::Tm t;
   if (lua_isnoneornil(L, 2)) {
@@ -3625,10 +3693,207 @@ int Sandbox::lua_time_strftime(lua_State* L)
 
 // time.synced() -> true once the wall clock has been set. Not Python: an
 // embedded clock starts at the epoch, and an app has to be able to tell.
+// datetime.synced() is the same answer.
 int Sandbox::lua_time_synced(lua_State* L)
 {
+  warnDeprecatedTime(L, kDepSynced);
   lua_pushboolean(L, timeStatus() == timeSet);
   return 1;
+}
+
+// --- datetime: Python's datetime, in Lua over C primitives -----------------
+//
+// The module is Lua (ResidentDatetime.h); what lives here is what Lua cannot
+// do with 32-bit numbers or without the zone: the clock, the zone's answer
+// for an instant or a wall time, epoch seconds (int64 inside, int32 out, and
+// an error rather than a wrap past 2038), the ordinal calendar and strftime.
+// The primitives are private to the module: they go to the chunk as its
+// `...`, never into a global, so they are not API.
+//
+// Cost: loaded, the module is ~38 KB of Lua heap in the 64-bit host build
+// (test_datetime_module prints it; less on the device's 32-bit pointers).
+// Most apps would carry that for nothing, so `datetime` is installed as an
+// empty table whose metatable loads the module into it on first touch (an
+// index or a call), and is re-installed at every app load.
+
+namespace {
+
+// daysFromCivil(1, 1, 1) is -719162; Python's ordinal for that day is 1.
+constexpr int64_t kOrdinalOffset = 719163;
+
+// Raise msg at the first Lua line outside the module — the app's call,
+// however deep in the module (or behind a tail call) the check that failed.
+int raiseInApp(lua_State* L, const char* msg)
+{
+  lua_Debug ar;
+  for (int level = 1; lua_getstack(L, level, &ar); ++level) {
+    lua_getinfo(L, "Sl", &ar);
+    if (ar.currentline > 0 && strcmp(ar.source, "=datetime") != 0) {
+      lua_pushfstring(L, "%s:%d: %s", ar.short_src, ar.currentline, msg);
+      return lua_error(L);
+    }
+  }
+  lua_pushstring(L, msg);
+  return lua_error(L);
+}
+
+lua_Integer checkEpoch(lua_State* L, int64_t secs)
+{
+  if (secs < (int64_t)INT32_MIN || secs > (int64_t)INT32_MAX) {
+    raiseInApp(L, "datetime: outside 1901-12-13..2038-01-19, the reach of 32-bit epoch seconds");
+  }
+  return (lua_Integer)secs;
+}
+
+timecore::Tm checkWall(lua_State* L, int first)
+{
+  timecore::Tm t;
+  t.year = (int)luaL_checkinteger(L, first);
+  t.mon  = (int)luaL_checkinteger(L, first + 1);
+  t.mday = (int)luaL_checkinteger(L, first + 2);
+  t.hour = (int)luaL_checkinteger(L, first + 3);
+  t.min  = (int)luaL_checkinteger(L, first + 4);
+  t.sec  = (int)luaL_checkinteger(L, first + 5);
+  return t;
+}
+
+int pushFields(lua_State* L, const timecore::Tm& t)
+{
+  lua_pushinteger(L, t.year);
+  lua_pushinteger(L, t.mon);
+  lua_pushinteger(L, t.mday);
+  lua_pushinteger(L, t.hour);
+  lua_pushinteger(L, t.min);
+  lua_pushinteger(L, t.sec);
+  return 6;
+}
+
+}  // namespace
+
+void Sandbox::installDatetime()
+{
+  lua_newtable(_lua);                       // the module, filled on first touch
+  lua_createtable(_lua, 0, 2);              // the stub's metatable
+  lua_pushcfunction(_lua, lua_datetime_stub_index);
+  lua_setfield(_lua, -2, "__index");
+  lua_pushcfunction(_lua, lua_datetime_stub_call);
+  lua_setfield(_lua, -2, "__call");
+  lua_setmetatable(_lua, -2);
+  lua_setglobal(_lua, "datetime");
+}
+
+// Run the module's source with the primitives and the table at moduleIdx,
+// which it fills in place (and gives its own metatable), so a reference an
+// app took before the first touch is the module after it.
+void Sandbox::loadDatetime(lua_State* L, int moduleIdx)
+{
+  static const luaL_Reg kPrimitives[] = {
+    {"now", [](lua_State* L) -> int {
+       lua_pushinteger(L, checkEpoch(L, (int64_t)UTC.now()));
+       return 1;
+     }},
+    {"split", [](lua_State* L) -> int {
+       const int64_t secs = (int64_t)luaL_checkinteger(L, 1);
+       Sandbox* self = timeSandbox(L);
+       if (lua_toboolean(L, 2) && self) return pushFields(L, self->localTime(secs));
+       return pushFields(L, timecore::breakDown(secs, 0, 0, "UTC"));
+     }},
+    {"epoch", [](lua_State* L) -> int {
+       lua_pushinteger(L, checkEpoch(L, timecore::wallSeconds(checkWall(L, 1))));
+       return 1;
+     }},
+    {"resolve", [](lua_State* L) -> int {
+       const int64_t wall = timecore::wallSeconds(checkWall(L, 1));
+       // A wall time a day past either end is out of reach whatever the
+       // offset: turn it away before ezTime, whose rules hold the year in a
+       // byte.
+       checkEpoch(L, wall < 0 ? wall + 86400 : wall - 86400);
+       int32_t gmtoff = 0;
+       String zone = "UTC";
+       Sandbox* self = timeSandbox(L);
+       const int64_t utc = self ? self->resolveLocal(wall, gmtoff, zone) : wall;
+       lua_pushinteger(L, checkEpoch(L, utc));
+       lua_pushinteger(L, gmtoff);
+       lua_pushstring(L, zone.c_str());
+       return 3;
+     }},
+    {"ord", [](lua_State* L) -> int {
+       lua_pushinteger(L, (lua_Integer)(timecore::daysFromCivil(
+           luaL_checkinteger(L, 1), (int)luaL_checkinteger(L, 2), (int)luaL_checkinteger(L, 3))
+           + kOrdinalOffset));
+       return 1;
+     }},
+    {"civil", [](lua_State* L) -> int {
+       int64_t y; int m, d;
+       timecore::civilFromDays((int64_t)luaL_checkinteger(L, 1) - kOrdinalOffset, y, m, d);
+       lua_pushinteger(L, (lua_Integer)y);
+       lua_pushinteger(L, m);
+       lua_pushinteger(L, d);
+       return 3;
+     }},
+    {"strftime", [](lua_State* L) -> int {
+       const char* fmt = luaL_checkstring(L, 1);
+       timecore::Tm t = checkWall(L, 2);
+       timecore::weekdayAndYearday(t.year, t.mon, t.mday, t.wday, t.yday);
+       t.hasZone = !lua_isnoneornil(L, 8);
+       if (t.hasZone) {
+         t.gmtoff = (int32_t)luaL_checkinteger(L, 8);
+         snprintf(t.zone, sizeof(t.zone), "%s", luaL_optstring(L, 9, ""));
+       }
+       char buf[256];
+       const size_t n = timecore::format(buf, sizeof(buf), fmt, t);
+       lua_pushlstring(L, buf, n < sizeof(buf) ? n : sizeof(buf) - 1);
+       return 1;
+     }},
+    {"mul", [](lua_State* L) -> int {
+       const int64_t n = (int64_t)luaL_checkinteger(L, 3);
+       int64_t days = (int64_t)luaL_checkinteger(L, 1) * n;
+       int64_t secs = (int64_t)luaL_checkinteger(L, 2) * n;
+       const int64_t carry = timecore::floorDiv(secs, 86400);
+       days += carry;
+       secs -= carry * 86400;
+       if (days < -999999999 || days > 999999999) {
+         return raiseInApp(L, "datetime.timedelta: out of range");
+       }
+       lua_pushinteger(L, (lua_Integer)days);
+       lua_pushinteger(L, (lua_Integer)secs);
+       return 2;
+     }},
+    {"synced", [](lua_State* L) -> int {
+       lua_pushboolean(L, timeStatus() == timeSet);
+       return 1;
+     }},
+    {"raise", [](lua_State* L) -> int {
+       return raiseInApp(L, luaL_checkstring(L, 1));
+     }},
+    {nullptr, nullptr},
+  };
+  moduleIdx = lua_absindex(L, moduleIdx);
+  if (luaL_loadbufferx(L, datetimelua::kSource, sizeof(datetimelua::kSource) - 1,
+                       "=datetime", "t") != LUA_OK) {
+    lua_error(L);
+  }
+  luaL_newlib(L, kPrimitives);
+  lua_pushvalue(L, moduleIdx);
+  lua_call(L, 2, 0);
+}
+
+// datetime.<key> on the unloaded stub: load, then answer from the module.
+int Sandbox::lua_datetime_stub_index(lua_State* L)
+{
+  loadDatetime(L, 1);
+  lua_pushvalue(L, 2);
+  lua_rawget(L, 1);
+  return 1;
+}
+
+// datetime(...) on the unloaded stub: load, then call the module itself.
+int Sandbox::lua_datetime_stub_call(lua_State* L)
+{
+  const int n = lua_gettop(L);
+  loadDatetime(L, 1);
+  lua_call(L, n - 1, LUA_MULTRET);
+  return lua_gettop(L);
 }
 
 } // namespace Resident

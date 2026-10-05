@@ -22,7 +22,7 @@ if [[ ! -f "$src" ]]; then
 fi
 
 # Identifiers we never emit (already provided by builtins.lua or Lua itself).
-exclude='^(log|time|kv|math|utf8|string|table|io|os|coroutine|debug|package|tostring|tonumber|type|pairs|ipairs|next|select|error|assert|pcall|xpcall|setmetatable|getmetatable|rawset|rawget|rawequal|rawlen|require|print|unpack|_G|_VERSION|init|on_tick|on_event|ctx|dt_ms|e|event|self|true|false|nil|local|function|end|if|then|else|elseif|for|do|while|repeat|until|break|return|in|and|or|not)$'
+exclude='^(log|time|datetime|kv|math|utf8|string|table|io|os|coroutine|debug|package|tostring|tonumber|type|pairs|ipairs|next|select|error|assert|pcall|xpcall|setmetatable|getmetatable|rawset|rawget|rawequal|rawlen|require|print|unpack|_G|_VERSION|init|on_tick|on_event|ctx|dt_ms|e|event|self|true|false|nil|local|function|end|if|then|else|elseif|for|do|while|repeat|until|break|return|in|and|or|not)$'
 
 awk '
   /^```lua/ { in_block = 1; next }

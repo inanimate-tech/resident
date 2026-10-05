@@ -55,6 +55,10 @@ stubs**:
 - Sandbox built-ins (`log.*`, `time.*`) are hardcoded with neutral return
   values; `time.*` has the real module's shape (`time.localtime()` returns
   a full struct_time table, `time.ticks_ms()` an integer, etc.).
+- `datetime` is the device's own module (`tools/datetime.lua`, a verbatim
+  copy of Resident's), over a fixed clock: synced, 2026-10-03 12:00:00 UTC,
+  zone UTC. Its arithmetic, comparisons and argument errors are real;
+  `strftime` returns the format unchanged.
 - There are no bare math globals (`floor`, `sin`, …) and no
   `rgb`/`fract`/`beat`/`noise2d`, because the sandbox has none: an app
   calling one fails validation. Apps use `math.*`.

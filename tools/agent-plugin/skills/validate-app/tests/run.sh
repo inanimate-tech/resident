@@ -40,6 +40,21 @@ run "$FIXTURES/fail-no-lifecycle.lua" "fail"
 run "$FIXTURES/fail-syntax-error.lua" "fail"
 run "$FIXTURES/fail-runtime-error.lua" "fail"
 run "$FIXTURES/ok-uses-extension.lua" "ok" --ref "$FIXTURES/extensions.md"
+run "$FIXTURES/ok-datetime.lua"       "ok"
+run "$FIXTURES/fail-datetime-bad-date.lua" "fail"
+
+# tools/datetime.lua must be the module the device runs, verbatim.
+HEADER="$SCRIPT_DIR/../../../../../src/ResidentDatetime.h"
+if [[ -f "$HEADER" ]]; then
+  if awk '/^\)lua";$/{p=0} p; /R"lua\($/{p=1}' "$HEADER" | diff -q - "$SCRIPT_DIR/../tools/datetime.lua" >/dev/null; then
+    echo "PASS  tools/datetime.lua matches src/ResidentDatetime.h"
+    pass=$((pass+1))
+  else
+    echo "FAIL  tools/datetime.lua differs from src/ResidentDatetime.h; re-copy it:"
+    echo "      awk '/^\)lua\";\$/{p=0} p; /R\"lua\\(\$/{p=1}' src/ResidentDatetime.h > tools/agent-plugin/skills/validate-app/tools/datetime.lua"
+    fail=$((fail+1))
+  fi
+fi
 
 echo
 echo "$pass passed, $fail failed"

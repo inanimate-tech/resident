@@ -36,6 +36,7 @@ struct Tm {
   int isdst = 0;    // 1, 0, or -1 = unknown (mktime input only)
   int32_t gmtoff = 0;     // seconds EAST of UTC
   char zone[16] = "UTC";  // abbreviation, e.g. "BST"
+  bool hasZone = true;    // false for a bare date: %z and %Z print nothing
 };
 
 // Days since 1970-01-01 for a civil date (m 1..12, d 1..31).
@@ -144,6 +145,8 @@ inline int weekNumber(const Tm& t, int firstDay) {
 // strftime in the C locale, the directive set Python 3 documents as
 // portable: %a %A %b %B %c %d %H %I %j %m %M %p %S %U %w %W %x %X %y %Y %Z
 // %z %%, plus %e (space-padded day, which %c uses). %w is C's: Sunday = 0.
+// A Tm with no zone (hasZone false, a date) prints %z and %Z as nothing, as
+// Python does for a naive value.
 // An unknown directive is copied through as written. Implemented here rather
 // than by the C library's strftime because its %Z reads the process's TZ,
 // not the zone this sandbox resolved, and because the libraries disagree on
@@ -196,8 +199,9 @@ inline size_t format(char* buf, size_t cap, const char* fmt, const Tm& t) {
       }
       case 'y': o.num(((t.year % 100) + 100) % 100, 2, '0'); break;
       case 'Y': o.num(t.year, 1, '0'); break;
-      case 'Z': o.puts(t.zone); break;
+      case 'Z': if (t.hasZone) o.puts(t.zone); break;
       case 'z': {
+        if (!t.hasZone) break;
         const int32_t off = t.gmtoff;
         const int32_t a = off < 0 ? -off : off;
         o.put(off < 0 ? '-' : '+');

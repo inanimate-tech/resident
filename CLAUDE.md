@@ -57,11 +57,14 @@ The runner self-installs its Python deps via `uv` (PEP 723 inline metadata).
   section for the full picture.
 - **Lua runs with `LUA_32BITS`** (32-bit integers and floats). Apps load
   only Lua source — there is no shader-expression mode (removed in 0.10) and
-  no bare math globals; apps use `math.*`. The `time` module follows Python
-  3's `time` (names, `struct_time` fields, `strftime`) with MicroPython's
-  integer seconds and `ticks_ms`/`ticks_diff` where 32-bit numbers bite; its
-  calendar maths and `strftime` are `src/ResidentTimeCore.h`, pure and
-  native-tested, so device, sim and tests agree.
+  no bare math globals; apps use `math.*`. The wall clock is the `datetime`
+  module — Python's `datetime` in whole seconds, Lua
+  (`src/ResidentDatetime.h`) over private C primitives, loaded on first touch
+  per app (~38 KB of Lua heap once loaded). The `time` module is Python 3's
+  `time` with MicroPython's integer seconds and `ticks_ms`/`ticks_diff`; its
+  calendar half is deprecated for `datetime` (it works, and warns once per app
+  load), its ticks are not. Both share `src/ResidentTimeCore.h` (calendar
+  maths, `strftime`), pure and native-tested, so device, sim and tests agree.
 - **Examples are independent PlatformIO projects.** Each has its own
   `platformio.ini` and uses `lib_deps = symlink://../../..` to pull in this
   library from the repo root. They should build standalone.

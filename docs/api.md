@@ -309,7 +309,7 @@ sandbox.clearPersistedApp();           // wipe the saved app from the persistent
 
 `addOverlay` / `requestOverlay` / `removeOverlay` and `startMicStream` / `stopMicStream` / `isMicStreaming` / `setMicStreamSink` are covered under [Resident::Overlay](#residentoverlay) and [Resident::SystemMic](#residentsystemmic).
 
-`setTimezone` is a no-op on `nullptr` or empty input. Success means ezTime resolved the zone (either from its own cache or via one UDP lookup to `timezoned.rop.nl`); failure logs and leaves `hasTimezone() == false`. Affects the Lua [`time` module](#time-module)'s `time.localtime()`, `time.mktime()` and `time.strftime()`; until it succeeds, local time is UTC.
+`setTimezone` is a no-op on `nullptr` or empty input. Success means ezTime resolved the zone (either from its own cache or via one UDP lookup to `timezoned.rop.nl`); failure logs and leaves `hasTimezone() == false`. Affects local time in the Lua [`datetime` module](#datetime-module) (and the deprecated `time.localtime()`, `time.mktime()`, `time.strftime()`); until it succeeds, local time is UTC.
 
 ### Identity and state accessors
 
@@ -884,7 +884,7 @@ All callbacks receive a `ctx` table. `on_tick` also receives `dt_ms` (integer, m
 | `time_ms` | integer | Milliseconds since the current app was loaded |
 | `generation_id` | string? | The `generationId` the server stamped on the app load message — `nil` when the load didn't carry one (direct C++ loads, NVS restores) |
 
-The table is IDENTICAL in every callback. The wall clock is not on `ctx`: read it from the [`time` module](#time-module) (`time.localtime()`).
+The table is IDENTICAL in every callback. The wall clock is not on `ctx`: read it from the [`datetime` module](#datetime-module) (`datetime.now()`).
 
 ### `event` table
 
@@ -1026,58 +1026,88 @@ An app-scoped **persistent** KV slot of scalars — state here survives `loadApp
 
 **Budget:** total persisted size (namespace + keys + values, serialized) is capped at `RESIDENT_STORE_JSON_MAX` (default 2048 bytes, build-flag overridable).
 
-### `time` module
+### `datetime` module
 
-Modelled on Python 3's [`time`](https://docs.python.org/3/library/time.html): the same function names, the same `struct_time` field names and ranges, the same `strftime` directives — so an author (or a model) who knows Python already knows this module. Where Python's answer depends on 64-bit numbers it takes MicroPython's instead, because the Lua here is built with `LUA_32BITS` (32-bit integers *and* 32-bit floats): wall-clock seconds are **integers**, and elapsed time is a wrapping millisecond counter, `ticks_ms()`, read through `ticks_diff()`. A float epoch would be good only to 128 s, and a float seconds-since-boot would lose its milliseconds within hours of uptime — which is why there is deliberately no `time.monotonic()`. The calendar arithmetic and `strftime` are Resident's own code (`ResidentTimeCore.h`), not the C library's, so the device, the browser sim and the native tests give byte-identical answers.
+Python 3's [`datetime`](https://docs.python.org/3/library/datetime.html), Lua-shaped: the same constructors, fields, methods and arithmetic, so an author (or a model) who knows Python already knows it — "tomorrow", "days until", "the same day" are one expression each. `datetime(...)` and `datetime.datetime(...)` both construct (the module is callable, and is its own `datetime.datetime`).
 
-| Function | Returns | Description |
-|----------|---------|-------------|
-| `time.time()` | integer | Whole seconds since the Unix epoch, UTC. An int32, good until 2038-01-19. Counts from 1970 until the clock is synced. |
-| `time.gmtime([secs])` | struct_time | `secs` (default: now) broken down in UTC |
-| `time.localtime([secs])` | struct_time | `secs` (default: now) broken down in the device's zone — the one `Sandbox::setTimezone` resolved; UTC until then. DST is applied for the instant asked about, so it is right on both sides of a change. |
-| `time.mktime(t)` | integer | Epoch seconds for a struct_time read as **local** time. `tm_year`, `tm_mon`, `tm_mday` are required (a table without them raises); the time of day defaults to midnight. Out-of-range fields carry, as C's `mktime` does: `tm_hour = 24` is midnight the next day, `tm_mon = 13` January of the next year, `tm_mday = 0` the last day of the previous month. `tm_wday`/`tm_yday` are ignored. |
-| `time.strftime(fmt[, t])` | string | Format a struct_time (default: `time.localtime()`) in the C locale. Unknown directives pass through as written. Output is capped at 255 bytes. |
-| `time.ticks_ms()` | integer | A millisecond counter that **wraps**. Only a difference taken with `ticks_diff` means anything. |
-| `time.ticks_diff(a, b)` | integer | `a - b` in milliseconds, correct across the wrap (for spans under ~24.8 days either way). |
-| `time.synced()` | boolean | `true` once the wall clock has been set (NTP, or Courier's HTTP-Date fallback). Not in Python: an embedded clock starts at the epoch, and an app has to be able to tell. |
+Where it departs from Python, it is for the VM (`LUA_32BITS`) or the device:
 
-**struct_time** is a plain table (build one by hand to pass to `mktime`/`strftime`):
+- **Whole seconds.** No microseconds; `timestamp()` and `total_seconds()` return integers.
+- **Two zones, every value aware.** A datetime is local (the zone `Sandbox::setTimezone` resolved, DST applied per instant; UTC until one is set) or `datetime.UTC` (also `datetime.timezone.utc`). There are no naive datetimes: a constructed one is local unless given `tz`.
+- **Years 1..9999 by ordinal; epoch seconds stop at 2038.** Dates are proleptic-Gregorian ordinals, so date arithmetic never overflows. What needs epoch seconds — `now`, `timestamp()`, a local `utcoffset()`/`tzname()`/`isoformat()`, comparing or subtracting across zones, `astimezone` — is int32 and raises past 2038-01-19 (and before 1901-12-13).
+- **`tostring`** is Python's `str()` without the offset (`2026-10-05 13:05:09`), so it never needs the instant; `isoformat()` carries it.
+- **`datetime.today()` returns a date** (Python's `datetime.today()` is a datetime; `datetime.date.today()` works as in Python).
+- **`datetime.synced()`** is not Python: until the network sets the clock, `now()` reads 1970.
 
-| Field | Range | Notes |
-|-------|-------|-------|
-| `tm_year` | e.g. `2026` | Full year |
-| `tm_mon` | 1..12 | January = 1 (not C's 0..11) |
-| `tm_mday` | 1..31 | |
-| `tm_hour` | 0..23 | |
-| `tm_min` | 0..59 | |
-| `tm_sec` | 0..59 | |
-| `tm_wday` | 0..6 | **Monday = 0** (Python's, not C's Sunday = 0) |
-| `tm_yday` | 1..366 | Day of the year |
-| `tm_isdst` | 1 / 0 | Daylight saving in effect |
-| `tm_zone` | string | Zone abbreviation, e.g. `"BST"`, `"UTC"` |
-| `tm_gmtoff` | integer | Offset in seconds **east** of UTC, e.g. `3600` for BST |
+| Constructor | Returns |
+|-------------|---------|
+| `datetime.now([tz])` | datetime: now, local or `datetime.UTC` |
+| `datetime.today()` / `datetime.date.today()` | date: today, local |
+| `datetime(y, mo, d[, h, mi, s[, tz]])` | datetime; fields default to 0, `tz` to local |
+| `datetime.date(y, mo, d)` | date |
+| `datetime.date.fromordinal(n)` | date (0001-01-01 is 1) |
+| `datetime.timedelta{ weeks, days, hours, minutes, seconds }` | timedelta; a bare number is days, `timedelta(days, seconds)` as Python. Fractions round to the second. |
+| `datetime.fromtimestamp(secs[, tz])` | datetime for epoch seconds |
+| `datetime.synced()` | boolean: the wall clock has been set |
 
-**strftime directives:** `%a` `%A` (weekday, short/full) · `%b` `%B` (month, short/full) · `%c` (`Sat Oct  3 15:05:09 2026`) · `%d` (day, `03`) · `%e` (day, space-padded, ` 3`) · `%H` `%I` (hour, 24/12) · `%j` (day of year, `276`) · `%m` (month, `10`) · `%M` (minute) · `%p` (`AM`/`PM`) · `%S` (second) · `%U` `%W` (week of year, weeks from Sunday/Monday) · `%w` (weekday, **Sunday = 0**, as in C and Python's `strftime`) · `%x` (`10/03/26`) · `%X` (`15:05:09`) · `%y` `%Y` (year, 2/4 digits) · `%Z` (`BST`) · `%z` (`+0100`) · `%%`.
+| Value | Fields | Methods |
+|-------|--------|---------|
+| datetime | `year month day hour minute second tzinfo` | `weekday()` (Monday = 0), `isoweekday()` (Monday = 1), `toordinal()`, `date()`, `timestamp()`, `strftime(fmt)`, `isoformat([sep])` (`2026-10-05T13:05:09+01:00`), `replace{ year, month, day, hour, minute, second, tzinfo }`, `astimezone([tz])` (no argument: local), `tzname()` (`"BST"`), `utcoffset()` (a timedelta) |
+| date | `year month day` | `weekday()`, `isoweekday()`, `toordinal()`, `strftime(fmt)`, `isoformat()`, `replace{ year, month, day }` |
+| timedelta | `days`, `seconds` (normalised to 0..86399, the sign on `days`, as Python) | `total_seconds()` |
+
+**Arithmetic and comparison** are Python's for aware values. datetime ± timedelta and date ± timedelta (which uses `.days`) give the same kind; datetime − datetime and date − date give a timedelta; timedelta supports `+ -`, unary `-` and `* integer`. Two datetimes in the same zone compare and subtract on the wall clock (Python ignores the offset when both share a tzinfo), so local noon plus a day is noon the next day across a DST change; in different zones they go through UTC. A date never equals a datetime, and ordering one against the other raises. A wall time that a DST change skips or repeats resolves as the zone library does (ezTime: the skipped hour as DST, the repeated hour as its first occurrence).
+
+**strftime** is `ResidentTimeCore.h`'s, shared with `time`: `%a` `%A` (weekday, short/full) · `%b` `%B` (month) · `%c` (`Mon Oct  5 13:05:09 2026`) · `%d` (`05`) · `%e` (` 5`) · `%H` `%I` (hour, 24/12) · `%j` (day of year) · `%m` · `%M` · `%p` (`AM`/`PM`) · `%S` · `%U` `%W` (week of year, from Sunday/Monday) · `%w` (weekday, **Sunday = 0**, as C) · `%x` (`10/05/26`) · `%X` (`13:05:09`) · `%y` `%Y` · `%Z` (`BST`) · `%z` (`+0100`) · `%%`. C locale; unknown directives pass through; output capped at 255 bytes. A date's `%Z` and `%z` are empty, as in Python.
+
+**Errors** name the call and point at the app's line: `datetime.date: month must be 1..12`, `datetime.timedelta: no field 'hour' (weeks, days, hours, minutes, seconds)`, `unsupported operand types for +: 'date' and 'number'`.
 
 ```lua
 function on_tick(ctx, dt_ms)
-    if not time.synced() then return end      -- still 1970: draw nothing yet
-    local t = time.localtime()
-    local label = time.strftime("%a %H:%M")   -- "Sat 15:05"
-    local morning = t.tm_hour < 12
-    local today = t.tm_yday                   -- a per-day key that changes at local midnight
+    if not datetime.synced() then return end           -- still 1970: draw nothing yet
+    local now = datetime.now()
+    local label = now:strftime("%a %H:%M")             -- "Mon 13:05"
+    local morning = now.hour < 12
+    local today = datetime.today():toordinal()         -- a per-day key that changes at local midnight
 end
 
--- Elapsed time: ticks, never subtracted directly.
+-- Days until a date, and the next local midnight:
+local left = (datetime.date(2026, 12, 25) - datetime.today()).days
+local midnight = datetime.now():replace{ hour = 0, minute = 0, second = 0 } + datetime.timedelta(1)
+local wait = (midnight - datetime.now()):total_seconds()
+```
+
+**Cost.** The module is Lua (`src/ResidentDatetime.h`) over private C primitives, about 38 KB of Lua heap once loaded (64-bit host figure; less on the device). `datetime` starts as an empty stub that loads the module into itself on first touch, and every app load installs a fresh stub, so an app that never uses it pays nothing and no app sees another's changes to it.
+
+### `time` module
+
+Modelled on Python 3's [`time`](https://docs.python.org/3/library/time.html), with MicroPython's answers where the VM's numbers bite: Lua here is built with `LUA_32BITS` (32-bit integers *and* floats), so wall-clock seconds are integers and elapsed time is a wrapping millisecond counter. A float seconds-since-boot would lose its milliseconds within hours of uptime, which is why there is deliberately no `time.monotonic()`.
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `time.ticks_ms()` | integer | A millisecond counter that **wraps**. Only a difference taken with `ticks_diff` means anything. |
+| `time.ticks_diff(a, b)` | integer | `a - b` in milliseconds, correct across the wrap (for spans under ~24.8 days either way). |
+
+Ticks are the monotonic clock, and are not deprecated: `datetime` has no equivalent (Python keeps `monotonic` in `time` too), they do not jump when the wall clock is set, and `ctx.time_ms`, a plain count since load, goes wrong after ~24.8 days of uptime.
+
+```lua
 local started = time.ticks_ms()
 -- ... later ...
 if time.ticks_diff(time.ticks_ms(), started) > 5000 then --[[ 5 s have passed ]] end
-
--- Seconds until local midnight:
-local t = time.localtime()
-local midnight = time.mktime({ tm_year = t.tm_year, tm_mon = t.tm_mon, tm_mday = t.tm_mday + 1 })
-local wait = midnight - time.time()
 ```
+
+**Deprecated: the calendar half.** These still work unchanged, and each logs `[deprecated] <call>: use <replacement>` once per app load, on `log.warn`'s line:
+
+| Deprecated | Use | Notes |
+|------------|-----|-------|
+| `time.time()` | `datetime.now():timestamp()` | Integer epoch seconds, UTC |
+| `time.localtime([secs])` | `datetime.now()` / `datetime.fromtimestamp(secs)` | struct_time in the local zone |
+| `time.gmtime([secs])` | `datetime.now(datetime.UTC)` / `datetime.fromtimestamp(secs, datetime.UTC)` | struct_time in UTC |
+| `time.mktime(t)` | `datetime(y, m, d, ...):timestamp()` | Local struct_time → epoch; out-of-range fields carry as C's `mktime` |
+| `time.strftime(fmt[, t])` | `dt:strftime(fmt)` | `t` defaults to `localtime()` |
+| `time.synced()` | `datetime.synced()` | |
+
+A struct_time is a plain table: `tm_year`, `tm_mon` (1..12), `tm_mday`, `tm_hour`, `tm_min`, `tm_sec`, `tm_wday` (0..6, Monday = 0), `tm_yday` (1..366), `tm_isdst`, `tm_zone` (`"BST"`), `tm_gmtoff` (seconds east of UTC). `mktime`/`strftime` need `tm_year`, `tm_mon` and `tm_mday`, and recompute weekday and yearday.
 
 For animation, `ctx.time_ms` (milliseconds since the app loaded) is still the simplest clock.
 
