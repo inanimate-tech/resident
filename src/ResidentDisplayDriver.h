@@ -24,6 +24,12 @@ struct Screen {
   uint16_t dpi = 0;               // for a drawing library's sizing; 0 = its default
   uint16_t bufferRows = 0;        // lvgl draw-buffer rows; 0 = auto
   uint8_t group = 0;              // screens sharing a knob (one backlight rail) share a nonzero group
+  // Light marks on a dark ground ("dark": glass that emits — TFT, AMOLED,
+  // LED, VFD — where blank is unlit) or dark marks on a light ground
+  // ("light": glass that reflects — e-paper, a positive STN — where blank is
+  // the paper). A physical fact, not a colour: a framework picks its colours
+  // for the scheme, as CSS does for color-scheme. Anything else is "dark".
+  const char* scheme = "dark";
 };
 
 // A driver that owns one or more screens.

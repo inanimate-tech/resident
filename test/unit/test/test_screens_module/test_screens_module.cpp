@@ -43,6 +43,7 @@ public:
     s.depth = i == 0 ? 16 : 1;
     s.dpi = 213;
     s.group = 1;
+    s.scheme = i == 0 ? nullptr : "light";   // the first takes the default
     return s;
   }
   bool setScreen(int, const char* key, lua_State* L, int idx) override {
@@ -110,6 +111,17 @@ void test_a_listed_display_driver_registers_its_screens(void) {
   TEST_ASSERT_EQUAL_INT(1, e.screenIndex);
   TEST_ASSERT_EQUAL_INT(1, e.depth);
   TEST_ASSERT_EQUAL_INT(213, e.dpi);
+}
+
+void test_scheme_is_dark_unless_the_screen_says_light(void) {
+  build();
+  TEST_ASSERT_TRUE(lua(
+      "local s = screens.list()\n"
+      "ok = s[1].scheme == 'dark' and s[2].scheme == 'light' and screens.get('key2').scheme == 'light'\n"));
+  TEST_ASSERT_TRUE(flag("ok"));
+  // Anything but "light" is "dark": the registry does not take a typo on trust.
+  TEST_ASSERT_TRUE(RenderTargets::addScreen("x", &keys->a, "rect", 16, 0, 0, 0, keys, 0, "Light"));
+  TEST_ASSERT_EQUAL_STRING("dark", RenderTargets::entry(RenderTargets::indexOf("x")).scheme);
 }
 
 void test_an_unlisted_driver_registers_nothing(void) {
@@ -197,6 +209,7 @@ void test_surfaces_is_gone(void) {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_listed_display_driver_registers_its_screens);
+  RUN_TEST(test_scheme_is_dark_unless_the_screen_says_light);
   RUN_TEST(test_an_unlisted_driver_registers_nothing);
   RUN_TEST(test_list_carries_each_screens_facts);
   RUN_TEST(test_get_adds_the_drivers_settings_and_status);

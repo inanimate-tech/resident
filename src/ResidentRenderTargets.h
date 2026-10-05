@@ -102,6 +102,7 @@ public:
     uint16_t dpi = 0;
     uint16_t bufferRows = 0;
     uint8_t group = 0;            // shared-knob group; 0 = none
+    const char* scheme = "dark";  // "dark" | "light" (Screen::scheme)
   };
 
   // Register or update a surface. Same name merges (geometry/shape refresh,
@@ -167,7 +168,8 @@ public:
   // screen's facts and the driver that answers for its settings.
   static bool addScreen(const char* name, PanelTarget* p, const char* shape,
                         uint8_t depth, uint16_t dpi, uint16_t bufferRows,
-                        uint8_t group, DisplayDriver* driver, int index) {
+                        uint8_t group, DisplayDriver* driver, int index,
+                        const char* scheme = "dark") {
     if (!addPanel(name, p, shape)) return false;
     Entry* e = slot(name);
     e->driver = driver;
@@ -176,6 +178,7 @@ public:
     e->dpi = dpi;
     e->bufferRows = bufferRows;
     e->group = group;
+    e->scheme = (scheme && std::strcmp(scheme, "light") == 0) ? "light" : "dark";
     return true;
   }
 
