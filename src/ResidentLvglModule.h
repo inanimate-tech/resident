@@ -121,10 +121,14 @@ public:
   // constructor to luavgl's "widgets" registry table (every object's method
   // lookup falls through to it) and creates the class's metatable with
   // luavgl_obj_newmetatable, so the widget's own `set` takes its own keys.
-  // It runs once per Lua state, when the first bind has loaded luavgl —
-  // before that the widgets table and the base metatable do not exist. Up to
-  // MAX_WIDGETS; set before the sandbox runs. An installer leaves the Lua
-  // stack as it found it.
+  // It runs on every bind, after luavgl is loaded (before that the widgets
+  // table and the base metatable do not exist), so it must be idempotent —
+  // luavgl_obj_newmetatable returns an existing metatable, and setting a
+  // table field again costs nothing. Every bind rather than once per state
+  // because the sandbox clears every global made after boot when the next
+  // app loads, so a global an installer sets (a helper module) has to be
+  // put back for each app. Up to MAX_WIDGETS; set before the sandbox runs.
+  // An installer leaves the Lua stack as it found it.
   static constexpr int MAX_WIDGETS = 8;
   using WidgetInstaller = void (*)(lua_State* L);
   bool addWidget(WidgetInstaller install) {
@@ -228,14 +232,7 @@ public:
     RenderTargets::claim(name, RenderTargets::MODULE_LVGL);
     standUp(*s);
     const int n = luavgl_bind_display(L, s->disp);
-    // Marked in the state's own registry, not by remembering the pointer: a
-    // fresh state for the next app can land at the old one's address.
-    if (lua_rawgetp(L, LUA_REGISTRYINDEX, _widgets) == LUA_TNIL) {
-      lua_pushboolean(L, 1);
-      lua_rawsetp(L, LUA_REGISTRYINDEX, _widgets);
-      for (int i = 0; i < _widgetCount; i++) _widgets[i](L);
-    }
-    lua_pop(L, 1);
+    for (int i = 0; i < _widgetCount; i++) _widgets[i](L);
     return n;
   }
 
