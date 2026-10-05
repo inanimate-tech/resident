@@ -144,21 +144,32 @@ local ms = time.ticks_diff(time.ticks_ms(), t0)
   (`a - b` in ms) of two readings means anything.
 - `time.localtime().tm_yday` is a good once-a-day key.
 
-## surfaces module
+## screens module
 
-The board's drawable surfaces. Geometry comes from the panel itself, so it is
-never stale.
+The board's screens: what each glass is, and its settings. Facts come from
+the display drivers themselves, so they are never stale.
 
 ```lua
-for _, s in ipairs(surfaces.list()) do
+for _, s in ipairs(screens.list()) do
   log.info(s.name .. " " .. s.w .. "x" .. s.h .. " " .. s.shape)
 end
-local m = surfaces.get("main")   -- nil when the board has no such surface
+local m = screens.get("main")         -- nil when the board has no such screen
+screens.set("main", { brightness = 0.4 })
 ```
 
-Each entry is `{ name, w, h, shape }`; `shape` is `"rect"` or `"round"`. A
-board with no screen lists nothing. These are the same names `lgfx.bind(name)`
-and `lvgl.bind(name)` take.
+- `screens.list()` → each `{ name, w, h, shape, depth, dpi?, group? }`;
+  `shape` is `"rect"` or `"round"`, `depth` 16 (colour) or 1 (one-bit
+  glass). A board with no screen lists nothing. These are the names
+  `lvgl.bind(name)` takes.
+- `screens.get(name)` → that, plus the screen's current settings and status
+  (`brightness`, an e-paper panel's `busy`/`pending`, …).
+- `screens.set(name, { key = value, ... })` — a key the screen does not have
+  raises, naming it. `brightness` and `contrast` (0..1) are the standard
+  keys; a one-bit screen adds its own. Screens sharing a nonzero `group`
+  share the knob (one backlight rail), so setting one sets them all.
+- `screens.refresh(name)` → `true` if the screen has an "update now" (e-paper)
+  and it was asked; `false` otherwise.
+- Settings reset to the board's defaults whenever an app loads.
 
 ## Limits
 

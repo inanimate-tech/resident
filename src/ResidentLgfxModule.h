@@ -235,7 +235,7 @@ public:
   // begin() runs after every driver's begin(), so hardware is up: this is the
   // first safe moment to measure. A panel-backed target needs no cache (the
   // registry reads its panel), but a sprite-backed one has no panel to ask, so
-  // record its geometry here for readers like the `surfaces` module.
+  // record its geometry here for readers like the `screens` module.
   void begin() override {
     for (int i = 0; i < _count; i++) {
       const Slot& s = _slots[i];

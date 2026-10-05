@@ -801,8 +801,6 @@ private:
     static int lua_time_ticks_ms(lua_State* L);
     static int lua_time_ticks_diff(lua_State* L);
     static int lua_time_synced(lua_State* L);
-    static int lua_surfaces_list(lua_State* L);
-    static int lua_surfaces_get(lua_State* L);
     // The `screens` module: the screens of the board's display drivers.
     static int lua_screens_list(lua_State* L);
     static int lua_screens_get(lua_State* L);

@@ -1099,30 +1099,6 @@ for _, s in ipairs(screens.list()) do log.info(s.name .. " " .. s.w .. "x" .. s.
 screens.set("main", { brightness = 0.4 })
 ```
 
-### `surfaces` module
-
-*Superseded by [`screens`](#screens-module); retired once boards declare their screens through display drivers.*
-
-The board's render targets ([`RenderTargets`](#residentrendertargets)), readable from Lua. Always present: a board that registers no panel lists nothing, which saves every consumer a capability check.
-
-| Function | Returns | Description |
-|----------|---------|-------------|
-| `surfaces.list()` | array | Every registered surface, in registration order |
-| `surfaces.get(name)` | table or nil | One surface by name; `nil` when the board has no such surface |
-
-Each entry is `{ name, w, h, shape }`, with `shape` `"rect"` or `"round"`. `shape` comes from the board's `addPanel` and a graphics module cannot override it — only a target with no panel takes its shape from the module that declared it. The names are the ones `lgfx.bind(name)` and `lvgl.bind(name)` take.
-
-Geometry is read from the panel at call time; the registry caches nothing for a panel-backed target. This is deliberate: a board registers its panels in a config function that commonly runs during **static init**, before `M5.begin()` and before any display driver's `begin()`, so asking a panel its size there dereferences hardware that does not exist yet. `addPanel` therefore never asks, and every reader gets live numbers.
-
-Why it exists: a consumer that needs to know what surfaces a board has can ASK the device. A framework module that would otherwise be handed the geometry out of band (a per-board configuration file, a profile layer) can read it instead, and what is read from the hardware cannot disagree with the hardware.
-
-```lua
-local m = surfaces.get("main")
-if m and m.shape == "round" then
-    -- compose in rings; the corners are not glass
-end
-```
-
 ### Driver-provided modules
 
 Each extension is registered as a global table named by `Extension::name()`. For example, a driver returning `"imu"` from `name()` makes `imu.accel()` available:

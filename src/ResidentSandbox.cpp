@@ -438,18 +438,8 @@ void Sandbox::setupLuaEnvironment()
   lua_setfield(_lua, -2, "synced");
   lua_setglobal(_lua, "time");
 
-  // surfaces module: the board's render targets, readable. Always present —
-  // a board with no drawable surface lists none, which is the honest answer
-  // and saves every consumer a capability check.
-  lua_newtable(_lua);
-  lua_pushcfunction(_lua, lua_surfaces_list);
-  lua_setfield(_lua, -2, "list");
-  lua_pushcfunction(_lua, lua_surfaces_get);
-  lua_setfield(_lua, -2, "get");
-  lua_setglobal(_lua, "surfaces");
-
   // screens module: the screens of the board's display drivers — their facts
-  // and their settings. Always present, like surfaces.
+  // and their settings. Always present: a board with no screen lists none.
   lua_newtable(_lua);
   lua_pushcfunction(_lua, lua_screens_list);
   lua_setfield(_lua, -2, "list");
@@ -3318,12 +3308,10 @@ int Sandbox::lua_log_error(lua_State* L)
   return 0;
 }
 
-// ── surfaces module ───────────────────────────────────────────────────────
-// The board's render targets, readable from Lua. The registry is where a
-// board declares its drawable surfaces (RenderTargets::addPanel), and this is
-// the read: a consumer that needs to know what surfaces exist and how big
-// they are can ASK instead of being told out of band. Geometry comes from the
-// panel itself, so it cannot go stale.
+// ── screens: the facts every listing carries ───────────────────────────────
+// Geometry is read from the panel at call time (RenderTargets::size), never
+// cached: a board declares its drivers during static init, before any panel
+// exists to ask.
 static void pushSurface(lua_State* L, const RenderTargets::Entry& e)
 {
   int32_t w = 0, h = 0;
@@ -3337,32 +3325,6 @@ static void pushSurface(lua_State* L, const RenderTargets::Entry& e)
   lua_setfield(L, -2, "h");
   lua_pushstring(L, e.shape ? e.shape : "rect");
   lua_setfield(L, -2, "shape");
-}
-
-// surfaces.list() -> { {name=, w=, h=, shape=}, ... } in registration order.
-int Sandbox::lua_surfaces_list(lua_State* L)
-{
-  const int n = RenderTargets::count();
-  lua_createtable(L, n, 0);
-  for (int i = 0; i < n; i++) {
-    pushSurface(L, RenderTargets::entry(i));
-    lua_rawseti(L, -2, i + 1);
-  }
-  return 1;
-}
-
-// surfaces.get(name) -> the same table, or nil when the board has no such
-// surface. Absence is the honest answer: a screenless board lists nothing.
-int Sandbox::lua_surfaces_get(lua_State* L)
-{
-  const char* name = luaL_checkstring(L, 1);
-  const int i = RenderTargets::indexOf(name);
-  if (i < 0) {
-    lua_pushnil(L);
-    return 1;
-  }
-  pushSurface(L, RenderTargets::entry(i));
-  return 1;
 }
 
 // ── screens module ────────────────────────────────────────────────────────

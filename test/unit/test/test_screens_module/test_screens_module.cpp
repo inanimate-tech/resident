@@ -188,10 +188,10 @@ void test_a_hand_registered_panel_is_a_screen_without_settings(void) {
   TEST_ASSERT_TRUE(flag("no_refresh"));
 }
 
-void test_surfaces_still_lists_them(void) {
+void test_surfaces_is_gone(void) {
   build();
-  TEST_ASSERT_TRUE(lua("n = #surfaces.list()\n"));
-  TEST_ASSERT_EQUAL_INT(2, num("n"));
+  TEST_ASSERT_TRUE(lua("gone = surfaces == nil\n"));
+  TEST_ASSERT_TRUE(flag("gone"));
 }
 
 int main(int, char**) {
@@ -204,6 +204,6 @@ int main(int, char**) {
   RUN_TEST(test_refresh_is_the_drivers_answer);
   RUN_TEST(test_settings_reset_with_the_app);
   RUN_TEST(test_a_hand_registered_panel_is_a_screen_without_settings);
-  RUN_TEST(test_surfaces_still_lists_them);
+  RUN_TEST(test_surfaces_is_gone);
   return UNITY_END();
 }
