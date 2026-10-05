@@ -175,21 +175,40 @@ public:
     }
   }
 
-  // App reset: wipe the outgoing app's tree and release every claim. Safe
-  // with stale Lua handles — luavgl invalidates them on C-side deletion
-  // (fork tests/appswap.lua). The blank frame that the wipe invalidates is
-  // never flushed: releasing first makes this module a non-owner, and the
-  // flush gate drops it.
+  // App reset: every app starts on the screen a fresh boot would give it,
+  // and every claim is released.
+  //
+  // Emptying the old screen (lv_obj_clean) is not enough: it deletes the
+  // children but keeps the screen OBJECT, and with it whatever the outgoing
+  // app set on the screen itself — `h.screen():set{ bg_color = ... }`, which
+  // luavgl documents as the way to tweak one property, lands as a local
+  // style, and a local style outranks any theme. On the clock, an app that
+  // whitened its screen left every later app with a white ground behind
+  // whatever it drew; arc re-applying its dark theme at bind could not
+  // override it, and only a reboot cleared it. The display's THEME leaks the
+  // same way: one Lua state lives as long as the device, and luavgl keeps a
+  // `set_theme` installed in it until it is replaced.
+  //
+  // So: uninstall the theme Lua set (luavgl's own set_theme(nil), which
+  // restores the theme underneath and keeps its bookkeeping straight), then
+  // replace the screen with a new one — created under the restored theme —
+  // and delete the old one, children and all. Safe with stale Lua handles:
+  // luavgl invalidates them on C-side deletion (fork tests/appswap.lua), and
+  // its bound constructors resolve the active screen at call time. The frame
+  // this invalidates is never flushed: releasing first makes this module a
+  // non-owner, and the flush gate drops it.
   void onAppReset() override {
     RenderTargets::release(RenderTargets::MODULE_LVGL);
     for (int i = 0; i < _count; i++) {
       if (!_slots[i].disp) continue;
       standDown(_slots[i]);
-      lv_obj_clean(lv_display_get_screen_active(_slots[i].disp));
+      uninstallLuaTheme(_slots[i].disp);
+      replaceScreen(_slots[i].disp);
     }
   }
 
   void registerModule(LuaModule& m) override {
+    _lua = m.state();
     m.method<LvglModule, &LvglModule::bind>("bind");
     // A body's own fonts: luavgl resolves lvgl.Font(name, size, weight)
     // against its compiled-in built-ins first and hands everything else —
@@ -268,6 +287,7 @@ private:
   Slot _slots[MAX_DISPLAYS] = {};
   int _count = 0;
   int _displays = 0;
+  lua_State* _lua = nullptr;   // the sandbox's one Lua state (registerModule)
   FontResolver _fontResolver = nullptr;
   WidgetInstaller _widgets[MAX_WIDGETS] = {};
   int _widgetCount = 0;
@@ -339,6 +359,50 @@ private:
     _displays++;
     RenderTargets::add(s.name, w, h, nullptr, RenderTargets::MODULE_LVGL);
     return true;
+  }
+
+  // Undo a Lua `h:set_theme{...}` on this display, through luavgl's own
+  // set_theme(nil) so its per-display record (registry "luavgl.themes")
+  // agrees that nothing is installed — the next app's set_theme then installs
+  // afresh. The bound handle is luavgl's cache (registry "luavgl.bound",
+  // keyed by the display); no handle means no app ever bound it, so nothing
+  // to undo.
+  void uninstallLuaTheme(lv_display_t* disp) {
+    if (!_lua) return;
+    lua_State* L = _lua;
+    const int top = lua_gettop(L);
+    lua_getfield(L, LUA_REGISTRYINDEX, "luavgl.bound");
+    if (lua_istable(L, -1)) {
+      lua_pushlightuserdata(L, disp);
+      lua_rawget(L, -2);
+      if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "set_theme");
+        if (lua_isfunction(L, -1)) {
+          lua_pushnil(L);
+          if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+            Serial.printf("[lvgl] theme reset failed: %s\n", lua_tostring(L, -1));
+          }
+        }
+      }
+    }
+    lua_settop(L, top);
+  }
+
+  // A new, empty screen in place of the active one, which LVGL deletes with
+  // everything on it (an immediate load with auto_del). lv_obj_create(NULL)
+  // makes a screen on the DEFAULT display, so the default is pointed here
+  // for that one call and restored — the global is only borrowed, on the
+  // loop task, with nothing in between.
+  static void replaceScreen(lv_display_t* disp) {
+    lv_display_t* prev = lv_display_get_default();
+    lv_display_set_default(disp);
+    lv_obj_t* fresh = lv_obj_create(nullptr);
+    lv_display_set_default(prev);
+    if (!fresh) {                       // out of LVGL memory: at least empty it
+      lv_obj_clean(lv_display_get_screen_active(disp));
+      return;
+    }
+    lv_screen_load_anim(fresh, LV_SCR_LOAD_ANIM_NONE, 0, 0, true);
   }
 
   // Standing down: pause the refresh timer so LVGL doesn't render frames

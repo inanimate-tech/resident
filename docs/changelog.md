@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.10.1
+
+### Fixes
+
+- **A new app starts on a fresh LVGL screen.** App reset used to empty the active screen (`lv_obj_clean`) but keep the screen object, so anything an app set on the screen itself — `lvgl.bind(name).screen():set{ bg_color = ... }`, the one-property tweak luavgl documents — outlived it, and as a local style it outranked every later app's theme. Seen on a clock: one app whitened its screen, and every app after it showed a white ring around whatever it drew, until a reboot. `LvglModule::onAppReset` now uninstalls the theme Lua set on each display (luavgl's own `set_theme(nil)`, so its bookkeeping agrees) and replaces the active screen with a new one, deleting the old with everything on it. A plain app now looks the same whatever ran before it.
+
+---
+
 ## v0.10.0
 
 Theme: a standard library an author already knows. Shader mode and its globals go; the wall clock becomes Python's `datetime`, and the `time` module Python 3's `time`, with MicroPython's answers where the VM's 32-bit numbers bite — its calendar half deprecated for `datetime` in the same release.
