@@ -290,11 +290,23 @@ void Sandbox::initialize()
   // assigned only to cfg.systemDisplay) must NOT get a Lua global — it has no
   // API surface to expose. A role object that also wants a Lua module must be
   // listed in extensions[] explicitly.
+  // An extension that registers nothing (a display driver whose screens are
+  // reached through lvgl.bind and `screens`, a sensor that only emits
+  // events) gets no global: an empty table named after a driver would read
+  // as an API that is not there.
   for (uint8_t i = 0; i < _config.extensions.count; i++) {
     Extension* ext = _config.extensions.items[i];
     lua_newtable(_lua);
     LuaModule m(_lua, ext);
     ext->registerModule(m);
+    lua_pushnil(_lua);
+    const bool empty = lua_next(_lua, -2) == 0;
+    if (!empty) lua_pop(_lua, 2);          // the key and value lua_next pushed
+    if (empty && !lua_getmetatable(_lua, -1)) {
+      lua_pop(_lua, 1);                    // nothing in it and no fallthrough
+      continue;
+    }
+    if (empty) lua_pop(_lua, 1);           // the metatable lua_getmetatable pushed
     lua_setglobal(_lua, ext->name());
   }
 

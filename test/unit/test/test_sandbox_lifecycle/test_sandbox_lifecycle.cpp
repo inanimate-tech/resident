@@ -178,16 +178,32 @@ void test_slot_only_display_no_lua_global(void) {
   TEST_ASSERT_EQUAL_INT(u0 + 1, display->updateCount);
 }
 
-// Counterpart: a driver in extensions[] DOES get a Lua global.
+// Counterpart: a driver in extensions[] that registers a Lua module DOES get
+// its global; one that registers nothing (a display driver reached through
+// lvgl.bind and `screens`) gets none — an empty table named after it would
+// read as an API that is not there.
+class ModuleDriver : public Resident::Driver {
+public:
+  const char* name() const override { return "with_module"; }
+  void registerModule(Resident::LuaModule& m) override {
+    m.method<ModuleDriver, &ModuleDriver::ping>("ping");
+  }
+  int ping(lua_State* L) { lua_pushboolean(L, 1); return 1; }
+};
+
 void test_extension_driver_has_lua_global(void) {
+  ModuleDriver withModule;
   Resident::SandboxConfig cfg;
   cfg.deviceType = "native-test";
-  cfg.extensions = {driver};
+  cfg.extensions = {driver, &withModule};
   sandbox = new Resident::Sandbox(cfg);
   sandbox->setup();
 
-  // driver ("spy-driver") is in extensions[] -> its Lua global is registered
-  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("spy-driver"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("with_module"));
+  // driver ("spy-driver") registers no module -> no global
+  TEST_ASSERT_FALSE(sandbox->luaGlobalBoolForTest("spy-driver"));
+  delete sandbox;
+  sandbox = nullptr;
 }
 
 void test_driver_event_dropped_until_app_loaded(void) {

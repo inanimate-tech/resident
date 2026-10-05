@@ -6,6 +6,7 @@ Theme: a standard library an author already knows. Shader mode and its globals g
 
 ### Breaking changes
 
+- **An extension that registers no Lua functions gets no global.** It used to get an empty table named after it (`main`, `epd`, `vfd`…), which reads as an API that is not there. A display driver reached through `lvgl.bind` and `screens`, or a sensor that only emits events, now leaves the global namespace alone. An extension with a fallthrough metatable (LvglModule) still gets its global.
 - **Shader mode is removed.** `{type:"shader"}` is no longer a reserved type: on the `"system"` channel it falls through to the `"system"` slot, and on the legacy un-channelled path to `onMessage`, like any other unknown type. `SandboxConfig::shaderTemplate`, `Sandbox::loadShader`, `ShaderFields` and `ShaderTemplateFn` are gone; a board that set a shader template deletes it, and a host that sent shader expressions sends a Lua app instead. `deferAppLoads` now stashes only `app` loads.
 - **The shader globals are removed**: `rgb`, `fract`, `beat`, `noise2d`, and the bare math globals `floor` `ceil` `abs` `sin` `cos` `tan` `sqrt` `min` `max` `fmod`. Apps use `math.floor`, `math.sin`, … (`fract(x)` is `x - math.floor(x)`; `noise2d` has no replacement — carry a small noise function in the app).
 - **`ctx` loses its time fields**: `trigger_count`, `utc_h`, `utc_m`, `localtime_h`, `localtime_m`. `ctx` is now `{ time_ms, generation_id? }`; the `"button"` driver event no longer counts anything.
