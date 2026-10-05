@@ -259,6 +259,11 @@ void Sandbox::initialize()
   _fwEventRef = LUA_NOREF;
   _fwAppLoadedRef = LUA_NOREF;
 
+  // Every screen of every display driver in cfg.extensions, before anything
+  // begins: drawing libraries find screens by name, and the Lua `screens`
+  // module reads them.
+  registerScreens();
+
   setupLuaEnvironment();
 
   // Build the de-duped lifecycle set (extensions[] + role slots).
@@ -430,6 +435,19 @@ void Sandbox::setupLuaEnvironment()
   lua_pushcfunction(_lua, lua_surfaces_get);
   lua_setfield(_lua, -2, "get");
   lua_setglobal(_lua, "surfaces");
+
+  // screens module: the screens of the board's display drivers — their facts
+  // and their settings. Always present, like surfaces.
+  lua_newtable(_lua);
+  lua_pushcfunction(_lua, lua_screens_list);
+  lua_setfield(_lua, -2, "list");
+  lua_pushcfunction(_lua, lua_screens_get);
+  lua_setfield(_lua, -2, "get");
+  lua_pushcfunction(_lua, lua_screens_set);
+  lua_setfield(_lua, -2, "set");
+  lua_pushcfunction(_lua, lua_screens_refresh);
+  lua_setfield(_lua, -2, "refresh");
+  lua_setglobal(_lua, "screens");
 }
 
 void Sandbox::setup()
@@ -3332,6 +3350,107 @@ int Sandbox::lua_surfaces_get(lua_State* L)
     return 1;
   }
   pushSurface(L, RenderTargets::entry(i));
+  return 1;
+}
+
+// ── screens module ────────────────────────────────────────────────────────
+// A display driver's screens, as Lua sees them. The facts come from the
+// registry (geometry read live from the panel); settings and status come from
+// the driver that owns the screen. A panel a board registered by hand with
+// RenderTargets::addPanel is listed too, with no settings of its own.
+
+void Sandbox::registerScreens()
+{
+  for (uint8_t i = 0; i < _config.extensions.count; i++) {
+    Extension* ext = _config.extensions.items[i];
+    DisplayDriver* dd = ext ? ext->asDisplayDriver() : nullptr;
+    if (!dd) continue;
+    const int n = dd->screenCount();
+    for (int k = 0; k < n; k++) {
+      const Screen s = dd->screen(k);
+      if (!s.name || !s.target) continue;
+      if (!RenderTargets::addScreen(s.name, s.target, s.shape, s.depth, s.dpi,
+                                    s.bufferRows, s.group, dd, k)) {
+        Serial.printf("[screens] could not register '%s' (registry full?)\n", s.name);
+      }
+    }
+  }
+}
+
+static void pushScreen(lua_State* L, const RenderTargets::Entry& e)
+{
+  pushSurface(L, e);   // name, w, h, shape
+  lua_pushinteger(L, e.depth);
+  lua_setfield(L, -2, "depth");
+  if (e.dpi) { lua_pushinteger(L, e.dpi); lua_setfield(L, -2, "dpi"); }
+  if (e.group) { lua_pushinteger(L, e.group); lua_setfield(L, -2, "group"); }
+}
+
+// The screen named at stack index `idx`, or raise.
+static const RenderTargets::Entry& checkScreen(lua_State* L, int idx, const char* fn)
+{
+  const char* name = luaL_checkstring(L, idx);
+  const int i = RenderTargets::indexOf(name);
+  if (i < 0 || !RenderTargets::entry(i).panel) {
+    luaL_error(L, "screens.%s: no screen named '%s'", fn, name);
+  }
+  return RenderTargets::entry(i);
+}
+
+// screens.list() -> { {name, w, h, shape, depth, dpi?, group?}, ... }
+int Sandbox::lua_screens_list(lua_State* L)
+{
+  lua_newtable(L);
+  int out = 0;
+  for (int i = 0; i < RenderTargets::count(); i++) {
+    const RenderTargets::Entry& e = RenderTargets::entry(i);
+    if (!e.panel) continue;
+    pushScreen(L, e);
+    lua_rawseti(L, -2, ++out);
+  }
+  return 1;
+}
+
+// screens.get(name) -> the list entry plus the screen's current settings and
+// status, or nil when there is no such screen.
+int Sandbox::lua_screens_get(lua_State* L)
+{
+  const char* name = luaL_checkstring(L, 1);
+  const int i = RenderTargets::indexOf(name);
+  if (i < 0 || !RenderTargets::entry(i).panel) { lua_pushnil(L); return 1; }
+  const RenderTargets::Entry& e = RenderTargets::entry(i);
+  pushScreen(L, e);
+  if (e.driver) e.driver->getScreen(e.screenIndex, L);
+  return 1;
+}
+
+// screens.set(name, { key = value, ... }) -> nothing. Each key goes to the
+// screen's driver; a key it does not have raises, naming it.
+int Sandbox::lua_screens_set(lua_State* L)
+{
+  const RenderTargets::Entry& e = checkScreen(L, 1, "set");
+  luaL_checktype(L, 2, LUA_TTABLE);
+  lua_pushnil(L);
+  while (lua_next(L, 2) != 0) {          // key at -2, value at -1
+    if (lua_type(L, -2) != LUA_TSTRING) {
+      return luaL_error(L, "screens.set: setting names are strings");
+    }
+    const char* key = lua_tostring(L, -2);
+    const int valueIdx = lua_gettop(L);
+    if (!e.driver || !e.driver->setScreen(e.screenIndex, key, L, valueIdx)) {
+      return luaL_error(L, "screens.set: '%s' has no setting '%s'", e.name, key);
+    }
+    lua_settop(L, valueIdx - 1);         // drop the value, keep the key
+  }
+  return 0;
+}
+
+// screens.refresh(name) -> true when the screen took it (an e-paper panel's
+// "update now"); false for a screen with no such thing.
+int Sandbox::lua_screens_refresh(lua_State* L)
+{
+  const RenderTargets::Entry& e = checkScreen(L, 1, "refresh");
+  lua_pushboolean(L, e.driver && e.driver->refresh(e.screenIndex));
   return 1;
 }
 

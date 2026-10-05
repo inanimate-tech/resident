@@ -341,8 +341,12 @@ private:
     if (!RenderTargets::isOwner(s.name, RenderTargets::MODULE_LGFX)) return;
     PanelTarget* p = RenderTargets::panel(s.name);
     const uint16_t* px = s.target->pixels();
-    if (p && px) p->blit(0, 0, s.target->width(), s.target->height(), px);
-    else         s.target->flip();   // legacy presenter / direct-to-panel
+    if (p && px) {
+      p->blit(0, 0, s.target->width(), s.target->height(), px);
+      p->frameDone();                  // one flip is one whole frame
+    } else {
+      s.target->flip();                // legacy presenter / direct-to-panel
+    }
   }
 
   // Colon-call convention: arg 1 is the bound handle table; drawing args

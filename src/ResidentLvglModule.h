@@ -203,10 +203,7 @@ public:
   // app compile/init/tick pcall and reported like any other app error.
   int bind(lua_State* L) {
     const char* name = luaL_checkstring(L, 1);
-    Slot* s = nullptr;
-    for (int i = 0; i < _count; i++) {
-      if (strcmp(_slots[i].name, name) == 0) { s = &_slots[i]; break; }
-    }
+    Slot* s = slotFor(name);
     if (!s) return luaL_error(L, "lvgl.bind: no display named '%s'", name);
     if (!s->disp && !createDisplay(*s)) {
       return luaL_error(L, "lvgl.bind: '%s' has no panel to draw on", name);
@@ -217,6 +214,28 @@ public:
   }
 
 private:
+  // The slot for a display name: one the board declared with addDisplay, or
+  // — for a display driver's screen (ResidentDisplayDriver.h) — one made on
+  // first bind from the screen's own facts, so a board lists the driver and
+  // nothing else.
+  struct Slot;
+  Slot* slotFor(const char* name) {
+    for (int i = 0; i < _count; i++) {
+      if (strcmp(_slots[i].name, name) == 0) return &_slots[i];
+    }
+    const int i = RenderTargets::indexOf(name);
+    if (i < 0 || _count >= MAX_DISPLAYS) return nullptr;
+    const RenderTargets::Entry& e = RenderTargets::entry(i);
+    if (!e.panel || !e.driver) return nullptr;
+    Slot& s = _slots[_count++];
+    s.name = e.name;
+    s.opts = DisplayOptions();
+    s.opts.dpi = e.dpi;
+    s.opts.bufferRows = e.bufferRows;
+    RenderTargets::declare(e.name, RenderTargets::MODULE_LVGL);
+    return &s;
+  }
+
   struct Slot {
     const char* name = nullptr;
     lv_display_t* disp = nullptr;
@@ -334,6 +353,7 @@ private:
     uint32_t n = (uint32_t)w * (uint32_t)h;
     for (uint32_t i = 0; i < n; i++) px[i] = __builtin_bswap16(px[i]);
     s->panel->blit(area->x1, area->y1, w, h, px);
+    if (lv_display_flush_is_last(disp)) s->panel->frameDone();
     lv_display_flush_ready(disp);
   }
 

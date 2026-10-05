@@ -641,6 +641,50 @@ Out of this arbitration by design: the **system/status display role** and **over
 
 ---
 
+## Resident::DisplayDriver
+
+```cpp
+#include <ResidentDisplayDriver.h>   // also pulled in by Resident.h
+```
+
+A driver that owns glass. It declares its screens, and listing it in `SandboxConfig::extensions` is all a board does: the sandbox registers every screen at `initialize()`, drawing libraries find them by name, and Lua reaches their settings through [`screens`](#screens-module).
+
+```cpp
+class KeysDisplay : public Resident::DisplayDriver {
+public:
+  const char* name() const override { return "keys"; }
+  int screenCount() const override { return 3; }
+  Resident::Screen screen(int i) const override {
+    Resident::Screen s;
+    s.name = kNames[i];          // "key1", "key2", "key3"
+    s.target = &_panels[i];      // a PanelTarget: geometry + blit
+    s.dpi = 213;
+    s.group = 1;                 // one backlight rail behind all three
+    return s;
+  }
+  bool setScreen(int i, const char* key, lua_State* L, int idx) override {
+    if (strcmp(key, "brightness") != 0) return false;   // -> screens.set raises
+    setBacklight(luaL_checknumber(L, idx));
+    return true;
+  }
+  void getScreen(int i, lua_State* L) override {
+    lua_pushnumber(L, _level); lua_setfield(L, -2, "brightness");
+  }
+  void onAppReset() override { setBacklight(kDefault); }   // every app starts here
+};
+```
+
+| `Screen` field | Meaning |
+|---|---|
+| `name` | the name apps use: `lvgl.bind(name)`, `screens.get(name)` |
+| `target` | the `PanelTarget` (geometry, blit, `frameDone`) |
+| `shape` | `"rect"` or `"round"` |
+| `depth` | 16 colour, 1 one-bit |
+| `dpi`, `bufferRows` | sizing hints for a drawing library (0 = its default) |
+| `group` | screens sharing a knob share a nonzero group |
+
+`screen(i)` must be safe at static init: it states facts and pointers and measures nothing (geometry is read from the target when needed). One driver may own several screens. Every `SystemDisplay` is a `DisplayDriver` with no screens by default, so a status-only display declares none and a dual-role one (status text and the app's glass) overrides `screenCount()`/`screen()`.
+
 ## Resident::SystemDisplay
 
 Interface for connection-state text output. Implement it in a display driver and pass a pointer via `SandboxConfig::systemDisplay`. (Renamed from `StatusDisplay`, which remains as a deprecated plain alias — existing subclasses compile unchanged, but `SandboxConfig::statusDisplay` itself is deprecated in favor of `systemDisplay`.)
@@ -1035,7 +1079,27 @@ local wait = midnight - time.time()
 
 For animation, `ctx.time_ms` (milliseconds since the app loaded) is still the simplest clock.
 
+### `screens` module
+
+The screens of the board's display drivers ([`DisplayDriver`](#residentdisplaydriver)): their facts and their settings. Always present.
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `screens.list()` | array | Every screen, in registration order: `{ name, w, h, shape, depth, dpi?, group? }` |
+| `screens.get(name)` | table or nil | That, plus the screen's current settings and status (e.g. `brightness`, an e-paper panel's `busy`/`pending`); `nil` for no such screen |
+| `screens.set(name, settings)` | — | Apply `{ key = value, ... }`. A key the screen does not have raises, naming it. Standard keys: `brightness`, `contrast` (0..1); a one-bit screen adds its own |
+| `screens.refresh(name)` | boolean | An e-paper panel's "update now"; `false` for a screen with no such thing |
+
+`depth` is 16 for a colour screen and 1 for a one-bit glass. Screens with the same nonzero `group` share a knob — one backlight rail behind three key caps — so setting one sets them all. Settings reset to the board's defaults whenever an app loads.
+
+```lua
+for _, s in ipairs(screens.list()) do log.info(s.name .. " " .. s.w .. "x" .. s.h) end
+screens.set("main", { brightness = 0.4 })
+```
+
 ### `surfaces` module
+
+*Superseded by [`screens`](#screens-module); retired once boards declare their screens through display drivers.*
 
 The board's render targets ([`RenderTargets`](#residentrendertargets)), readable from Lua. Always present: a board that registers no panel lists nothing, which saves every consumer a capability check.
 

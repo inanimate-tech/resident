@@ -12,6 +12,7 @@
 #include <vector>
 #include <Courier.h>
 #include "ResidentDriver.h"
+#include "ResidentDisplayDriver.h"
 #include "ResidentLuaModule.h"
 #include "ResidentSandboxConfig.h"
 #include "ResidentOverlay.h"
@@ -802,6 +803,12 @@ private:
     static int lua_time_synced(lua_State* L);
     static int lua_surfaces_list(lua_State* L);
     static int lua_surfaces_get(lua_State* L);
+    // The `screens` module: the screens of the board's display drivers.
+    static int lua_screens_list(lua_State* L);
+    static int lua_screens_get(lua_State* L);
+    static int lua_screens_set(lua_State* L);
+    static int lua_screens_refresh(lua_State* L);
+    void registerScreens();
 
 };
 
