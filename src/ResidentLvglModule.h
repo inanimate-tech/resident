@@ -116,6 +116,23 @@ public:
   using FontResolver = make_font_cb;   // const lv_font_t* (*)(const char* family, int size, int weight)
   void setFontResolver(FontResolver r) { _fontResolver = r; }
 
+  // Widgets beyond luavgl's own: a board's C++ widget class, constructed from
+  // Lua as parent:Name{...} like any other. The installer adds the
+  // constructor to luavgl's "widgets" registry table (every object's method
+  // lookup falls through to it) and creates the class's metatable with
+  // luavgl_obj_newmetatable, so the widget's own `set` takes its own keys.
+  // It runs once per Lua state, when the first bind has loaded luavgl —
+  // before that the widgets table and the base metatable do not exist. Up to
+  // MAX_WIDGETS; set before the sandbox runs. An installer leaves the Lua
+  // stack as it found it.
+  static constexpr int MAX_WIDGETS = 8;
+  using WidgetInstaller = void (*)(lua_State* L);
+  bool addWidget(WidgetInstaller install) {
+    if (!install || _widgetCount >= MAX_WIDGETS) return false;
+    _widgets[_widgetCount++] = install;
+    return true;
+  }
+
   // lv_init + the tick source. Displays come later (first bind), so a board
   // whose apps never touch LVGL pays only for the library's own init.
   void begin() override {
@@ -210,7 +227,16 @@ public:
     }
     RenderTargets::claim(name, RenderTargets::MODULE_LVGL);
     standUp(*s);
-    return luavgl_bind_display(L, s->disp);
+    const int n = luavgl_bind_display(L, s->disp);
+    // Marked in the state's own registry, not by remembering the pointer: a
+    // fresh state for the next app can land at the old one's address.
+    if (lua_rawgetp(L, LUA_REGISTRYINDEX, _widgets) == LUA_TNIL) {
+      lua_pushboolean(L, 1);
+      lua_rawsetp(L, LUA_REGISTRYINDEX, _widgets);
+      for (int i = 0; i < _widgetCount; i++) _widgets[i](L);
+    }
+    lua_pop(L, 1);
+    return n;
   }
 
 private:
@@ -246,6 +272,8 @@ private:
   int _count = 0;
   int _displays = 0;
   FontResolver _fontResolver = nullptr;
+  WidgetInstaller _widgets[MAX_WIDGETS] = {};
+  int _widgetCount = 0;
 
   // lvgl.SYMBOL.<NAME>: LVGL's symbol strings (lv_symbol_def.h) as a Lua
   // table, so an app can write lvgl.SYMBOL.PLAY .. " start". The glyphs
