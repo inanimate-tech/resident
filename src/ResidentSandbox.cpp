@@ -3359,7 +3359,7 @@ void Sandbox::registerScreens()
       const Screen s = dd->screen(k);
       if (!s.name || !s.target) continue;
       if (!RenderTargets::addScreen(s.name, s.target, s.shape, s.depth, s.dpi,
-                                    s.bufferRows, s.group, dd, k)) {
+                                    s.bufferRows, s.group, dd, k, s.scheme)) {
         Serial.printf("[screens] could not register '%s' (registry full?)\n", s.name);
       }
     }
@@ -3373,6 +3373,8 @@ static void pushScreen(lua_State* L, const RenderTargets::Entry& e)
   lua_setfield(L, -2, "depth");
   if (e.dpi) { lua_pushinteger(L, e.dpi); lua_setfield(L, -2, "dpi"); }
   if (e.group) { lua_pushinteger(L, e.group); lua_setfield(L, -2, "group"); }
+  lua_pushstring(L, e.scheme);
+  lua_setfield(L, -2, "scheme");
 }
 
 // The screen named at stack index `idx`, or raise.
@@ -3386,7 +3388,7 @@ static const RenderTargets::Entry& checkScreen(lua_State* L, int idx, const char
   return RenderTargets::entry(i);
 }
 
-// screens.list() -> { {name, w, h, shape, depth, dpi?, group?}, ... }
+// screens.list() -> { {name, w, h, shape, depth, scheme, dpi?, group?}, ... }
 int Sandbox::lua_screens_list(lua_State* L)
 {
   lua_newtable(L);

@@ -191,10 +191,14 @@ local m = screens.get("main")         -- nil when the board has no such screen
 screens.set("main", { brightness = 0.4 })
 ```
 
-- `screens.list()` → each `{ name, w, h, shape, depth, dpi?, group? }`;
+- `screens.list()` → each `{ name, w, h, shape, depth, scheme, dpi?, group? }`;
   `shape` is `"rect"` or `"round"`, `depth` 16 (colour) or 1 (one-bit
   glass). A board with no screen lists nothing. These are the names
   `lvgl.bind(name)` takes.
+- `scheme` is `"dark"` (light marks on a dark ground: glass that emits
+  light — TFT, LED, VFD — where blank is unlit) or `"light"` (dark marks on a
+  light ground: e-paper, a reflective STN — where blank is the paper). Pick
+  colours for it: a dark ground on a light screen is ink everywhere.
 - `screens.get(name)` → that, plus the screen's current settings and status
   (`brightness`, an e-paper panel's `busy`/`pending`, …).
 - `screens.set(name, { key = value, ... })` — a key the screen does not have

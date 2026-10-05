@@ -682,6 +682,7 @@ public:
 | `depth` | 16 colour, 1 one-bit |
 | `dpi`, `bufferRows` | sizing hints for a drawing library (0 = its default) |
 | `group` | screens sharing a knob share a nonzero group |
+| `scheme` | `"dark"` (light marks on a dark ground: glass that emits — TFT, AMOLED, LED, VFD) or `"light"` (dark marks on a light ground: e-paper, a reflective STN). A physical fact, not a colour: a framework picks its colours for the scheme, as CSS does for `color-scheme`. Default `"dark"`; anything but `"light"` is `"dark"` |
 
 Settings arrive one key at a time, in no set order, through `setScreen`; `commitScreen(i, L)` then runs once per `screens.set` call, so a driver whose settings constrain each other (a one-bit screen's `black` below its `white`) stages them and validates together, raising with `luaL_error`.
 
@@ -1119,12 +1120,12 @@ The screens of the board's display drivers ([`DisplayDriver`](#residentdisplaydr
 
 | Function | Returns | Description |
 |----------|---------|-------------|
-| `screens.list()` | array | Every screen, in registration order: `{ name, w, h, shape, depth, dpi?, group? }` |
+| `screens.list()` | array | Every screen, in registration order: `{ name, w, h, shape, depth, scheme, dpi?, group? }` |
 | `screens.get(name)` | table or nil | That, plus the screen's current settings and status (e.g. `brightness`, an e-paper panel's `busy`/`pending`); `nil` for no such screen |
 | `screens.set(name, settings)` | — | Apply `{ key = value, ... }`. A key the screen does not have raises, naming it. Standard keys: `brightness`, `contrast` (0..1); a one-bit screen adds its own |
 | `screens.refresh(name)` | boolean | An e-paper panel's "update now"; `false` for a screen with no such thing |
 
-`depth` is 16 for a colour screen and 1 for a one-bit glass. Screens with the same nonzero `group` share a knob — one backlight rail behind three key caps — so setting one sets them all. Settings reset to the board's defaults whenever an app loads.
+`depth` is 16 for a colour screen and 1 for a one-bit glass. `scheme` is `"dark"` for glass that emits light (blank is unlit) and `"light"` for glass that reflects it (blank is the paper). Screens with the same nonzero `group` share a knob — one backlight rail behind three key caps — so setting one sets them all. Settings reset to the board's defaults whenever an app loads.
 
 ```lua
 for _, s in ipairs(screens.list()) do log.info(s.name .. " " .. s.w .. "x" .. s.h) end
