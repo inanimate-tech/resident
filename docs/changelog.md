@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.10.2-dev
+## v0.10.2
 
 ### Fixes
 
