@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.10.2
+
+### Fixes
+
+- **`datetime.synced()` and `time.synced()` stay true once the network has set the clock.** They compared ezTime's status with `timeSet`, and ezTime drops to `timeNeedsSync` when an NTP refresh is overdue (about 90 minutes after the last one). On a network that blocks NTP — where Courier sets the clock from the HTTP Date header — an app saw the clock turn unsynced an hour and a half after boot while it ran on, good to a couple of seconds a day. Synced now means set at least once (`timeStatus() != timeNotSet`), from either source. `prompts/sandbox.md` says "until the network sets the clock" rather than "until NTP".
+
+---
+
 ## v0.10.1
 
 ### Fixes

@@ -117,7 +117,7 @@ Python's `datetime`, with whole seconds. If you know Python's `datetime`, you
 know this; `datetime(...)` and `datetime.datetime(...)` both construct.
 
 ```lua
-if not datetime.synced() then return end      -- until NTP sets the clock, now() is 1970
+if not datetime.synced() then return end      -- until the network sets the clock, now() is 1970
 local now = datetime.now()                    -- local time; UTC until a zone is set
 log.info(now:strftime("%a %H:%M"))            -- "Mon 13:05"
 local evening = now.hour >= 18

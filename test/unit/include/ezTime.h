@@ -22,6 +22,8 @@ typedef enum { LOCAL_TIME, UTC_TIME } ezLocalOrUTC_t;
 namespace ezTimeStub {
 struct State {
   bool synced = false;
+  // Set once, NTP refresh overdue: ezTime's timeNeedsSync.
+  bool stale = false;
   int64_t epoch = 0;          // UTC.now()
   uint16_t ms = 0;            // UTC.ms()
   bool zoneAccepted = false;  // setLocation() succeeds
@@ -79,4 +81,8 @@ public:
 inline Timezone UTC;
 
 enum timeStatus_t { timeNotSet, timeNeedsSync, timeSet };
-inline timeStatus_t timeStatus() { return ezTimeStub::state().synced ? timeSet : timeNotSet; }
+inline timeStatus_t timeStatus() {
+  const auto& s = ezTimeStub::state();
+  if (!s.synced) return timeNotSet;
+  return s.stale ? timeNeedsSync : timeSet;
+}

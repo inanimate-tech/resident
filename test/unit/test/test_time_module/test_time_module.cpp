@@ -157,6 +157,17 @@ void test_unsynced_clock_reads_the_epoch(void) {
   TEST_ASSERT_EQUAL_INT(1970, num("y"));
 }
 
+// Set by the network once, NTP refresh overdue (ezTime's timeNeedsSync, on
+// a network that blocks NTP): the clock still runs, so it is still synced.
+void test_stale_ntp_clock_is_still_synced(void) {
+  ezTimeStub::state().synced = true;
+  ezTimeStub::state().stale = true;
+  ezTimeStub::state().epoch = kSat;
+  build();
+  TEST_ASSERT_TRUE(lua("s = time.synced()\n"));
+  TEST_ASSERT_TRUE(flag("s"));
+}
+
 void test_synced_time_and_gmtime(void) {
   ezTimeStub::state().synced = true;
   ezTimeStub::state().epoch = kSat;
@@ -262,6 +273,7 @@ int main(int, char**) {
   RUN_TEST(test_module_is_python_shaped_and_old_calls_are_gone);
   RUN_TEST(test_unsynced_clock_reads_the_epoch);
   RUN_TEST(test_synced_time_and_gmtime);
+  RUN_TEST(test_stale_ntp_clock_is_still_synced);
   RUN_TEST(test_localtime_is_utc_until_a_zone_is_known);
   RUN_TEST(test_localtime_mktime_strftime_in_a_zone);
   RUN_TEST(test_mktime_rejects_a_table_without_a_date);
