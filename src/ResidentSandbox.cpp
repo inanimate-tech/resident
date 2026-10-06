@@ -3693,13 +3693,18 @@ int Sandbox::lua_time_strftime(lua_State* L)
   return 1;
 }
 
-// time.synced() -> true once the wall clock has been set. Not Python: an
-// embedded clock starts at the epoch, and an app has to be able to tell.
-// datetime.synced() is the same answer.
+// time.synced() -> true once the network has set the wall clock. Not
+// Python: an embedded clock starts at the epoch, and an app has to be able
+// to tell. Set ONCE is enough: ezTime drops to timeNeedsSync when an NTP
+// refresh is overdue (~90 min on a network that blocks NTP, where the HTTP
+// Date header set the clock), and the clock still runs, good to a couple of
+// seconds a day. datetime.synced() is the same answer.
+static bool clockSynced() { return timeStatus() != timeNotSet; }
+
 int Sandbox::lua_time_synced(lua_State* L)
 {
   warnDeprecatedTime(L, kDepSynced);
-  lua_pushboolean(L, timeStatus() == timeSet);
+  lua_pushboolean(L, clockSynced());
   return 1;
 }
 
@@ -3862,7 +3867,7 @@ void Sandbox::loadDatetime(lua_State* L, int moduleIdx)
        return 2;
      }},
     {"synced", [](lua_State* L) -> int {
-       lua_pushboolean(L, timeStatus() == timeSet);
+       lua_pushboolean(L, clockSynced());
        return 1;
      }},
     {"raise", [](lua_State* L) -> int {

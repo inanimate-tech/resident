@@ -117,6 +117,14 @@ void test_fields_round_trip(void) {
       "is(datetime.date.today(), datetime.today(), 'date.today')\n");
 }
 
+void test_synced_stays_true_when_ntp_goes_stale(void) {
+  build();
+  ezTimeStub::state().stale = true;   // set once, NTP refresh overdue
+  check("is(datetime.synced(), true, 'stale NTP is still synced')\n");
+  ezTimeStub::state().synced = false;
+  check("is(datetime.synced(), false, 'never set is not synced')\n");
+}
+
 void test_now_today_fromtimestamp_synced(void) {
   build();
   check(
@@ -446,6 +454,7 @@ int main(int, char**) {
   RUN_TEST(test_core_prints_no_zone_for_a_date);
   RUN_TEST(test_fields_round_trip);
   RUN_TEST(test_now_today_fromtimestamp_synced);
+  RUN_TEST(test_synced_stays_true_when_ntp_goes_stale);
   RUN_TEST(test_unsynced_reads_1970_and_says_so);
   RUN_TEST(test_weekday_isoweekday_ordinal);
   RUN_TEST(test_strftime_isoformat_tostring);
