@@ -135,13 +135,13 @@ void test_countdown_shows_deviceid_and_counts_down(void) {
   makeSandbox(true, false);                  // setup() arms the countdown
 
   sandbox->loop();                            // t=0 -> "20s"
-  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test\n20s",
+  TEST_ASSERT_EQUAL_STRING("ID: a4cf1200cafe\nType: native-test\n20s",
                            display->last().c_str());
   TEST_ASSERT_FALSE(sandbox->isAppRunning()); // not loaded during countdown
 
   testMillis() = 5000;                        // 15s remaining
   sandbox->loop();
-  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test\n15s",
+  TEST_ASSERT_EQUAL_STRING("ID: a4cf1200cafe\nType: native-test\n15s",
                            display->last().c_str());
 }
 
@@ -159,7 +159,7 @@ void test_countdown_autoloads_after_20s(void) {
   // The idle screen is repainted after the restore (clears the countdown), so a
   // separate status display returns to the identity screen instead of the last
   // countdown frame.
-  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test",
+  TEST_ASSERT_EQUAL_STRING("ID: a4cf1200cafe\nType: native-test",
                            display->last().c_str());
 }
 
@@ -219,7 +219,7 @@ void test_restore_failure_discards_and_falls_back(void) {
   TEST_ASSERT_FALSE(store->hasValue);                  // discarded
   TEST_ASSERT_TRUE(store->clearCalls >= 1);
   TEST_ASSERT_TRUE(telemetryHas("persist_load_failed"));
-  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test",
+  TEST_ASSERT_EQUAL_STRING("ID: a4cf1200cafe\nType: native-test",
                            display->last().c_str());
 }
 
@@ -233,7 +233,7 @@ void test_persist_disabled_no_countdown(void) {
   TEST_ASSERT_FALSE(sandbox->isAppRunning());            // no auto-load, no countdown
   // No countdown ran; the device rests on the Ready identity screen instead
   // (standalone, so painted at setup).
-  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test",
+  TEST_ASSERT_EQUAL_STRING("ID: a4cf1200cafe\nType: native-test",
                            display->last().c_str());
 }
 
@@ -243,7 +243,7 @@ void test_ready_screen_shown_when_no_persisted_app(void) {
   makeSandbox(/*persist=*/true, false);   // store left empty -> nothing to restore
 
   TEST_ASSERT_FALSE(sandbox->isAppRunning());
-  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test",
+  TEST_ASSERT_EQUAL_STRING("ID: a4cf1200cafe\nType: native-test",
                            display->last().c_str());
 }
 
@@ -254,7 +254,7 @@ void test_failed_load_returns_to_ready_screen(void) {
   sandbox->loadApp("this is not valid lua %%%");
 
   TEST_ASSERT_FALSE(sandbox->isAppRunning());
-  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test",
+  TEST_ASSERT_EQUAL_STRING("ID: a4cf1200cafe\nType: native-test",
                            display->last().c_str());
 }
 

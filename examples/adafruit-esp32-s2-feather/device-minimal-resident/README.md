@@ -10,7 +10,7 @@ Step 2 of the two-step walkthrough in [`docs/start-building.md`](../../../docs/s
   - Time sync (ezTime).
   - WebSocket transport to `resident.inanimate.tech` via Courier.
   - Lua sandbox lifecycle and routing of inbound `app` / `app_event` messages.
-- Draws status on the TFT via a custom `TFTStatusDisplay`. Once the relay opens a WS, the 8-character device ID is shown in big green text — that's what you push apps to.
+- Draws status on the TFT via a custom `TFTStatusDisplay`. Once the relay opens a WS, the 12-character device ID is shown in big green text — that's what you push apps to.
 - The NeoPixel turns green once connected (yellow otherwise); the red LED keeps blinking at 2 Hz so you can tell the firmware is alive.
 
 ## How to flash

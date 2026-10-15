@@ -49,7 +49,7 @@ Resident pulls in WiFi, ezTime, WiFiManager, Courier, ArduinoJson, Esp32Lua, and
 
 ## Step 2 — Add Resident
 
-**Goal:** the same hardware, now with Wi-Fi + Lua sandbox + WebSocket transport to the default relay. The device displays its 8-character device ID once connected and accepts apps over `push-app`. Apps can only call built-in modules (`log`, `time`, `store`, `events`) and Lua's own `math`/`string`/`table`; hardware bindings come in step 3.
+**Goal:** the same hardware, now with Wi-Fi + Lua sandbox + WebSocket transport to the default relay. The device displays its 12-character device ID once connected and accepts apps over `push-app`. Apps can only call built-in modules (`log`, `time`, `store`, `events`) and Lua's own `math`/`string`/`table`; hardware bindings come in step 3.
 
 ### What the agent should produce
 
@@ -70,7 +70,7 @@ See [`device-minimal-resident/src/main.cpp`](../examples/adafruit-esp32-s2-feath
 - **Relay endpoint.** The default public relay (`resident.inanimate.tech`) is the simplest path; `push-app` defaults to it. To self-host, deploy the Cloudflare Worker under `examples/m5stick-demo/server/` and replace the host constant. The protocol is identical.
 - **`deviceType` string.** Logged on the relay side and used to seed the captive-portal AP name (`Resident <DeviceType> <ID-short>`). Keep it short and meaningful.
 - **Wi-Fi UX.** Courier defaults to a WiFiManager captive portal: first boot exposes an open AP, credentials persist in NVS thereafter. For headless deployments, hardcode `WiFi.begin(ssid, pass)` instead — but the captive portal is friendlier for examples.
-- **Pre-connection display.** What the board shows during `"WiFi"` / `"Connecting"` states is up to you. Whatever you pick, leave room for the 8-character device ID — that's the string the user needs to read off the board to push apps.
+- **Pre-connection display.** What the board shows during `"WiFi"` / `"Connecting"` states is up to you. Whatever you pick, leave room for the 12-character device ID — that's the string the user needs to read off the board to push apps.
 - **Bootstrap "I'm connected" app.** Once a WS connects, you can either draw the device ID directly from C++ or have the firmware auto-load a tiny built-in Lua app that does the drawing. The Lua-app pattern means the user's first impression of a Resident device is *a Lua app running*, which is the right mental model — and a real app pushed via `push-app` replaces it cleanly.
 
 ### What the agent should be able to demonstrate at this point

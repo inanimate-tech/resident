@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.11.0
+
+### Breaking changes
+
+- **The device ID is the chip's full MAC, 12 lowercase hex digits in the order the MAC is written.** `getDeviceId()` used to format `ESP.getEfuseMac()` as one number, which reversed the MAC's bytes (the eFuse value is packed little-endian) and dropped leading zeros, and then kept the first 8 characters. A chip with MAC `f4:12:fa:9c:3b:21` was `213b9cfa`; it is now `f412fa9c3b21`, the MAC as esptool prints it, minus the colons. Every device gets a new ID on this release: anything keyed on the old one (a relay path, a push target, a host's device list) needs the new one, and the length is no longer 8 — a display that sized for 8 characters needs room for 12.
+- **The identity screen labels the ID `ID: `, not `Device ID: `.** `Device ID: ` and a 12-character ID would be 23 characters and wrap mid-ID on a 19-column screen (240 px at text size 2); `ID: <id>` is 16 and keeps the screen to the same number of lines as before, so a 3-row display still shows `Type:`. A display that matched on the old text needs the new form.
+- **The Wi-Fi setup network name ends with the ID's last 4 characters**, not its first 4: `Resident Clock 3b21`. The MAC's first bytes name the chip's vendor and are the same on every unit; its last bytes tell units apart.
+
+---
+
 ## v0.10.2
 
 ### Fixes

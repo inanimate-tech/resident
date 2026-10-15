@@ -41,7 +41,7 @@ pio run -e m5stick-lvgl -t upload
 
 The first time the device boots, it creates a Wi-Fi access point named **Resident Stick XXXX**. Connect to it and use the captive portal to give the device your local Wi-Fi credentials. (ESP32 only does 2.4 GHz.)
 
-Once connected to Wi-Fi, the device opens a WebSocket to `wss://resident.inanimate.tech/devices/<deviceId>` and displays its 8-character **device ID** on screen — something like `abc12345`. Note it down; you'll need it to push apps.
+Once connected to Wi-Fi, the device opens a WebSocket to `wss://resident.inanimate.tech/devices/<deviceId>` and displays its 12-character **device ID** on screen — something like `f412fa9c3b21`. Note it down; you'll need it to push apps.
 
 The deviceId is derived from the chip's MAC address. It's stable across reboots.
 
@@ -102,6 +102,6 @@ See [`DEVICE-SKILL.md`](./DEVICE-SKILL.md) for the complete Lua-side surface (sc
 
 ## Device IDs as auth
 
-The deviceId is the *only* secret. Anyone who knows it can push apps to or read your device. The example uses an 8-character hex string derived from the chip's MAC address — fine for development and the public demo, but **for anything you actually deploy, switch to a longer random ID** (≥ 128 bits of entropy, e.g. UUIDv4 or 32 hex chars) and treat it like an API key.
+The deviceId is the *only* secret. Anyone who knows it can push apps to or read your device. The example uses the chip's MAC address as 12 hex digits — which is not secret at all (the Wi-Fi radio broadcasts it), so it is fine only for development and the public demo, but **for anything you actually deploy, switch to a longer random ID** (≥ 128 bits of entropy, e.g. UUIDv4 or 32 hex chars) and treat it like an API key.
 
 To do that today, replace the call to `getDeviceId()` in `device/src/main.cpp` (`onTransportsWillConnect`) with a constant or NVS-backed value, and use the same value in `send-app.sh`.

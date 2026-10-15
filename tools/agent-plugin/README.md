@@ -6,7 +6,7 @@ A Claude Code plugin for the [Resident](https://github.com/inanimate-tech/reside
 
 ## Quick start
 
-Once you've brought up your hardware (see [`docs/start-building.md`](../../docs/start-building.md)) and the device is showing its 8-character device ID, try:
+Once you've brought up your hardware (see [`docs/start-building.md`](../../docs/start-building.md)) and the device is showing its 12-character device ID, try:
 
 ```
 /resident:push-app display Hello, World! on my new device

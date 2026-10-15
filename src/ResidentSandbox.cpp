@@ -484,7 +484,8 @@ void Sandbox::setup()
     // 3. AP name for WiFi config portal.
     String apName = String(getDeviceType());
     if (apName.length() > 0) apName[0] = toupper(apName[0]);
-    String idSuffix = _deviceId.substring(0, 4);
+    // The MAC's last bytes differ between units; its first are the vendor's.
+    String idSuffix = _deviceId.substring(_deviceId.length() - 4);
     _apName = String("Resident ") + apName + " " + idSuffix;
     _courier->setAPName(_apName.c_str());
 
@@ -1967,7 +1968,11 @@ void Sandbox::showIdleScreen(int countdownSecs)
   if (!systemDisplay()) return;
   String s;
   if (_idleScreenTitle.length() > 0) { s += _idleScreenTitle; s += '\n'; }
-  s += "Device ID: "; s += _deviceId;
+  // "ID: " and the 12-character ID: 16 columns, one line, on every board's
+  // status display ("Device ID: " and the ID would be 23 and wrap mid-ID on a
+  // 19-column screen; the ID on a line of its own pushes the last line off a
+  // 3-row one).
+  s += "ID: "; s += _deviceId;
   s += "\nType: ";     s += getDeviceType();
   if (countdownSecs >= 0) { s += '\n'; s += String(countdownSecs); s += 's'; }
   showStatusText(s.c_str());

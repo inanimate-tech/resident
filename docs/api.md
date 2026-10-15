@@ -314,7 +314,7 @@ sandbox.clearPersistedApp();           // wipe the saved app from the persistent
 ### Identity and state accessors
 
 ```cpp
-sandbox.getDeviceId();    // const String& — device ID derived from chip MAC
+sandbox.getDeviceId();    // const String& — the chip's base MAC, 12 lowercase hex digits
 sandbox.getDeviceType();  // const char* — from SandboxConfig::deviceType
 sandbox.isConnected();    // true when Courier reports State::Connected
 sandbox.isTimeSynced();   // true after NTP/HTTP time sync
@@ -1182,7 +1182,7 @@ The last app that loads successfully — compiles **and** runs `init()` without 
 Once the device is reachable — **connected**, or immediately in standalone mode — if a saved app exists the status display shows the device identity with a 20-second countdown before loading it (while connecting, the usual connection-status text shows instead). A networked device that never connects stays on the connection screen and does not auto-load.
 
 ```
-Device ID: <deviceId>
+ID: <deviceId>
 Type: <deviceType>
 
 20s
