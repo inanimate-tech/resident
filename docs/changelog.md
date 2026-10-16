@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.11.0
+
+### New features
+
+- **`Sandbox::getDeviceId()` is virtual, and an app event's `from`, its nonce prefix and the self-echo filter read it.** A host whose platform names devices another way, such as by an id that a factory reset rotates, overrides it in a `Sandbox` subclass. The default is the chip-derived id, as before. The WiFi portal's name stays chip-derived. `Sandbox`'s destructor is virtual too.
+
+---
+
 ## v0.10.2
 
 ### Fixes

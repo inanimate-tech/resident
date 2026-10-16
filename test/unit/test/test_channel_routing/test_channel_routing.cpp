@@ -206,6 +206,31 @@ void test_app_channel_drops_self_echo(void) {
   TEST_ASSERT_EQUAL_INT(0, sandbox->luaGlobalIntForTest("cnt"));
 }
 
+// The self-echo filter reads getDeviceId(), so a host that overrides it
+// drops its own events under the name it sends them with.
+class HostNamedSandbox : public Resident::Sandbox {
+public:
+  using Resident::Sandbox::Sandbox;
+  const String& getDeviceId() const override { return _name; }
+private:
+  String _name = "host-named";
+};
+
+void test_app_channel_drops_self_echo_under_an_overridden_id(void) {
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  sandbox = new HostNamedSandbox(cfg);
+  sandbox->setup();
+  loadCountingApp();
+  JsonDocument evt;
+  evt["channel"] = "app";
+  evt["type"] = "turn";
+  evt["from"] = "host-named";
+  sandbox->injectMessage("test", "turn", evt);
+  pump();
+  TEST_ASSERT_EQUAL_INT(0, sandbox->luaGlobalIntForTest("cnt"));
+}
+
 void test_app_channel_dedups_by_nonce(void) {
   build();
   loadCountingApp();
@@ -279,6 +304,7 @@ int main(int, char**) {
   RUN_TEST(test_app_channel_event_before_load_does_not_leak);
   RUN_TEST(test_defer_applies_to_system_channel_loads);
   RUN_TEST(test_app_channel_drops_self_echo);
+  RUN_TEST(test_app_channel_drops_self_echo_under_an_overridden_id);
   RUN_TEST(test_app_channel_dedups_by_nonce);
   RUN_TEST(test_app_channel_distinct_nonces_both_deliver);
   RUN_TEST(test_send_system_stamps_channel);

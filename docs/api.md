@@ -314,7 +314,7 @@ sandbox.clearPersistedApp();           // wipe the saved app from the persistent
 ### Identity and state accessors
 
 ```cpp
-sandbox.getDeviceId();    // const String& — device ID derived from chip MAC
+sandbox.getDeviceId();    // const String& — device ID; virtual: events' from, nonce prefix and self-echo use it (default: chip MAC-derived)
 sandbox.getDeviceType();  // const char* — from SandboxConfig::deviceType
 sandbox.isConnected();    // true when Courier reports State::Connected
 sandbox.isTimeSynced();   // true after NTP/HTTP time sync

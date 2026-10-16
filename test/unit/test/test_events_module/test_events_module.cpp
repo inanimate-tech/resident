@@ -158,6 +158,35 @@ void test_nonces_are_unique_and_deviceid_prefixed(void) {
   TEST_ASSERT_NOT_NULL(strstr(captured.c_str(), prefix));
 }
 
+// A host that names the device another way overrides getDeviceId(), and
+// the event goes out under that name: its `from` and its nonce prefix.
+class HostNamedSandbox : public Resident::Sandbox {
+public:
+  using Resident::Sandbox::Sandbox;
+  const String& getDeviceId() const override { return _name; }
+private:
+  String _name = "3f0c9d6a2b7e4c1d8a5f0e2d9c4b7a61";
+};
+
+void test_overridden_device_id_names_from_and_nonce(void) {
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  sandbox = new HostNamedSandbox(cfg);
+  sandbox->setup();
+  captured.clear();
+  sandbox->setEventSink([](JsonDocument& doc) {
+    char buf[512];
+    serializeJson(doc, buf, sizeof(buf));
+    captured = buf;
+    return true;
+  });
+  sandbox->publishEvent("a", "{}");
+  TEST_ASSERT_NOT_NULL(strstr(captured.c_str(),
+                              "\"from\":\"3f0c9d6a2b7e4c1d8a5f0e2d9c4b7a61\""));
+  TEST_ASSERT_NOT_NULL(strstr(captured.c_str(),
+                              "\"nonce\":\"3f0c9d6a2b7e4c1d8a5f0e2d9c4b7a61:"));
+}
+
 void test_publish_event_without_sink_or_network_queues(void) {
   // 0.8: no sink and no network means QUEUED, not lost — the event goes
   // when a sink appears (reconnect, in production).
@@ -524,6 +553,7 @@ int main(int, char**) {
   RUN_TEST(test_publish_event_cpp_path);
   RUN_TEST(test_publish_event_rate_limited);
   RUN_TEST(test_nonces_are_unique_and_deviceid_prefixed);
+  RUN_TEST(test_overridden_device_id_names_from_and_nonce);
   RUN_TEST(test_publish_event_without_sink_or_network_queues);
   RUN_TEST(test_serializer_flat_payloads_unchanged);
   RUN_TEST(test_serializer_escapes_quotes_backslashes_controls);

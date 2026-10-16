@@ -657,7 +657,7 @@ void Sandbox::handleAppMessage(const char* transportName, const char* type,
     if (!name[0]) return;
   }
   const char* from = doc["from"] | "";
-  if (from[0] && _deviceId.equals(from)) return;   // self-echo (multicast loopback)
+  if (from[0] && getDeviceId().equals(from)) return;   // self-echo (multicast loopback)
   const char* nonce = doc["nonce"] | "";
   if (nonce[0] && isDuplicateNonce(nonce)) return;
   // Same gate as sendAppEvent (see its comment — "deliberate"): no app loaded,
@@ -927,7 +927,7 @@ Sandbox::SendResult Sandbox::publishEventEx(const char* name,
   } else {
     doc["data"].to<JsonObject>();
   }
-  doc["from"] = _deviceId;
+  doc["from"] = getDeviceId();
   // Envelope source + per-sender monotonic sequence (per-boot, uint32). One
   // counter for the device as sender; the nonce reuses the same count, so
   // nonce suffix and seq stay in lockstep for a given frame.
@@ -935,7 +935,7 @@ Sandbox::SendResult Sandbox::publishEventEx(const char* name,
   doc["src"] = "device";
   doc["seq"] = seq;
   char nonce[64];
-  snprintf(nonce, sizeof(nonce), "%s:%lu", _deviceId.c_str(),
+  snprintf(nonce, sizeof(nonce), "%s:%lu", getDeviceId().c_str(),
            (unsigned long)seq);
   doc["nonce"] = nonce;
   doc["ts_ms"] = millis();

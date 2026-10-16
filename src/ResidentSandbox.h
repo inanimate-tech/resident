@@ -54,7 +54,7 @@ class Sandbox {
 public:
     Sandbox();
     explicit Sandbox(const SandboxConfig& config);
-    ~Sandbox();
+    virtual ~Sandbox();
 
     // Full replacement of the stored config — not additive. Device::setup()
     // calls this automatically with the DeviceConfig forward; downstream
@@ -341,7 +341,11 @@ public:
     void countDrop() { _dropCount++; }
 
     // ── Identity / status accessors ──
-    const String& getDeviceId() const { return _deviceId; }
+    // The device's name on the wire: an app event's `from`, its nonce
+    // prefix, and the self-echo filter all read it. Defaults to the
+    // chip-derived id; a host whose platform names devices another way
+    // overrides it. The WiFi portal's name stays chip-derived.
+    virtual const String& getDeviceId() const { return _deviceId; }
     const String& getAPName() const { return _apName; }
     const char* getDeviceType() const {
       return _config.deviceType ? _config.deviceType : "device";
