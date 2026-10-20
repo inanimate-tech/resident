@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.11.1
+
+### Dependencies
+
+- Courier `^0.10.0` (was `^0.9.0`). A caret range on 0.x excludes the next minor, so an application on Courier 0.10 otherwise resolved a second Courier for Resident. Resident's code is unchanged.
+
+---
+
 ## v0.11.0
 
 ### New features

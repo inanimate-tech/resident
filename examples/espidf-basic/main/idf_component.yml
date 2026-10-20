@@ -12,10 +12,9 @@ dependencies:
   espressif/arduino-esp32:
     version: "^3.0.0"
 
-  # Courier 0.9.0+ (the NetworkReady state and hook the Sandbox passes
-  # through), matching resident's own floor.
+  # Courier 0.10.0+, matching resident's own floor.
   inanimate/courier:
-    version: "^0.9.0"
+    version: "^0.10.0"
 
   bblanchon/arduinojson:
     version: "^7.0.0"
