@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.12.1
+
+### New features
+
+- **Two lvgl widgets whose pixels the app's own Lua function makes: `Shader` and `Lgfx`.** `parent:Shader{ fn = function(x, y, t, u, v) ... end, palette, speed, scale, cell, fps }` calls `fn` once per cell and paints the cell from a palette or from r, g, b; its installer adds the `shader` global of Shadertoy helpers. `parent:Lgfx{ fn = function(g, t) ... end, fps, transparent }` hands `fn` a pen over a LovyanGFX sprite. Both are opt-in, header-only, and installed with `LvglModule::addWidget`: `Resident::shader::installWidget` and `Resident::lgfxw::installWidget<TSprite>`, where the board names its sprite type (`lgfx::LGFX_Sprite`, or `M5Canvas`). They share `ResidentFrameWidget.h`, which makes a frame at most once per owed frame. LVGL renders `LvglModule`'s displays in partial mode and draws a widget once per strip it crosses, so a widget that made its frame on every draw showed a band from a different moment in each strip. `prompts/widgets.md` teaches both to an app author.
+
+---
+
 ## v0.12.0
 
 ### Breaking changes

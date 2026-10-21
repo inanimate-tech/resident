@@ -12,7 +12,9 @@ Concatenate per what the board actually uses:
    events, store, log, time, screens, limits.
 2. `lgfx.md` — when the board registers an `LgfxModule` display.
 3. `lvgl.md` — when the board registers an `LvglModule` display
-   (retained-mode UI via LVGL + luavgl).
+   (retained-mode UI via LVGL + luavgl). Add `widgets.md` when it also
+   installs the `Shader` and `Lgfx` widgets (`ResidentShaderWidget.h`,
+   `ResidentLgfxWidget.h`).
 4. The board's `DEVICE-SKILL.md` — the board-specific driver surface
    (sensors, buttons, outputs). Lives in the board firmware project, not
    here. lvgl-capable boards append `lvgl.md` (layer 3) to their
