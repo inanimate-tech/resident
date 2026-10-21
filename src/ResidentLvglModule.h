@@ -197,6 +197,13 @@ public:
   // its bound constructors resolve the active screen at call time. The frame
   // this invalidates is never flushed: releasing first makes this module a
   // non-owner, and the flush gate drops it.
+  //
+  // Then luavgl_app_reset releases what is not on the active screen: the
+  // app's timers and anims (which would otherwise go on running its
+  // closures under the next app), its objects on the display layers and on
+  // screens it never loaded, its theme styles and Styles. It runs after the
+  // screens go, because the styles it releases must no longer be on a live
+  // object.
   void onAppReset() override {
     RenderTargets::release(RenderTargets::MODULE_LVGL);
     for (int i = 0; i < _count; i++) {
@@ -205,6 +212,7 @@ public:
       uninstallLuaTheme(_slots[i].disp);
       replaceScreen(_slots[i].disp);
     }
+    if (_lua && _displays > 0) luavgl_app_reset(_lua);
   }
 
   void registerModule(LuaModule& m) override {

@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.12.0
+
+### Breaking changes
+
+- **The board's luavgl must provide `luavgl_app_reset`** (inanimate-tech/luavgl from the commit that adds it). `LvglModule` calls it at app reset; an older luavgl fails to link. A board without `LvglModule` is unaffected.
+
+### Fixes
+
+- **Nothing of an app's LVGL runs on under the next app.** App reset replaced the active screen but never touched what is not on it, and one Lua state serves every app. A `lvgl.Timer` went on calling the outgoing app's callback, with the outgoing app's deleted objects, for as long as the device ran; each call failed, and luavgl drew the error on top of the new app. The same happened when an app failed to load, since its chunk had already run. Its closures, and everything they held, stayed in the Lua heap. `LvglModule::onAppReset` now calls luavgl's `luavgl_app_reset` once the screens are replaced. That deletes the app's timers and running anims (without their `done_cb`), and deletes its objects on the display layers and on screens it never loaded. It also releases its theme styles and Styles. A handle the app kept to a timer raises "timer is null".
+
+---
+
 ## v0.11.1
 
 ### Dependencies
