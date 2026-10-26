@@ -44,6 +44,7 @@ void loop()  { sandbox.loop(); }
 | `systemLED` | `SystemLED*` | `nullptr` | Optional LED indicator; Resident's internal handler calls `solidColor()` automatically on connection state changes |
 | `network` | `std::optional<Courier::Config>` | unset | Networking opt-in. Set ⇒ Sandbox constructs an internal `Courier::Client`, drives WiFi / transports, fires connection callbacks. Unset ⇒ standalone runtime, no WiFi pulled in. |
 | `persistApps` | `bool` | `true` | Save the last successfully-loaded app to flash and restore it on boot. Set to `false` to disable for a build. |
+| `tickIntervalMs` | `uint16_t` | `100` | Milliseconds between ticks: the app's `on_tick`, the framework's `framework_tick` and a winning overlay's `onDraw`. |
 | `gateTickOnConnection` | `bool` | `false` | Pause `on_tick` and event dispatch while disconnected. The default is offline-first: the app keeps running; only network sends wait. |
 | `openUnsafeLibs` | `bool` | `false` | Give the app environment the full Lua stdlib. The default removes `os`/`io`/`package`/`require`/`load`/`dofile`/`loadstring`/`loadfile`/`debug`. |
 | `freshAppEnvironment` | `bool` | `true` | Reset app globals to the runtime baseline on every `loadApp` — nothing from the previous app survives except the store slot. Set `false` for builds whose apps need globals to persist across loads. |
@@ -123,7 +124,7 @@ sandbox.loop();    // call from Arduino loop()
    1. `Courier::Client::loop()` drives the network state machine and reads transports.
    2. **Driver heartbeat:** the de-duplicated lifecycle list is walked once and `update()` is called on each object. Role peripherals (`systemDisplay`, `systemLED`, `systemButton`) update every loop regardless of app state or connectivity. All other extensions update only while an app is loaded (running or suspended). Connectivity does not gate either cadence.
    3. If a persisted app is waiting to load, the boot countdown runs (and the function returns early).
-   4. The Lua `on_tick(ctx, dt_ms)` callback fires at 10 FPS (100 ms interval) while an app is Running. Connectivity does not gate it unless `SandboxConfig::gateTickOnConnection` is set.
+   4. The Lua `on_tick(ctx, dt_ms)` callback fires every `SandboxConfig::tickIntervalMs` (100 ms, 10 Hz, by default) while an app is Running. A tick is due one interval after the last one was due, so the rate holds when a pass runs late; a tick missed outright is skipped, not made up. Connectivity does not gate it unless `SandboxConfig::gateTickOnConnection` is set.
    5. Up to one pending event is delivered to `on_event(ctx, event)`.
 
 ### Setup-phase callbacks (register before `setup()`)
@@ -374,7 +375,7 @@ Include with:
 | `name() const` | *(pure virtual)* | Module name as registered in Lua (e.g. `"imu"`) |
 | `registerModule(LuaModule& m)` | no-op | Populate the Lua module table using the builder |
 | `begin()` | no-op | Hardware / module init — called once by `Sandbox::setup()` |
-| `update()` | no-op | Per-loop tick at full main-loop rate (not Lua's 10 FPS) |
+| `update()` | no-op | Per-loop tick at full main-loop rate (not Lua's tick) |
 | `onAppReset()` | no-op | Called before each new app is compiled |
 | `onAppRunning(bool running)` | no-op | Called when an app starts or resumes (`true`), and when it stops or is suspended (`false`) |
 
@@ -833,7 +834,7 @@ public:
 | Method | Default | Description |
 |--------|---------|-------------|
 | `onAcquire()` | no-op | You now own the surface; paint the first frame here for immediate response |
-| `onDraw(dtMs)` | no-op | Animation heartbeat while owning, paced on the app-tick cadence (~10 FPS) — the overlay takes over the suspended app's tick slot. Event-driven repaints outside `onDraw` are fine too |
+| `onDraw(dtMs)` | no-op | Animation heartbeat while owning, paced on the app-tick cadence (`tickIntervalMs`) — the overlay takes over the suspended app's tick slot. Event-driven repaints outside `onDraw` are fine too |
 | `onRelease()` | no-op | You no longer own the surface — wind down internal state only; the arbiter handles app resume and surface restore |
 
 Register and drive overlays from the Sandbox:
@@ -868,7 +869,7 @@ function init(ctx)
 end
 
 function on_tick(ctx, dt_ms)
-    -- called at 10 FPS; dt_ms is elapsed ms since the last tick
+    -- called every tick (100 ms by default); dt_ms is elapsed ms since the last
 end
 
 function on_event(ctx, event)
@@ -1299,7 +1300,7 @@ cfg.framework = fw;
 | Hook | When | Contract |
 |------|------|----------|
 | `framework_install()` | Before each app chunk runs (after the fresh-environment reset) | (Re)install the framework's app-facing API into `_G` |
-| `framework_tick(ctx, dt_ms)` | Every tick, before the app's `on_tick` | Same ctx shape as app callbacks |
+| `framework_tick(ctx, dt_ms)` | Every tick, before the app's `on_tick`; and again before the next tick when it returned a number, that many ms later (4 ms at the least) | Same ctx shape as app callbacks; `dt_ms` is the time since its own last call. Return the ms until it next needs to run (its next timer, say), or nothing |
 | `framework_event(ctx, e)` | Every event, before the app's `on_event` | Return `true` to consume — the app never sees it |
 | `framework_app_loaded()` | After an app loads successfully | — |
 
@@ -1502,7 +1503,7 @@ ESP-IDF CMake component graph.
 |----------|-------|-------------|
 | `Extensions::MAX` | `16` | Maximum extensions per sandbox |
 | `RenderTargets::MAX` | `8` | Maximum registered render targets per board |
-| `Sandbox::TICK_INTERVAL` | `100 ms` | Lua `on_tick` interval (10 FPS) |
+| `SandboxConfig::tickIntervalMs` | `100 ms` | Lua `on_tick` interval (10 Hz) unless the board sets another |
 | `RESIDENT_EVENT_RING_SIZE` | `8` | Inbound event ring depth (one slot kept free, so 7 usable); oldest event is dropped when full. Build-flag overridable |
 | `RESIDENT_EVENT_QUEUE_SIZE` | `16` | Outbound event queue depth (rate-limited / offline sends wait here). Build-flag overridable |
 | `RESIDENT_EVENT_JSON_MAX` | `1024` | Event `data` buffer — bounds the `events.send` serializer, the incoming app-channel `data`, and each ring slot. Build-flag overridable; the ring grows by 8× any increase |

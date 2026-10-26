@@ -63,7 +63,7 @@ void loop() {
 
 The device connects to WiFi (via a WiFiManager captive portal), opens a WebSocket to your server, and accepts Lua apps as JSON messages.
 
-> Omit `cfg.network` and the sandbox runs standalone with no WiFi pulled in — `sandbox.loop()` ticks Lua at 10 FPS unconditionally, and `isConnected()` returns `false`.
+> Omit `cfg.network` and the sandbox runs standalone with no WiFi pulled in — `sandbox.loop()` ticks Lua every `tickIntervalMs` (10 Hz by default) unconditionally, and `isConnected()` returns `false`.
 
 Register reactive callbacks before `setup()` to react to lifecycle events:
 
@@ -127,7 +127,7 @@ For Lua-only extensions that don't expose hardware or emit events, extend `Resid
   Sandbox's call becomes a no-op).
 - `update()` — called every iteration of `Sandbox::loop()`. Use for
   per-tick driver work like polling and debouncing. Runs at full main-loop
-  rate, distinct from Lua's 10 FPS `on_tick`.
+  rate, distinct from Lua's `on_tick`.
 - `registerModule(LuaModule& m)` — called once by `Sandbox::setup()`
   to register the driver's Lua-visible global. Use the builder's
   `method<>`, `staticMethod`, and `constant` overloads.
@@ -148,7 +148,7 @@ Every message carries an envelope `channel` field that steers it onto a plane:
 ### Sandbox lifecycle
 
 - `init(ctx)` — called once after compilation
-- `on_tick(ctx, dt_ms)` — called at 10 FPS with elapsed time
+- `on_tick(ctx, dt_ms)` — called every tick (10 Hz unless the board sets `tickIntervalMs`) with elapsed time
 - `on_event(ctx, event)` — called for wire events and driver events, with the payload in `event.data`
 
 The `ctx` table contains: `time_ms` (milliseconds since the app loaded) and `generation_id` (when the load message carried one).

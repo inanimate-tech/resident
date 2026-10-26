@@ -357,7 +357,7 @@ void Sandbox::initialize()
   });
 
   _triggerResetTime = millis();
-  _lastTickTime = millis();
+  resetTickSchedule();
 
   // Snapshot the baseline global names (stdlib, math globals, log/time,
   // driver + internal modules) — everything a fresh app environment keeps.
@@ -1511,21 +1511,47 @@ bool Sandbox::callFrameworkNoArg(int ref, const char* what)
   return true;
 }
 
-void Sandbox::callFrameworkTick(unsigned long dt_ms)
+int32_t Sandbox::callFrameworkTick(unsigned long dt_ms)
 {
-  if (!_lua || !frameworkActive() || _fwTickRef == LUA_NOREF) return;
+  if (!_lua || !frameworkActive() || _fwTickRef == LUA_NOREF) return -1;
   lua_rawgeti(_lua, LUA_REGISTRYINDEX, _fwTickRef);
   pushCtxTable();
   lua_pushinteger(_lua, dt_ms);
   armExecutionGuard();
-  int r = lua_pcall(_lua, 2, 0, 0);
+  int r = lua_pcall(_lua, 2, 1, 0);
   disarmExecutionGuard();
   if (r != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: framework_tick error: %s\n", errMsg);
     emitTelemetry("runtime_error", errMsg);
     lua_pop(_lua, 1);
+    return -1;
   }
+  int32_t next = -1;
+  if (lua_type(_lua, -1) == LUA_TNUMBER) {
+    const lua_Number ms = lua_tonumber(_lua, -1);
+    next = ms <= 0 ? 0 : ms >= 0x7fffffff ? 0x7fffffff : (int32_t)ms;
+  }
+  lua_pop(_lua, 1);
+  return next;
+}
+
+void Sandbox::scheduleFrameworkWake(unsigned long now, int32_t afterMs)
+{
+  _frameworkWake = afterMs >= 0;
+  if (!_frameworkWake) return;
+  _frameworkWakeAt = now + ((unsigned long)afterMs < FRAMEWORK_WAKE_MIN_MS
+                                ? FRAMEWORK_WAKE_MIN_MS
+                                : (unsigned long)afterMs);
+}
+
+void Sandbox::resetTickSchedule()
+{
+  const unsigned long now = millis();
+  _lastTickTime = now;
+  _nextTickDue = now + tickInterval();
+  _lastFrameworkTickTime = now;
+  _frameworkWake = false;
 }
 
 // ── Capture brackets (R11/R15): one dialect for media capture ────────────
@@ -2095,21 +2121,34 @@ void Sandbox::loopOnce() {
   // on the old gated behavior opt back in via gateTickOnConnection.
   if (_config.gateTickOnConnection && _courier.has_value() && !isConnected()) return;
 
-  unsigned long now = millis();
-  unsigned long elapsed = now - _lastTickTime;
-  if (elapsed >= TICK_INTERVAL) {
+  const unsigned long now = millis();
+  const bool tickDue = (long)(now - _nextTickDue) >= 0;
+  const bool wakeDue = _frameworkWake && (long)(now - _frameworkWakeAt) >= 0;
+  if (tickDue || wakeDue) {
 #if RESIDENT_TICK_DIAGS
     uint32_t diagT0 = micros();
 #endif
-    callFrameworkTick(elapsed);
+    scheduleFrameworkWake(now, callFrameworkTick(now - _lastFrameworkTickTime));
+    _lastFrameworkTickTime = now;
 #if RESIDENT_TICK_DIAGS
     uint32_t diagT1 = micros();
 #endif
-    callOnTick(elapsed);
+    if (tickDue) {
+      const unsigned long elapsed = now - _lastTickTime;
+      callOnTick(elapsed);
 #if RESIDENT_TICK_DIAGS
-    noteTickTiming(elapsed, diagT1 - diagT0, micros() - diagT1);
+      noteTickTiming(elapsed, diagT1 - diagT0, micros() - diagT1);
 #endif
-    _lastTickTime = now;
+      _lastTickTime = now;
+      // A tick missed outright is skipped, never made up in a burst.
+      _nextTickDue += tickInterval();
+      if ((long)(now - _nextTickDue) >= 0) _nextTickDue = now + tickInterval();
+    }
+#if RESIDENT_TICK_DIAGS
+    else {
+      _diagFwWakes++;
+    }
+#endif
   }
   RESIDENT_LOOP_MARK(LOOP_TICK);
 
@@ -2122,10 +2161,12 @@ void Sandbox::loopOnce() {
 // (what the app sees as dt_ms); `fwUs`/`appUs` are the framework_tick and
 // on_tick halves of the dispatch itself.
 //
-// Two failures are distinguished. A dispatch costing more than TICK_INTERVAL
-// is an *overrun*: the Lua work alone cannot fit the budget. A period longer
-// than DIAG_LATE_PERIOD_MS with a dispatch that fits is a *late* tick: the
+// Two failures are distinguished. A dispatch costing more than the tick
+// interval is an *overrun*: the Lua work alone cannot fit the budget. A period
+// of 1.5 intervals or more with a dispatch that fits is a *late* tick: the
 // schedule slipped somewhere else in loop() (drivers, transports, overlays).
+// The window line also counts the framework's own ticks between app ticks
+// (wakes).
 void Sandbox::noteTickTiming(unsigned long periodMs, uint32_t fwUs, uint32_t appUs)
 {
   const uint32_t dispatchUs = fwUs + appUs;
@@ -2139,9 +2180,9 @@ void Sandbox::noteTickTiming(unsigned long periodMs, uint32_t fwUs, uint32_t app
   if (fwUs > _diagFwMaxUs) _diagFwMaxUs = fwUs;
   if (periodMs > _diagPeriodMaxMs) _diagPeriodMaxMs = periodMs;
 
-  const bool overrun = dispatchUs >= TICK_INTERVAL * 1000UL;
+  const bool overrun = dispatchUs >= tickInterval() * 1000UL;
   if (overrun) _diagOverruns++;
-  else if (periodMs >= DIAG_LATE_PERIOD_MS) _diagLate++;
+  else if (periodMs >= tickInterval() * 3 / 2) _diagLate++;
 
   if (overrun && now - _diagLastOverrunLog >= DIAG_OVERRUN_LOG_MS) {
     _diagLastOverrunLog = now;
@@ -2150,7 +2191,7 @@ void Sandbox::noteTickTiming(unsigned long periodMs, uint32_t fwUs, uint32_t app
                   dispatchUs / 1000UL, (dispatchUs % 1000UL) / 10UL,
                   appUs / 1000UL, (appUs % 1000UL) / 10UL,
                   fwUs / 1000UL, (fwUs % 1000UL) / 10UL,
-                  TICK_INTERVAL, periodMs);
+                  tickInterval(), periodMs);
   }
 
   if (now - _diagWindowStart < DIAG_WINDOW_MS) return;
@@ -2159,7 +2200,7 @@ void Sandbox::noteTickTiming(unsigned long periodMs, uint32_t fwUs, uint32_t app
   const uint32_t avgUs = _diagDispatchSumUs / _diagTicks;
   Serial.printf("[tickdiag] %lums ticks=%lu rate=%lu.%luHz dispatch avg=%lu.%02lums "
                 "max=%lu.%02lums (on_tick max=%lu.%02lu framework max=%lu.%02lu) "
-                "period max=%lums overruns=%lu late=%lu\n",
+                "period max=%lums overruns=%lu late=%lu wakes=%lu\n",
                 windowMs, (unsigned long)_diagTicks,
                 (unsigned long)(_diagTicks * 10000UL / windowMs) / 10UL,
                 (unsigned long)(_diagTicks * 10000UL / windowMs) % 10UL,
@@ -2168,12 +2209,13 @@ void Sandbox::noteTickTiming(unsigned long periodMs, uint32_t fwUs, uint32_t app
                 _diagAppMaxUs / 1000UL, (_diagAppMaxUs % 1000UL) / 10UL,
                 _diagFwMaxUs / 1000UL, (_diagFwMaxUs % 1000UL) / 10UL,
                 _diagPeriodMaxMs, (unsigned long)_diagOverruns,
-                (unsigned long)_diagLate);
+                (unsigned long)_diagLate, (unsigned long)_diagFwWakes);
 
   _diagWindowStart = now;
   _diagTicks = 0;
   _diagOverruns = 0;
   _diagLate = 0;
+  _diagFwWakes = 0;
   _diagDispatchSumUs = 0;
   _diagDispatchMaxUs = 0;
   _diagAppMaxUs = 0;
@@ -3083,7 +3125,7 @@ void Sandbox::updateOverlays()
   // the first frame; event-driven repaints outside onDraw remain fine.
   unsigned long now = millis();
   unsigned long elapsed = now - _lastOverlayDrawTime;
-  if (elapsed >= TICK_INTERVAL) {
+  if (elapsed >= tickInterval()) {
     _lastOverlayDrawTime = now;
     for (uint8_t i = 0; i < _overlayCount; i++) {
       if (_overlays[i].winning) _overlays[i].o->onDraw(elapsed);
@@ -3284,7 +3326,7 @@ bool Sandbox::compileApp(const char* code)
 
   // Reset timing
   _triggerResetTime = millis();
-  _lastTickTime = millis();
+  resetTickSchedule();
 
   _runState = RunState::Running;
   notifyAppRunning(true);

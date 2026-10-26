@@ -84,6 +84,11 @@ struct SandboxConfig {
   bool persistApps = true;
   PersistentStore* persistentStore = nullptr;
 
+  // Milliseconds between ticks: the app's on_tick, the framework's tick and a
+  // winning overlay's onDraw. 100 is 10 Hz; set it to what the board's glass
+  // and budget can carry.
+  uint16_t tickIntervalMs = 100;
+
   // Offline-first (0.8): ticking and event dispatch no longer gate on
   // connectivity — a disconnected device keeps running its app; only
   // network sends wait. Set true to restore the old gated behavior.
