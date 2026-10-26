@@ -13,7 +13,7 @@ Define at least one of these globals (the upload is rejected otherwise):
 function init(ctx)              -- once, after load
 end
 
-function on_tick(ctx, dt_ms)    -- every 100 ms; dt_ms = real elapsed ms
+function on_tick(ctx, dt_ms)    -- every tick; dt_ms = real elapsed ms
 end
 
 function on_event(ctx, e)       -- once per queued event
@@ -210,7 +210,7 @@ screens.set("main", { brightness = 0.4 })
 
 | Limit | Value |
 |-------|-------|
-| tick rate | 10/s (100 ms) |
+| tick rate | 10/s (100 ms) unless the board sets another |
 | event ring | 8 slots, oldest dropped |
 | event data (both directions) | 1024 bytes serialized, drop not truncate |
 | events.send rate | 5/s sustained, burst 10 |

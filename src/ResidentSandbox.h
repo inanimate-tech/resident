@@ -574,7 +574,9 @@ private:
     void handleFrameworkMessage(JsonDocument& doc);
     void refreshFrameworkHooks();
     bool callFrameworkNoArg(int ref, const char* what);
-    void callFrameworkTick(unsigned long dt_ms);
+    // Returns the ms until the framework next wants to run, when its hook
+    // returns a number; -1 when it returns none.
+    int32_t callFrameworkTick(unsigned long dt_ms);
     static int luaRuntimeSend(struct lua_State* L);
 
     // Description-on-load display (setShowDescriptions).
@@ -720,19 +722,32 @@ private:
     // One pass of loop(): its body, which may return early at any stage.
     void loopOnce();
 
-    // Frame timing
+    // Frame timing. A tick is due one interval after the last one was due, so
+    // the rate holds however late a pass arrives; _lastTickTime is when the
+    // last one ran, for dt_ms. The framework may ask to run before the next
+    // tick (see callFrameworkTick); _frameworkWakeAt is when.
+    unsigned long tickInterval() const {
+        return _config.tickIntervalMs ? _config.tickIntervalMs : 100;
+    }
+    void resetTickSchedule();
+    void scheduleFrameworkWake(unsigned long now, int32_t afterMs);
+    static constexpr unsigned long FRAMEWORK_WAKE_MIN_MS = 4;
     unsigned long _lastTickTime = 0;
-    static constexpr unsigned long TICK_INTERVAL = 100; // 10 FPS
+    unsigned long _nextTickDue = 0;
+    unsigned long _lastFrameworkTickTime = 0;
+    unsigned long _frameworkWakeAt = 0;
+    bool _frameworkWake = false;
 
 #if RESIDENT_TICK_DIAGS
     // Tick-timing diagnostics (-DRESIDENT_TICK_DIAGS=1): measures how long one
-    // dispatch (framework_tick + on_tick) costs against the TICK_INTERVAL
-    // budget, and how far the realised tick period drifts from it. Reports on
-    // Serial: a rate-limited line per overrun plus a periodic window summary.
+    // dispatch (framework_tick + on_tick) costs against the tick interval,
+    // and how far the realised tick period drifts from it (late: 1.5
+    // intervals or more). Reports on Serial: a rate-limited line per overrun
+    // plus a periodic window summary.
     static constexpr unsigned long DIAG_WINDOW_MS = 5000;
     static constexpr unsigned long DIAG_OVERRUN_LOG_MS = 1000;
-    static constexpr unsigned long DIAG_LATE_PERIOD_MS = TICK_INTERVAL * 3 / 2;
     void noteTickTiming(unsigned long periodMs, uint32_t fwUs, uint32_t appUs);
+    uint32_t _diagFwWakes = 0;   // framework ticks between app ticks
     // The hooks benchmarkExecutionGuard() times.
     static void benchCountHook(struct lua_State* L, struct lua_Debug* ar);
     static void benchDeadlineHook(struct lua_State* L, struct lua_Debug* ar);
