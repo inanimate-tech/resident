@@ -2004,7 +2004,24 @@ void Sandbox::showReadyScreen()
   if (!_courier.has_value() || isConnected()) showIdleScreen();
 }
 
+// Section marks for the loop-pass profile; nothing at all without diagnostics.
+#if RESIDENT_TICK_DIAGS
+#define RESIDENT_LOOP_MARK(section) markLoopSection(section)
+#else
+#define RESIDENT_LOOP_MARK(section) ((void)0)
+#endif
+
 void Sandbox::loop() {
+#if RESIDENT_TICK_DIAGS
+  beginLoopPass();
+  loopOnce();
+  endLoopPass();
+#else
+  loopOnce();
+#endif
+}
+
+void Sandbox::loopOnce() {
   if (_courier.has_value()) {
     _courier->loop();
   }
@@ -2012,6 +2029,7 @@ void Sandbox::loop() {
   // Debounced store write-through — runs even with no app loaded so a
   // mutation made just before an unload/idle still reaches NVS.
   _storeModule.updateDebounce(millis());
+  RESIDENT_LOOP_MARK(LOOP_NET);
 
   if (!_lua) return;
 
@@ -2021,15 +2039,25 @@ void Sandbox::loop() {
   for (uint8_t i = 0; i < _lifecycleCount; i++) {
     Extension* e = _lifecycle[i];
     if (isSystemExtension(e) || isAppRunning()) {
+#if RESIDENT_TICK_DIAGS
+      const uint32_t t0 = micros();
       e->update();
+      const uint32_t us = micros() - t0;
+      _extSumUs[i] += us;
+      if (us > _extMaxUs[i]) _extMaxUs[i] = us;
+#else
+      e->update();
+#endif
     }
   }
+  RESIDENT_LOOP_MARK(LOOP_EXT);
 
   updateSystemButtonHold();
   updateOverlays();
   updateMicStream();
   drainOutboundSystem();
   drainOutboundEvents();
+  RESIDENT_LOOP_MARK(LOOP_SYS);
 
   if (_runState == RunState::Pending) {
     updateBootCountdown();
@@ -2060,8 +2088,10 @@ void Sandbox::loop() {
 #endif
     _lastTickTime = now;
   }
+  RESIDENT_LOOP_MARK(LOOP_TICK);
 
   processNextEvent();
+  RESIDENT_LOOP_MARK(LOOP_EVENTS);
 }
 
 #if RESIDENT_TICK_DIAGS
@@ -2291,6 +2321,357 @@ void Sandbox::benchmarkExecutionGuard()
     luaL_unref(_lua, LUA_REGISTRYINDEX, chunkRef);
   }
   Serial.println("[hookbench] done");
+}
+
+// ── Loop-pass profile ────────────────────────────────────────────────────
+
+// Microseconds as milliseconds to two places, for the diagnostics lines.
+static void printMs(uint32_t us)
+{
+  Serial.printf("%lu.%02lu", (unsigned long)(us / 1000UL),
+                (unsigned long)((us % 1000UL) / 10UL));
+}
+
+void Sandbox::beginLoopPass()
+{
+  const uint32_t now = micros();
+  if (_loopPasses > 0) {
+    const uint32_t gap = now - _loopLastPassStartUs;
+    if (gap > _loopGapMaxUs) _loopGapMaxUs = gap;
+  }
+  if (_loopWindowStart == 0) _loopWindowStart = millis();
+  _loopLastPassStartUs = now;
+  _loopPassStartUs = now;
+  _loopMarkUs = now;
+}
+
+// Charges the time since the previous mark to `s`. A pass that returns early
+// charges nothing to the sections it skipped.
+void Sandbox::markLoopSection(LoopSection s)
+{
+  const uint32_t now = micros();
+  const uint32_t us = now - _loopMarkUs;
+  _loopSecSumUs[s] += us;
+  if (us > _loopSecMaxUs[s]) _loopSecMaxUs[s] = us;
+  _loopMarkUs = now;
+}
+
+void Sandbox::endLoopPass()
+{
+  const uint32_t us = micros() - _loopPassStartUs;
+  _loopPasses++;
+  if (us > _loopPassMaxUs) _loopPassMaxUs = us;
+
+  const unsigned long windowMs = millis() - _loopWindowStart;
+  if (windowMs < DIAG_WINDOW_MS) return;
+  reportLoopWindow(windowMs);
+
+  _loopWindowStart = millis();
+  _loopPasses = 0;
+  _loopPassMaxUs = 0;
+  _loopGapMaxUs = 0;
+  for (int i = 0; i < LOOP_SECTIONS; i++) { _loopSecSumUs[i] = 0; _loopSecMaxUs[i] = 0; }
+  for (uint8_t i = 0; i < _lifecycleCount; i++) { _extSumUs[i] = 0; _extMaxUs[i] = 0; }
+  _evDispatched = 0;
+  _evWaitSumUs = 0;
+  _evWaitMaxUs = 0;
+  _evDepthMax = 0;
+}
+
+// Three lines a window: the pass as a whole, its sections (avg per pass, then
+// the worst single pass), and every extension whose worst update reached
+// 0.2 ms; then the event wait.
+void Sandbox::reportLoopWindow(unsigned long windowMs)
+{
+  const uint32_t passes = _loopPasses ? _loopPasses : 1;
+  Serial.printf("[loopdiag] %lums passes=%lu (%lu/s) pass max=", windowMs,
+                (unsigned long)_loopPasses,
+                (unsigned long)(_loopPasses * 1000UL / windowMs));
+  printMs(_loopPassMaxUs);
+  Serial.print("ms gap max=");
+  printMs(_loopGapMaxUs);
+  Serial.println("ms");
+
+  static const char* const kSectionNames[LOOP_SECTIONS] = {
+    "net", "ext", "sys", "tick", "events"};
+  Serial.print("[loopdiag]  ");
+  for (int i = 0; i < LOOP_SECTIONS; i++) {
+    Serial.printf(" %s ", kSectionNames[i]);
+    printMs(_loopSecSumUs[i] / passes);
+    Serial.print('/');
+    printMs(_loopSecMaxUs[i]);
+  }
+  Serial.println("  (avg/max ms)");
+
+  for (uint8_t i = 0; i < _lifecycleCount; i++) {
+    if (_extMaxUs[i] < 200) continue;
+    Serial.printf("[loopdiag]   ext %-12s ", _lifecycle[i]->name());
+    printMs(_extSumUs[i] / passes);
+    Serial.print('/');
+    printMs(_extMaxUs[i]);
+    Serial.printf("  busy %lu%%\n",
+                  (unsigned long)(_extSumUs[i] / 10UL / windowMs));
+  }
+
+  Serial.printf("[evdiag] dispatched=%lu wait avg=", (unsigned long)_evDispatched);
+  printMs(_evDispatched ? _evWaitSumUs / _evDispatched : 0);
+  Serial.print("ms max=");
+  printMs(_evWaitMaxUs);
+  Serial.printf("ms depth max=%d\n", _evDepthMax);
+}
+
+// ── Heap and collector bench ─────────────────────────────────────────────
+
+#ifdef ESP_PLATFORM
+// Internal RAM a bench state may not take: the reserve TLS sessions and the
+// audio pipeline need while the bench runs on a live device.
+static constexpr size_t kBenchInternalReserve = 24 * 1024;
+
+// One bench state's heap: which memory, whether small blocks are pooled, and
+// what it holds from heap_caps against its budget. Counting its own bytes
+// keeps the budget check off the heap's lock; asking heap_caps for its free
+// size on every allocation would be the most expensive thing being timed.
+//
+// The pool keeps a free list per 8-byte size class up to 256 bytes, carved
+// from 4 KB chunks it never returns until the state closes. Lua tells a free
+// and a realloc the block's size (osize), so the blocks need no header.
+struct BenchHeap {
+  static constexpr size_t kGrain = 8;
+  static constexpr size_t kPoolMax = 256;
+  static constexpr size_t kClasses = kPoolMax / kGrain;
+  static constexpr size_t kChunk = 4096;
+
+  uint32_t caps = 0;
+  bool pooled = false;
+  size_t budget = 0;   // 0 = unlimited
+  size_t used = 0;
+  void* freeList[kClasses] = {};
+  uint8_t* bump = nullptr;
+  size_t bumpLeft = 0;
+  void* chunks = nullptr;   // each chunk's first word links the next
+
+  static size_t classOf(size_t n) { return (n + kGrain - 1) / kGrain - 1; }
+
+  void* rawAlloc(size_t n) {
+    if (budget && used + n > budget) return nullptr;
+    void* p = heap_caps_malloc(n, caps);
+    if (p) used += n;
+    return p;
+  }
+  void rawFree(void* p, size_t n) {
+    heap_caps_free(p);
+    used -= n;
+  }
+
+  void* poolAlloc(size_t n) {
+    const size_t c = classOf(n);
+    if (void* p = freeList[c]) {
+      freeList[c] = *(void**)p;
+      return p;
+    }
+    const size_t size = (c + 1) * kGrain;
+    if (bumpLeft < size) {
+      uint8_t* chunk = (uint8_t*)rawAlloc(kChunk);
+      if (!chunk) return nullptr;
+      *(void**)chunk = chunks;
+      chunks = chunk;
+      bump = chunk + kGrain;
+      bumpLeft = kChunk - kGrain;
+    }
+    void* p = bump;
+    bump += size;
+    bumpLeft -= size;
+    return p;
+  }
+  void poolFree(void* p, size_t n) {
+    const size_t c = classOf(n);
+    *(void**)p = freeList[c];
+    freeList[c] = p;
+  }
+
+  void* alloc(size_t n) { return (pooled && n <= kPoolMax) ? poolAlloc(n) : rawAlloc(n); }
+  void free(void* p, size_t n) {
+    if (pooled && n <= kPoolMax) poolFree(p, n);
+    else rawFree(p, n);
+  }
+
+  // After lua_close: the pool's chunks are all that is left.
+  void releaseChunks() {
+    while (chunks) {
+      void* next = *(void**)chunks;
+      rawFree(chunks, kChunk);
+      chunks = next;
+    }
+  }
+};
+
+// lua_Alloc over a BenchHeap. With ptr == NULL, osize is an object type tag,
+// not a size, so it is read only when there is a block.
+static void* benchLuaAlloc(void* ud, void* ptr, size_t osize, size_t nsize)
+{
+  BenchHeap* h = (BenchHeap*)ud;
+  if (nsize == 0) {
+    if (ptr) h->free(ptr, osize);
+    return NULL;
+  }
+  if (ptr == NULL) return h->alloc(nsize);
+  if (!h->pooled) {
+    if (h->budget && nsize > osize && h->used + (nsize - osize) > h->budget) return NULL;
+    void* p = heap_caps_realloc(ptr, nsize, h->caps);
+    if (p) h->used = h->used - osize + nsize;
+    return p;
+  }
+  const bool oldSmall = osize <= BenchHeap::kPoolMax;
+  const bool newSmall = nsize <= BenchHeap::kPoolMax;
+  if (oldSmall && newSmall && BenchHeap::classOf(osize) == BenchHeap::classOf(nsize)) {
+    return ptr;
+  }
+  void* p = h->alloc(nsize);
+  if (!p) return NULL;
+  memcpy(p, ptr, osize < nsize ? osize : nsize);
+  h->free(ptr, osize);
+  return p;
+}
+#endif
+
+void Sandbox::benchmarkLuaHeap()
+{
+#ifndef ESP_PLATFORM
+  Serial.println("[heapbench] device only");
+#else
+  if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) == 0) {
+    Serial.println("[heapbench] no PSRAM: nothing to compare");
+    return;
+  }
+
+  // arith and call barely allocate: they show what the heap costs through
+  // the Lua stack alone. alloc, string and closure make short-lived garbage;
+  // scan reads a 64 KB array, twice the data cache, in a stride.
+  struct Workload { const char* name; const char* code; };
+  static const Workload kWorkloads[] = {
+    {"arith",   "local a=0.0 for i=1,40000 do a=a+(i%7)*1.000001 end return a"},
+    {"call",    "local function f(x) return x+1 end local a=0 "
+                "for i=1,40000 do a=f(a) end return a"},
+    {"alloc",   "local s=0 for i=1,20000 do local t={i,i+1,x=i} s=s+t[2] end return s"},
+    {"string",  "local n=0 for i=1,5000 do "
+                "local s=string.format('%d:%d',i,i*2)..'x' n=n+#s end return n"},
+    {"closure", "local n=0 for i=1,20000 do "
+                "local f=function() return i end n=n+f() end return n"},
+    {"scan",    "local t={} for i=1,8192 do t[i]=i end local s=0 "
+                "for r=1,8 do for i=1,8192 do s=s+t[(i*97)%8192+1] end end return s"},
+  };
+  // The pool rows split the allocator's cost from the memory's: psram vs
+  // psram-pool is heap_caps against a free list, psram-pool vs int-pool is
+  // PSRAM against internal RAM under the same allocator. Internal RAM is one
+  // state only, so the reserve is shared by nothing else.
+  struct Config { const char* name; uint32_t caps; bool pooled; bool generational; };
+  static const Config kConfigs[] = {
+    {"psram/inc", MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   false, false},   // today's
+    {"pool/inc",  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   true,  false},
+    {"pool/gen",  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   true,  true},
+    {"ipool/inc", MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, true,  false},
+  };
+  constexpr int kWorkloadCount = sizeof(kWorkloads) / sizeof(kWorkloads[0]);
+  constexpr int kConfigCount = sizeof(kConfigs) / sizeof(kConfigs[0]);
+  constexpr int kReps = 3;
+
+  const size_t internalFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const size_t internalBudget =
+      internalFree > kBenchInternalReserve ? internalFree - kBenchInternalReserve : 0;
+
+  BenchHeap heaps[kConfigCount];
+  lua_State* states[kConfigCount] = {};
+  for (int c = 0; c < kConfigCount; c++) {
+    heaps[c].caps = kConfigs[c].caps;
+    heaps[c].pooled = kConfigs[c].pooled;
+    if (kConfigs[c].caps & MALLOC_CAP_INTERNAL) {
+      if (internalBudget == 0) continue;
+      heaps[c].budget = internalBudget;
+    }
+    lua_State* L = lua_newstate(benchLuaAlloc, &heaps[c]);
+    if (!L) {
+      Serial.printf("[heapbench] %s: no state\n", kConfigs[c].name);
+      continue;
+    }
+    luaL_requiref(L, LUA_GNAME, luaopen_base, 1);
+    luaL_requiref(L, LUA_STRLIBNAME, luaopen_string, 1);
+    lua_pop(L, 2);
+    if (kConfigs[c].generational) lua_gc(L, LUA_GCGEN, 0, 0);
+    else lua_gc(L, LUA_GCINC, 0, 0, 0);
+    states[c] = L;
+  }
+
+  Serial.printf("[heapbench] %d workloads x %d configs x %d reps; min of each "
+                "cell; internal free %uK, largest %uK, budget %uK\n",
+                kWorkloadCount, kConfigCount, kReps,
+                (unsigned)(internalFree / 1024),
+                (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
+                (unsigned)(internalBudget / 1024));
+
+  for (int w = 0; w < kWorkloadCount; w++) {
+    uint32_t best[kConfigCount];
+    const char* failed[kConfigCount] = {};
+    int refs[kConfigCount];
+    for (int c = 0; c < kConfigCount; c++) {
+      best[c] = UINT32_MAX;
+      refs[c] = LUA_NOREF;
+      lua_State* L = states[c];
+      if (!L) continue;
+      if (luaL_loadstring(L, kWorkloads[w].code) != 0) {
+        failed[c] = "compile";
+        lua_pop(L, 1);
+        continue;
+      }
+      refs[c] = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+
+    // Round-robin the configs so drift (WiFi, audio, thermals) lands on all
+    // of them alike; each run starts from a collected heap.
+    for (int rep = 0; rep < kReps; rep++) {
+      for (int c = 0; c < kConfigCount; c++) {
+        lua_State* L = states[c];
+        if (!L || refs[c] == LUA_NOREF || failed[c]) continue;
+        lua_gc(L, LUA_GCCOLLECT, 0);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, refs[c]);
+        const uint32_t t0 = micros();
+        const int r = lua_pcall(L, 0, 0, 0);
+        const uint32_t us = micros() - t0;
+        if (r != 0) {
+          failed[c] = (r == LUA_ERRMEM) ? "out of memory" : "error";
+          lua_pop(L, 1);
+        } else if (us < best[c]) {
+          best[c] = us;
+        }
+        delay(2);   // let the other tasks on this core run between cells
+      }
+    }
+
+    Serial.printf("[heapbench] --- %s ---\n", kWorkloads[w].name);
+    for (int c = 0; c < kConfigCount; c++) {
+      if (!states[c]) continue;
+      if (failed[c] || best[c] == UINT32_MAX) {
+        Serial.printf("[heapbench] %-9s %s\n", kConfigs[c].name,
+                      failed[c] ? failed[c] : "not run");
+      } else if (best[0] == UINT32_MAX) {
+        Serial.printf("[heapbench] %-9s %8luus\n", kConfigs[c].name,
+                      (unsigned long)best[c]);
+      } else {
+        const long pct = (long)(((int64_t)best[c] - (int64_t)best[0]) * 1000 /
+                                (int64_t)best[0]);
+        Serial.printf("[heapbench] %-9s %8luus  %s%ld.%ld%%\n", kConfigs[c].name,
+                      (unsigned long)best[c], pct < 0 ? "-" : "+",
+                      labs(pct) / 10, labs(pct) % 10);
+      }
+      if (refs[c] != LUA_NOREF) luaL_unref(states[c], LUA_REGISTRYINDEX, refs[c]);
+    }
+  }
+
+  for (int c = 0; c < kConfigCount; c++) {
+    if (states[c]) lua_close(states[c]);
+    heaps[c].releaseChunks();
+  }
+  Serial.println("[heapbench] done");
+#endif
 }
 #endif
 
@@ -3008,8 +3389,18 @@ void Sandbox::processNextEvent()
   bool appWants = _onEventFuncRef != LUA_NOREF;
   if (!fwWants && !appWants) return;
 
+#if RESIDENT_TICK_DIAGS
+  const int depth = (_eventHead - _eventTail + SANDBOX_MAX_EVENTS) % SANDBOX_MAX_EVENTS;
+  if (depth > _evDepthMax) _evDepthMax = depth;
+#endif
   Event& e = _events[_eventTail];
   _eventTail = (_eventTail + 1) % SANDBOX_MAX_EVENTS;
+#if RESIDENT_TICK_DIAGS
+  const uint32_t waitUs = micros() - e.queuedUs;
+  _evDispatched++;
+  _evWaitSumUs += waitUs;
+  if (waitUs > _evWaitMaxUs) _evWaitMaxUs = waitUs;
+#endif
 
   // The framework sees every event FIRST and may consume it (return true):
   // reply/patch-style control traffic never reaches the app raw.
@@ -3157,6 +3548,9 @@ void Sandbox::pushAppEvent(const char* name, const char* dataJson, const char* f
   strncpy(e.src, src ? src : "", sizeof(e.src) - 1);
   e.hasSeq = hasSeq;
   e.seq = seq;
+#if RESIDENT_TICK_DIAGS
+  e.queuedUs = micros();
+#endif
   _eventHead = nextHead;
 }
 
@@ -3203,6 +3597,9 @@ void Sandbox::driverEventHandler(void* ctx, const char* name,
   if (p < end) *p++ = '}';
   *p = '\0';
 
+#if RESIDENT_TICK_DIAGS
+  e.queuedUs = micros();
+#endif
   self->_eventHead = nextHead;
 }
 

@@ -80,6 +80,13 @@ public:
     // each hook configuration against an unhooked baseline. Blocking, several
     // seconds; the caller is a diagnostics build's serial command.
     void benchmarkExecutionGuard();
+    // Times a set of Lua workloads in scratch states, one per heap: the app
+    // heap's own allocator over PSRAM, and a size-class pool over PSRAM and
+    // over internal RAM, under the incremental and generational collectors.
+    // Separates the allocator's cost from the memory's, in one boot under the
+    // same load. Blocking, several seconds; the caller is a diagnostics
+    // build's serial command.
+    void benchmarkLuaHeap();
     // Retunes the execution guard live, so the same running app can be timed
     // under the guard and under none without a reflash. 0 = unguarded.
     void setExecutionDeadlineMs(uint32_t ms);
@@ -703,6 +710,9 @@ private:
     // True iff the app draws to surface (dual-role: system slot AND app ext).
     bool appDrawsTo(SystemDisplay* surface) const;
 
+    // One pass of loop(): its body, which may return early at any stage.
+    void loopOnce();
+
     // Frame timing
     unsigned long _lastTickTime = 0;
     static constexpr unsigned long TICK_INTERVAL = 100; // 10 FPS
@@ -736,6 +746,33 @@ private:
     uint32_t _diagDispatchMaxUs = 0;
     uint32_t _diagAppMaxUs = 0;
     uint32_t _diagFwMaxUs = 0;
+
+    // Loop-pass profile: where one pass of loop() spends its time, per
+    // section and per extension, and the longest gap between the starts of
+    // two passes — everything the board's own loop() does between them
+    // included, so it is the longest any polled input waits unread.
+    enum LoopSection { LOOP_NET, LOOP_EXT, LOOP_SYS, LOOP_TICK, LOOP_EVENTS,
+                       LOOP_SECTIONS };
+    void beginLoopPass();
+    void markLoopSection(LoopSection s);
+    void endLoopPass();
+    void reportLoopWindow(unsigned long windowMs);
+    uint32_t _loopMarkUs = 0;
+    uint32_t _loopPassStartUs = 0;
+    uint32_t _loopLastPassStartUs = 0;
+    uint32_t _loopPasses = 0;
+    uint32_t _loopPassMaxUs = 0;
+    uint32_t _loopGapMaxUs = 0;
+    uint32_t _loopSecSumUs[LOOP_SECTIONS] = {};
+    uint32_t _loopSecMaxUs[LOOP_SECTIONS] = {};
+    uint32_t _extSumUs[Extensions::MAX + 4] = {};
+    uint32_t _extMaxUs[Extensions::MAX + 4] = {};
+    unsigned long _loopWindowStart = 0;
+    // Event wait: from the ring to the Lua dispatch.
+    uint32_t _evDispatched = 0;
+    uint32_t _evWaitSumUs = 0;
+    uint32_t _evWaitMaxUs = 0;
+    int _evDepthMax = 0;
 #endif
 
     // Event queue
@@ -752,6 +789,9 @@ private:
         char src[16];
         uint32_t seq;
         bool hasSeq;
+#if RESIDENT_TICK_DIAGS
+        uint32_t queuedUs;   // when it entered the ring, for the wait
+#endif
     };
     static constexpr int SANDBOX_MAX_EVENTS = RESIDENT_EVENT_RING_SIZE;
     Event _events[SANDBOX_MAX_EVENTS];
