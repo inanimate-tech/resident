@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **A persisted app is replaced even when NVS can't hold two copies of it.** `nvs_set_blob` writes the new blob before it erases the old one, so replacing a persisted app needs room for both. On a 20 KB `nvs` partition with a ~5.8 KB app, the first save succeeded and every replacement after it failed with `persist_too_big`; on reboot, the device restored no app. `NvsStore::save` now erases the old copy and retries once when NVS reports `ESP_ERR_NVS_NOT_ENOUGH_SPACE`. If the retry fails too, no app is persisted, rather than an old one.
+
+---
+
 ## v0.12.0
 
 ### Breaking changes

@@ -31,6 +31,15 @@ public:
     nvs_handle_t h;
     if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) return false;
     esp_err_t err = nvs_set_blob(h, KEY, source, len);
+    if (err == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
+      // NVS writes the new blob before erasing the old one, so replacing an
+      // app needs room for both — on a small partition, every replacement
+      // after the first failed. Drop the old copy and try once more. If that
+      // fails too, no app is persisted, rather than a stale one a reboot
+      // would resurrect.
+      nvs_erase_key(h, KEY);
+      err = nvs_set_blob(h, KEY, source, len);
+    }
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err == ESP_OK;
