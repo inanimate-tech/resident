@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Diagnostics
+
+- **A diagnostics build profiles the whole loop, not just the tick.** With `-DRESIDENT_TICK_DIAGS=1`, every 5 s `[loopdiag]` reports what one pass of `Sandbox::loop()` costs per section (network, extensions, system, tick, events) and per extension, and the longest gap between two passes, which is the longest a polled input can wait unread. `[evdiag]` reports how long events wait in the ring before Lua sees them. `[lvgldiag]` reports frames presented, and splits `LvglModule`'s time into render, byte swap, blit and the board's present. Nothing changes without the flag.
+- **`Sandbox::benchmarkLuaHeap()`** times six Lua workloads in scratch states over today's PSRAM heap, a size-class pool allocator over PSRAM (incremental and generational collector) and the same pool over internal RAM, so allocator cost and memory speed can be told apart on the device. Diagnostics builds only; the board calls it, for example from a serial command.
+
 ## v0.12.0
 
 ### Breaking changes

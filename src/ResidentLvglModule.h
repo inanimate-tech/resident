@@ -149,7 +149,13 @@ public:
   // from grinding LVGL's timer list continuously.
   void update() override {
     if (_displays == 0) return;
+#if RESIDENT_TICK_DIAGS
+    const uint32_t t0 = micros();
     lv_timer_handler_run_in_period(5);
+    noteDiagPump(micros() - t0);
+#else
+    lv_timer_handler_run_in_period(5);
+#endif
   }
 
   // The app stopped, was suspended, or resumed. A suspension is the overlay
@@ -448,11 +454,93 @@ private:
     // wire order (big-endian). Swap in place — the buffer is LVGL's own.
     uint16_t* px = (uint16_t*)px_map;
     uint32_t n = (uint32_t)w * (uint32_t)h;
+#if RESIDENT_TICK_DIAGS
+    const uint32_t t0 = micros();
+#endif
     for (uint32_t i = 0; i < n; i++) px[i] = __builtin_bswap16(px[i]);
+#if RESIDENT_TICK_DIAGS
+    const uint32_t t1 = micros();
+#endif
     s->panel->blit(area->x1, area->y1, w, h, px);
-    if (lv_display_flush_is_last(disp)) s->panel->frameDone();
+#if RESIDENT_TICK_DIAGS
+    const uint32_t t2 = micros();
+    _diag.swapUs += t1 - t0;
+    _diag.blitUs += t2 - t1;
+    if (t2 - t1 > _diag.blitMaxUs) _diag.blitMaxUs = t2 - t1;
+    _diag.pixels += n;
+#endif
+    if (lv_display_flush_is_last(disp)) {
+      s->panel->frameDone();
+#if RESIDENT_TICK_DIAGS
+      _diag.presentUs += micros() - t2;
+      _diag.frames++;
+#endif
+    }
     lv_display_flush_ready(disp);
   }
+
+#if RESIDENT_TICK_DIAGS
+  // Frame diagnostics (-DRESIDENT_TICK_DIAGS=1), all displays together, over
+  // the sandbox's 5 s window: frames presented, the timer pump's time (render
+  // and flush both happen inside it), and the flush's three parts — the byte
+  // swap, the blit to the panel, and the board's present on a frame's last
+  // flush. Render is the pump's time less the flush's.
+  //
+  // Diag has no member initialisers because a static member of a nested type
+  // cannot use them before the enclosing class is complete; static storage
+  // starts zeroed, and Diag() value-initialises.
+  struct Diag {
+    uint32_t windowStartMs;
+    uint32_t frames;
+    uint32_t pumpUs;
+    uint32_t pumpMaxUs;
+    uint32_t swapUs;
+    uint32_t blitUs;
+    uint32_t blitMaxUs;
+    uint32_t presentUs;
+    uint32_t pixels;
+  };
+  static inline Diag _diag;
+
+  static void noteDiagPump(uint32_t us) {
+    _diag.pumpUs += us;
+    if (us > _diag.pumpMaxUs) _diag.pumpMaxUs = us;
+    const uint32_t now = millis();
+    if (_diag.windowStartMs == 0) _diag.windowStartMs = now;
+    const uint32_t windowMs = now - _diag.windowStartMs;
+    if (windowMs < 5000) return;
+    const uint32_t flushUs = _diag.swapUs + _diag.blitUs + _diag.presentUs;
+    const uint32_t renderUs = _diag.pumpUs > flushUs ? _diag.pumpUs - flushUs : 0;
+    const uint32_t frames = _diag.frames;
+    Serial.printf("[lvgldiag] %lums frames=%lu (%lu.%lu fps) busy %lu%%: "
+                  "render %lu%% swap %lu%% blit %lu%% present %lu%%\n",
+                  (unsigned long)windowMs, (unsigned long)_diag.frames,
+                  (unsigned long)(_diag.frames * 10000UL / windowMs) / 10UL,
+                  (unsigned long)(_diag.frames * 10000UL / windowMs) % 10UL,
+                  (unsigned long)(_diag.pumpUs / 10UL / windowMs),
+                  (unsigned long)(renderUs / 10UL / windowMs),
+                  (unsigned long)(_diag.swapUs / 10UL / windowMs),
+                  (unsigned long)(_diag.blitUs / 10UL / windowMs),
+                  (unsigned long)(_diag.presentUs / 10UL / windowMs));
+    // With no frame presented, "render" is the timer pump's own overhead.
+    if (frames == 0) {
+      Serial.printf("[lvgldiag]  no frames; pump max %luus\n",
+                    (unsigned long)_diag.pumpMaxUs);
+    } else {
+      Serial.printf("[lvgldiag]  per frame: render %luus swap %luus blit %luus "
+                    "present %luus, %lu px; pump max %luus blit max %luus\n",
+                    (unsigned long)(renderUs / frames),
+                    (unsigned long)(_diag.swapUs / frames),
+                    (unsigned long)(_diag.blitUs / frames),
+                    (unsigned long)(_diag.presentUs / frames),
+                    (unsigned long)(_diag.pixels / frames),
+                    (unsigned long)_diag.pumpMaxUs,
+                    (unsigned long)_diag.blitMaxUs);
+    }
+    _diag = Diag();
+    _diag.windowStartMs = now;
+  }
+#endif
 
   // __index for the extension's global table: (table, key) -> the real
   // luavgl module's value for key, or nil before the module first loads.
