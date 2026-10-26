@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Performance
+
+- **Lua's small blocks come from slabs.** On a board with PSRAM, the Lua state's allocator (`LuaHeap`, `ResidentLuaHeap.h`) serves blocks up to 256 bytes from 4 KB slabs of one size class each, with a free list per slab, and sends larger blocks to PSRAM as before. A slab that empties goes back to PSRAM unless it is its class's last with room. Allocation-heavy Lua runs about 4–5× faster (small tables −79%, closures −77%, strings −36% on an ESP32-S3), and the collector's worst pauses shrink with it. A board without PSRAM keeps every block in internal RAM through `heap_caps`, as before.
+
 ### Diagnostics
 
 - **A diagnostics build profiles the whole loop, not just the tick.** With `-DRESIDENT_TICK_DIAGS=1`, every 5 s `[loopdiag]` reports what one pass of `Sandbox::loop()` costs per section (network, extensions, system, tick, events) and per extension, and the longest gap between two passes, which is the longest a polled input can wait unread. `[evdiag]` reports how long events wait in the ring before Lua sees them. `[lvgldiag]` reports frames presented, and splits `LvglModule`'s time into render, byte swap, blit and the board's present. Nothing changes without the flag.

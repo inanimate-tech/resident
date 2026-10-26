@@ -27,24 +27,36 @@ extern "C" {
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 
-// Custom Lua allocator. Prefers PSRAM, but transparently falls back to
-// internal RAM on boards without PSRAM (e.g. ESP32-S3FN8). The capability is
-// resolved once on first use from whether any SPIRAM is actually present.
-static void* psramLuaAlloc(void* ud, void* ptr, size_t osize, size_t nsize) {
-  (void)ud;
-  (void)osize;
-  static const uint32_t kLuaHeapCaps =
+// The Lua heap's backing: PSRAM, or internal RAM on a board without PSRAM
+// (e.g. ESP32-S3FN8), resolved once on first use.
+static uint32_t luaHeapCaps() {
+  static const uint32_t caps =
       (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0) ? MALLOC_CAP_SPIRAM
                                                         : MALLOC_CAP_8BIT;
-  if (nsize == 0) {
-    heap_caps_free(ptr);
-    return NULL;
-  }
-  if (ptr == NULL) {
-    return heap_caps_malloc(nsize, kLuaHeapCaps);
-  }
-  return heap_caps_realloc(ptr, nsize, kLuaHeapCaps);
+  return caps;
 }
+static void* luaHeapAligned(size_t align, size_t size, void*) {
+  return heap_caps_aligned_alloc(align, size, luaHeapCaps());
+}
+static void* luaHeapAlloc(size_t size, void*) {
+  return heap_caps_malloc(size, luaHeapCaps());
+}
+static void* luaHeapRealloc(void* ptr, size_t, size_t newSize, void*) {
+  return heap_caps_realloc(ptr, newSize, luaHeapCaps());
+}
+static void luaHeapRelease(void* ptr, size_t, void*) {
+  heap_caps_free(ptr);
+}
+#else
+static void* luaHeapAligned(size_t align, size_t size, void*) {
+  void* p = nullptr;
+  return posix_memalign(&p, align, size) == 0 ? p : nullptr;
+}
+static void* luaHeapAlloc(size_t size, void*) { return malloc(size); }
+static void* luaHeapRealloc(void* ptr, size_t, size_t newSize, void*) {
+  return realloc(ptr, newSize);
+}
+static void luaHeapRelease(void* ptr, size_t, void*) { free(ptr); }
 #endif
 
 namespace Resident {
@@ -226,15 +238,26 @@ Resident::SystemLED* Sandbox::systemLED() const
 #pragma GCC diagnostic pop
 }
 
+LuaHeap::Backing Sandbox::luaHeapBacking()
+{
+  return {luaHeapAligned, luaHeapAlloc, luaHeapRealloc, luaHeapRelease, nullptr};
+}
+
+bool Sandbox::luaHeapSlabs()
+{
+#ifdef ESP_PLATFORM
+  return luaHeapCaps() == MALLOC_CAP_SPIRAM;
+#else
+  return true;
+#endif
+}
+
 void Sandbox::initialize()
 {
   Serial.println("Initializing Resident::Sandbox");
 
-#ifdef ESP_PLATFORM
-  _lua = lua_newstate(psramLuaAlloc, NULL);
-#else
-  _lua = luaL_newstate();
-#endif
+  _luaHeap.emplace(luaHeapBacking(), luaHeapSlabs());
+  _lua = lua_newstate(LuaHeap::luaAlloc, &*_luaHeap);
 
   if (!_lua) {
     Serial.println("Error: Failed to create Lua state");
@@ -2418,6 +2441,12 @@ void Sandbox::reportLoopWindow(unsigned long windowMs)
   Serial.print("ms max=");
   printMs(_evWaitMaxUs);
   Serial.printf("ms depth max=%d\n", _evDepthMax);
+
+  if (!_luaHeap) return;
+  const LuaHeap::Stats& heap = _luaHeap->stats();
+  Serial.printf("[heapdiag] lua small %uK large %uK; slabs %lu (%uK held)\n",
+                (unsigned)(heap.smallBytes / 1024), (unsigned)(heap.largeBytes / 1024),
+                (unsigned long)heap.slabs, (unsigned)(heap.slabBytes / 1024));
 }
 
 // ── Heap and collector bench ─────────────────────────────────────────────
@@ -2427,110 +2456,54 @@ void Sandbox::reportLoopWindow(unsigned long windowMs)
 // audio pipeline need while the bench runs on a live device.
 static constexpr size_t kBenchInternalReserve = 24 * 1024;
 
-// One bench state's heap: which memory, whether small blocks are pooled, and
-// what it holds from heap_caps against its budget. Counting its own bytes
-// keeps the budget check off the heap's lock; asking heap_caps for its free
-// size on every allocation would be the most expensive thing being timed.
-//
-// The pool keeps a free list per 8-byte size class up to 256 bytes, carved
-// from 4 KB chunks it never returns until the state closes. Lua tells a free
-// and a realloc the block's size (osize), so the blocks need no header.
-struct BenchHeap {
-  static constexpr size_t kGrain = 8;
-  static constexpr size_t kPoolMax = 256;
-  static constexpr size_t kClasses = kPoolMax / kGrain;
-  static constexpr size_t kChunk = 4096;
-
+// One bench state's memory: heap_caps over `caps`, with what it holds counted
+// against its budget. Counting its own bytes keeps the budget check off the
+// heap's lock; asking heap_caps for its free size on every allocation would be
+// the most expensive thing being timed.
+struct BenchMemory {
   uint32_t caps = 0;
-  bool pooled = false;
   size_t budget = 0;   // 0 = unlimited
   size_t used = 0;
-  void* freeList[kClasses] = {};
-  uint8_t* bump = nullptr;
-  size_t bumpLeft = 0;
-  void* chunks = nullptr;   // each chunk's first word links the next
 
-  static size_t classOf(size_t n) { return (n + kGrain - 1) / kGrain - 1; }
-
-  void* rawAlloc(size_t n) {
-    if (budget && used + n > budget) return nullptr;
-    void* p = heap_caps_malloc(n, caps);
-    if (p) used += n;
-    return p;
-  }
-  void rawFree(void* p, size_t n) {
-    heap_caps_free(p);
-    used -= n;
-  }
-
-  void* poolAlloc(size_t n) {
-    const size_t c = classOf(n);
-    if (void* p = freeList[c]) {
-      freeList[c] = *(void**)p;
-      return p;
-    }
-    const size_t size = (c + 1) * kGrain;
-    if (bumpLeft < size) {
-      uint8_t* chunk = (uint8_t*)rawAlloc(kChunk);
-      if (!chunk) return nullptr;
-      *(void**)chunk = chunks;
-      chunks = chunk;
-      bump = chunk + kGrain;
-      bumpLeft = kChunk - kGrain;
-    }
-    void* p = bump;
-    bump += size;
-    bumpLeft -= size;
-    return p;
-  }
-  void poolFree(void* p, size_t n) {
-    const size_t c = classOf(n);
-    *(void**)p = freeList[c];
-    freeList[c] = p;
-  }
-
-  void* alloc(size_t n) { return (pooled && n <= kPoolMax) ? poolAlloc(n) : rawAlloc(n); }
-  void free(void* p, size_t n) {
-    if (pooled && n <= kPoolMax) poolFree(p, n);
-    else rawFree(p, n);
-  }
-
-  // After lua_close: the pool's chunks are all that is left.
-  void releaseChunks() {
-    while (chunks) {
-      void* next = *(void**)chunks;
-      rawFree(chunks, kChunk);
-      chunks = next;
-    }
-  }
+  bool fits(size_t n) const { return !budget || used + n <= budget; }
 };
 
-// lua_Alloc over a BenchHeap. With ptr == NULL, osize is an object type tag,
-// not a size, so it is read only when there is a block.
-static void* benchLuaAlloc(void* ud, void* ptr, size_t osize, size_t nsize)
+static void* benchAligned(size_t align, size_t size, void* ctx) {
+  BenchMemory* m = static_cast<BenchMemory*>(ctx);
+  if (!m->fits(size)) return nullptr;
+  void* p = heap_caps_aligned_alloc(align, size, m->caps);
+  if (p) m->used += size;
+  return p;
+}
+static void* benchAlloc(size_t size, void* ctx) {
+  BenchMemory* m = static_cast<BenchMemory*>(ctx);
+  if (!m->fits(size)) return nullptr;
+  void* p = heap_caps_malloc(size, m->caps);
+  if (p) m->used += size;
+  return p;
+}
+static void* benchRealloc(void* ptr, size_t oldSize, size_t newSize, void* ctx) {
+  BenchMemory* m = static_cast<BenchMemory*>(ctx);
+  if (newSize > oldSize && !m->fits(newSize - oldSize)) return nullptr;
+  void* p = heap_caps_realloc(ptr, newSize, m->caps);
+  if (p) m->used = m->used - oldSize + newSize;
+  return p;
+}
+static void benchRelease(void* ptr, size_t size, void* ctx) {
+  heap_caps_free(ptr);
+  static_cast<BenchMemory*>(ctx)->used -= size;
+}
+
+// lua_Alloc straight onto a BenchMemory, every block through heap_caps. With
+// ptr == NULL, osize is an object type tag, not a size, so it is not read.
+static void* benchHeapCapsAlloc(void* ud, void* ptr, size_t osize, size_t nsize)
 {
-  BenchHeap* h = (BenchHeap*)ud;
   if (nsize == 0) {
-    if (ptr) h->free(ptr, osize);
+    if (ptr) benchRelease(ptr, osize, ud);
     return NULL;
   }
-  if (ptr == NULL) return h->alloc(nsize);
-  if (!h->pooled) {
-    if (h->budget && nsize > osize && h->used + (nsize - osize) > h->budget) return NULL;
-    void* p = heap_caps_realloc(ptr, nsize, h->caps);
-    if (p) h->used = h->used - osize + nsize;
-    return p;
-  }
-  const bool oldSmall = osize <= BenchHeap::kPoolMax;
-  const bool newSmall = nsize <= BenchHeap::kPoolMax;
-  if (oldSmall && newSmall && BenchHeap::classOf(osize) == BenchHeap::classOf(nsize)) {
-    return ptr;
-  }
-  void* p = h->alloc(nsize);
-  if (!p) return NULL;
-  memcpy(p, ptr, osize < nsize ? osize : nsize);
-  h->free(ptr, osize);
-  return p;
+  if (ptr == NULL) return benchAlloc(nsize, ud);
+  return benchRealloc(ptr, osize, nsize, ud);
 }
 #endif
 
@@ -2560,16 +2533,16 @@ void Sandbox::benchmarkLuaHeap()
     {"scan",    "local t={} for i=1,8192 do t[i]=i end local s=0 "
                 "for r=1,8 do for i=1,8192 do s=s+t[(i*97)%8192+1] end end return s"},
   };
-  // The pool rows split the allocator's cost from the memory's: psram vs
-  // psram-pool is heap_caps against a free list, psram-pool vs int-pool is
-  // PSRAM against internal RAM under the same allocator. Internal RAM is one
-  // state only, so the reserve is shared by nothing else.
-  struct Config { const char* name; uint32_t caps; bool pooled; bool generational; };
+  // heap_caps vs slab/inc is the app heap's allocator against heap_caps alone,
+  // both over PSRAM; slab/inc vs islab/inc is PSRAM against internal RAM under
+  // the same allocator. Internal RAM is one state only, so the reserve is
+  // shared by nothing else.
+  struct Config { const char* name; uint32_t caps; bool slabs; bool generational; };
   static const Config kConfigs[] = {
-    {"psram/inc", MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   false, false},   // today's
-    {"pool/inc",  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   true,  false},
-    {"pool/gen",  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   true,  true},
-    {"ipool/inc", MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, true,  false},
+    {"heap_caps", MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   false, false},
+    {"slab/inc",  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   true,  false},   // the app heap's
+    {"slab/gen",  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   true,  true},
+    {"islab/inc", MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, true,  false},
   };
   constexpr int kWorkloadCount = sizeof(kWorkloads) / sizeof(kWorkloads[0]);
   constexpr int kConfigCount = sizeof(kConfigs) / sizeof(kConfigs[0]);
@@ -2579,23 +2552,39 @@ void Sandbox::benchmarkLuaHeap()
   const size_t internalBudget =
       internalFree > kBenchInternalReserve ? internalFree - kBenchInternalReserve : 0;
 
-  BenchHeap heaps[kConfigCount];
+  BenchMemory memory[kConfigCount];
+  std::optional<LuaHeap> heaps[kConfigCount];
   lua_State* states[kConfigCount] = {};
   for (int c = 0; c < kConfigCount; c++) {
-    heaps[c].caps = kConfigs[c].caps;
-    heaps[c].pooled = kConfigs[c].pooled;
+    memory[c].caps = kConfigs[c].caps;
     if (kConfigs[c].caps & MALLOC_CAP_INTERNAL) {
       if (internalBudget == 0) continue;
-      heaps[c].budget = internalBudget;
+      memory[c].budget = internalBudget;
     }
-    lua_State* L = lua_newstate(benchLuaAlloc, &heaps[c]);
+    lua_State* L;
+    if (kConfigs[c].slabs) {
+      heaps[c].emplace(LuaHeap::Backing{benchAligned, benchAlloc, benchRealloc,
+                                        benchRelease, &memory[c]});
+      L = lua_newstate(LuaHeap::luaAlloc, &*heaps[c]);
+    } else {
+      L = lua_newstate(benchHeapCapsAlloc, &memory[c]);
+    }
     if (!L) {
       Serial.printf("[heapbench] %s: no state\n", kConfigs[c].name);
       continue;
     }
-    luaL_requiref(L, LUA_GNAME, luaopen_base, 1);
-    luaL_requiref(L, LUA_STRLIBNAME, luaopen_string, 1);
-    lua_pop(L, 2);
+    // Protected: a refused allocation outside a pcall aborts.
+    lua_pushcfunction(L, [](lua_State* S) -> int {
+      luaL_requiref(S, LUA_GNAME, luaopen_base, 1);
+      luaL_requiref(S, LUA_STRLIBNAME, luaopen_string, 1);
+      return 0;
+    });
+    if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+      Serial.printf("[heapbench] %s: out of memory opening the libraries\n",
+                    kConfigs[c].name);
+      lua_close(L);
+      continue;
+    }
     if (kConfigs[c].generational) lua_gc(L, LUA_GCGEN, 0, 0);
     else lua_gc(L, LUA_GCINC, 0, 0, 0);
     states[c] = L;
@@ -2668,7 +2657,7 @@ void Sandbox::benchmarkLuaHeap()
 
   for (int c = 0; c < kConfigCount; c++) {
     if (states[c]) lua_close(states[c]);
-    heaps[c].releaseChunks();
+    heaps[c].reset();
   }
   Serial.println("[heapbench] done");
 #endif
