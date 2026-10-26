@@ -6,6 +6,7 @@
 #include <ArduinoJson.h>
 #include <ezTime.h>
 #include "ResidentTimeCore.h"
+#include "ResidentLuaHeap.h"
 #include <map>
 #include <functional>
 #include <optional>
@@ -368,6 +369,12 @@ public:
     void callOnTickForTest(unsigned long dt_ms) { callOnTick(dt_ms); }
 
 private:
+    // The Lua state's heap: PSRAM, with small blocks from slabs; on a board
+    // without PSRAM, internal RAM with no slabs. Made in initialize(), once
+    // the heaps are up; outlives _lua.
+    static LuaHeap::Backing luaHeapBacking();
+    static bool luaHeapSlabs();
+    std::optional<LuaHeap> _luaHeap;
     struct lua_State* _lua = nullptr;
 
     // Unified execution state — the sandbox's single source of truth for what
