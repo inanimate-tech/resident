@@ -243,6 +243,18 @@ void Sandbox::initialize()
 
   luaL_openlibs(_lua);
 
+#ifdef ESP_PLATFORM
+  // Without PSRAM, Lua shares the internal heap with the network stack.
+  // Lua's default pause (200) lets garbage grow to the size of the live
+  // heap before a cycle starts, and that garbage is what chops the largest
+  // free block down until an incoming message no longer fits. A shorter
+  // pause keeps less garbage outstanding, at some CPU cost. PSRAM boards
+  // keep the default.
+  if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) == 0) {
+    lua_gc(_lua, LUA_GCINC, RESIDENT_NO_PSRAM_GC_PAUSE, 0, 0);
+  }
+#endif
+
   // Store sandbox instance in registry
   lua_pushlightuserdata(_lua, this);
   lua_setfield(_lua, LUA_REGISTRYINDEX, REGISTRY_KEY);

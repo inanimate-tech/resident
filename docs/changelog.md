@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changes
+
+- **A board without PSRAM runs Lua's collector with a pause of 120, not 200.** Without PSRAM, Lua's garbage shares the internal heap with the network stack, and Lua's default pause lets garbage grow to the size of the live heap before a cycle starts. On an M5StickC Plus 1.1, with an allocation-heavy app and 12 app pushes, the worst-case largest free block went from 24.6–30.7 KB to 63.5–69.6 KB. The cost is collector CPU time: about 9% less Lua throughput in a benchmark that allocates without pause. `RESIDENT_NO_PSRAM_GC_PAUSE` overrides the value; 150 measured about halfway on both counts. Boards with PSRAM are unchanged.
+
+---
+
 ## v0.12.0
 
 ### Breaking changes

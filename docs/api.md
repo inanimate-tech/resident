@@ -1506,6 +1506,7 @@ ESP-IDF CMake component graph.
 | `RESIDENT_EVENT_RING_SIZE` | `8` | Inbound event ring depth (one slot kept free, so 7 usable); oldest event is dropped when full. Build-flag overridable |
 | `RESIDENT_EVENT_QUEUE_SIZE` | `16` | Outbound event queue depth (rate-limited / offline sends wait here). Build-flag overridable |
 | `RESIDENT_EVENT_JSON_MAX` | `1024` | Event `data` buffer — bounds the `events.send` serializer, the incoming app-channel `data`, and each ring slot. Build-flag overridable; the ring grows by 8× any increase |
+| `RESIDENT_NO_PSRAM_GC_PAUSE` | `120` | Lua incremental-GC pause on boards without PSRAM (Lua's default, 200, still applies with PSRAM). Lower keeps less garbage, and less fragmentation, in the heap the network stack also allocates from, at some CPU cost. Build-flag overridable |
 | `RESIDENT_STORE_JSON_MAX` | `2048` | Serialized size cap on the whole persisted `store` blob. Build-flag overridable |
 | `StoreModule::STORE_NS_MAX` | `32` | Maximum `storeNs` length in characters |
 | Event `name` max | `32 chars` | `Event::name` buffer size — driver event names longer than 31 bytes are truncated |
