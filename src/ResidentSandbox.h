@@ -42,6 +42,15 @@
 #define RESIDENT_EVENT_RING_SIZE 8
 #endif
 
+// How long one loop() pass may spend dispatching queued inbound events, in
+// milliseconds. Each pass dispatches every queued event, stopping early once
+// this much time has gone (at least one event is always dispatched), so a
+// burst — a tap queues two events — reaches the app in one pass while a slow
+// on_event cannot starve the rest of the loop.
+#ifndef RESIDENT_EVENT_DRAIN_BUDGET_MS
+#define RESIDENT_EVENT_DRAIN_BUDGET_MS 20
+#endif
+
 // Outbound event queue depth (rate-limited / offline sends wait here and
 // drain in order on capacity or reconnect).
 #ifndef RESIDENT_EVENT_QUEUE_SIZE
@@ -777,7 +786,11 @@ private:
     void refreshLifecycleRef(const char* global, int& ref);
     bool callInit();  // true if init ran without error (or no init function)
     void callOnTick(unsigned long dt_ms);
-    void processNextEvent();
+    // Dispatches the oldest queued event; false when there was none to take
+    // (empty ring, or nothing in Lua to receive it).
+    bool processNextEvent();
+    // Dispatches queued events for up to RESIDENT_EVENT_DRAIN_BUDGET_MS.
+    void drainEvents();
     // Push the Lua event table for `e` (envelope + data + driver shadow);
     // pushes exactly one value on success, nothing when the payload is
     // unparseable (the event drops).

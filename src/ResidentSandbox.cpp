@@ -2061,7 +2061,23 @@ void Sandbox::loop() {
     _lastTickTime = now;
   }
 
-  processNextEvent();
+  drainEvents();
+}
+
+// Every event queued when the pass began, in order, within the pass budget.
+// One event per pass used to be the rule, so an event waited one pass for
+// each event queued ahead of it — a long pass (a heavy on_tick) multiplied
+// that, and a button tap alone queues two. The budget keeps a slow on_event
+// from holding the loop for the whole ring; events queued by the handlers
+// themselves wait for the next pass, so a handler that feeds the ring cannot
+// keep the drain going.
+void Sandbox::drainEvents()
+{
+  int queued = (_eventHead - _eventTail + SANDBOX_MAX_EVENTS) % SANDBOX_MAX_EVENTS;
+  const unsigned long start = millis();
+  while (queued-- > 0 && _runState == RunState::Running && processNextEvent()) {
+    if (millis() - start >= RESIDENT_EVENT_DRAIN_BUDGET_MS) break;
+  }
 }
 
 #if RESIDENT_TICK_DIAGS
@@ -2761,7 +2777,7 @@ void Sandbox::clearPersistedApp()
 }
 
 // Events received while the app is suspended are still queued onto the ring
-// here; loop() defers dispatch (processNextEvent) until resumeApp(), so they
+// here; loop() defers dispatch (drainEvents) until resumeApp(), so they
 // are deferred — not dropped — though a long suspend can overflow the 8-slot
 // ring and lose the oldest. Gating on isAppRunning() (true while Suspended) is
 // deliberate: a suspended app is still loaded and will see the events.
@@ -3000,13 +3016,13 @@ void Sandbox::pushCtxTable()
   pushCtxGenerationId();
 }
 
-void Sandbox::processNextEvent()
+bool Sandbox::processNextEvent()
 {
-  if (_eventHead == _eventTail) return;
-  if (!_lua) return;
+  if (_eventHead == _eventTail) return false;
+  if (!_lua) return false;
   bool fwWants = frameworkActive() && _fwEventRef != LUA_NOREF;
   bool appWants = _onEventFuncRef != LUA_NOREF;
-  if (!fwWants && !appWants) return;
+  if (!fwWants && !appWants) return false;
 
   Event& e = _events[_eventTail];
   _eventTail = (_eventTail + 1) % SANDBOX_MAX_EVENTS;
@@ -3018,7 +3034,7 @@ void Sandbox::processNextEvent()
     pushCtxTable();
     if (!pushEventTable(e)) {
       lua_pop(_lua, 2);   // hook fn + ctx
-      return;
+      return true;
     }
     armExecutionGuard();
     int r = lua_pcall(_lua, 2, 1, 0);
@@ -3031,17 +3047,17 @@ void Sandbox::processNextEvent()
     } else {
       bool handled = lua_toboolean(_lua, -1);
       lua_pop(_lua, 1);
-      if (handled) return;
+      if (handled) return true;
     }
   }
 
-  if (!appWants) return;
+  if (!appWants) return true;
 
   lua_rawgeti(_lua, LUA_REGISTRYINDEX, _onEventFuncRef);
   pushCtxTable();
   if (!pushEventTable(e)) {
     lua_pop(_lua, 2);     // handler + ctx
-    return;
+    return true;
   }
 
   armExecutionGuard();
@@ -3053,6 +3069,7 @@ void Sandbox::processNextEvent()
     emitTelemetry("runtime_error", errMsg);
     lua_pop(_lua, 1);
   }
+  return true;
 }
 
 // Push the event table for `e`: envelope fields, the parsed data payload,

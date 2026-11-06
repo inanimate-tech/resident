@@ -14,7 +14,15 @@ namespace {
 class ProbeDriver : public Resident::Driver {
 public:
   const char* name() const override { return "probe"; }
-  void registerModule(Resident::LuaModule&) override {}
+  void registerModule(Resident::LuaModule& m) override {
+    m.method<ProbeDriver, &ProbeDriver::burn>("burn")
+     .method<ProbeDriver, &ProbeDriver::again>("again");
+  }
+
+  // probe.burn(): a handler that takes 15 ms of (test) clock.
+  int burn(lua_State*) { testMillis() += 15; return 0; }
+  // probe.again(): a handler that queues another event while it runs.
+  int again(lua_State*) { emitButton(9); return 0; }
   void begin() override {}
   void update() override {}
 
@@ -159,6 +167,59 @@ void test_ctx_has_no_trigger_count(void) {
   TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("absent"));
 }
 
+// One loop() pass dispatches every queued event, not one: a tap is two
+// events, and each used to wait a pass behind the one ahead of it.
+void test_one_pass_dispatches_every_queued_event(void) {
+  build();
+  loadApp(
+      "n = 0\n"
+      "function on_event(ctx, e) n = n + 1 end\n");
+  for (int i = 0; i < 5; i++) driver->emitButton(i);
+  pump();
+  TEST_ASSERT_EQUAL_INT(5, sandbox->luaGlobalIntForTest("n"));
+}
+
+// The drain stops once RESIDENT_EVENT_DRAIN_BUDGET_MS (20) has gone: 15 ms
+// handlers fit one, then a second that crosses the budget, and the rest wait
+// for the next passes in order.
+void test_drain_stops_at_the_budget(void) {
+  build();
+  loadApp(
+      "n = 0\n"
+      "last = -1\n"
+      "function on_event(ctx, e)\n"
+      "  n = n + 1\n"
+      "  last = e.data.index\n"
+      "  probe.burn()\n"
+      "end\n");
+  for (int i = 0; i < 5; i++) driver->emitButton(i);
+  pump();
+  TEST_ASSERT_EQUAL_INT(2, sandbox->luaGlobalIntForTest("n"));
+  TEST_ASSERT_EQUAL_INT(1, sandbox->luaGlobalIntForTest("last"));
+  pump();
+  TEST_ASSERT_EQUAL_INT(4, sandbox->luaGlobalIntForTest("n"));
+  pump();
+  TEST_ASSERT_EQUAL_INT(5, sandbox->luaGlobalIntForTest("n"));
+  TEST_ASSERT_EQUAL_INT(4, sandbox->luaGlobalIntForTest("last"));
+}
+
+// An event a handler queues while it runs waits for the next pass, so a
+// handler that feeds the ring cannot keep one pass draining.
+void test_events_queued_by_a_handler_wait_for_the_next_pass(void) {
+  build();
+  loadApp(
+      "n = 0\n"
+      "function on_event(ctx, e)\n"
+      "  n = n + 1\n"
+      "  probe.again()\n"
+      "end\n");
+  driver->emitButton(0);
+  pump();
+  TEST_ASSERT_EQUAL_INT(1, sandbox->luaGlobalIntForTest("n"));
+  pump();
+  TEST_ASSERT_EQUAL_INT(2, sandbox->luaGlobalIntForTest("n"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_driver_event_delivers_data_table_with_all_field_types);
@@ -166,5 +227,8 @@ int main(int, char**) {
   RUN_TEST(test_wire_events_get_no_shadow);
   RUN_TEST(test_driver_event_channel_is_driver);
   RUN_TEST(test_ctx_has_no_trigger_count);
+  RUN_TEST(test_one_pass_dispatches_every_queued_event);
+  RUN_TEST(test_drain_stops_at_the_budget);
+  RUN_TEST(test_events_queued_by_a_handler_wait_for_the_next_pass);
   return UNITY_END();
 }
