@@ -153,8 +153,8 @@ public:
   }
 
   // The app stopped, was suspended, or resumed. A suspension is the overlay
-  // arbiter taking a surface this app draws on (bar, oracle, fan-p1, face-p1's
-  // mouth — every dual-role surface in the fleet), and the board suppresses its
+  // arbiter taking a surface this app draws on (a dual-role surface: one that
+  // is both a system display and an app screen), and the board suppresses its
   // own blit door for the duration. But suppression drops the PIXELS while LVGL
   // still renders and still gets its lv_display_flush_ready: the library goes
   // on believing those areas reached the glass, so when the claim lifts nothing
