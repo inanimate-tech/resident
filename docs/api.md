@@ -47,7 +47,8 @@ void loop()  { sandbox.loop(); }
 | `gateTickOnConnection` | `bool` | `false` | Pause `on_tick` and event dispatch while disconnected. The default is offline-first: the app keeps running; only network sends wait. |
 | `openUnsafeLibs` | `bool` | `false` | Give the app environment the full Lua stdlib. The default removes `os`/`io`/`package`/`require`/`load`/`dofile`/`loadstring`/`loadfile`/`debug`. |
 | `freshAppEnvironment` | `bool` | `true` | Reset app globals to the runtime baseline on every `loadApp` — nothing from the previous app survives except the store slot. Set `false` for builds whose apps need globals to persist across loads. |
-| `executionDeadlineMs` | `uint32_t` | `1000` | Per-dispatch **wall-clock** hard deadline, in milliseconds (init / one tick / one event / one chunk / each framework hook). No Lua hook is installed at dispatch start; a one-shot timer installs a stopping hook once the deadline passes. Over-deadline aborts the dispatch with a `runtime_error` (`execution deadline exceeded (N ms)`); the app survives, and the hook keeps raising until the dispatch returns, in every coroutine. The third abort inside 30 s suspends the app (`app_throttled`). Available on every platform; `0` = no hard guard. |
+| `executionDeadlineMs` | `uint32_t` | `1000` | Per-dispatch **wall-clock** hard deadline, in milliseconds (init / one tick / one event / one chunk / each framework hook). No Lua hook is installed at dispatch start; a one-shot timer installs a stopping hook once the deadline passes. Over-deadline aborts the dispatch with a `runtime_error` (`execution deadline exceeded (N ms)`); the app survives, and the hook keeps raising until the dispatch returns, in every coroutine. The third abort inside 30 s suspends the app (`app_throttled`). Available on every platform; `0` = no hard guard. A `RESIDENT_DEADLINE_INSTRUCTIONS` build counts it in Lua instructions instead (see `deadlineInstrPerMs`). |
+| `deadlineInstrPerMs` | `uint32_t` | `5000` | Only in a `RESIDENT_DEADLINE_INSTRUCTIONS=1` build: the Lua instructions that stand for one millisecond. The hard deadline is `executionDeadlineMs` × this many instructions, and the soft deadline reads instructions ÷ this rate as elapsed time. `5000` is an ESP32-S3. `0` = the default. |
 | `executionSoftDeadlineMs` | `uint32_t` | `0` | Per-dispatch **wall-clock** soft deadline, in milliseconds. A dispatch that outlives it is reported — a rate-limited `[WARN]` line (`log.warn`'s) plus a `slow_dispatch` telemetry event — and allowed to finish. Measured at disarm, so it also covers time spent inside a blocking C binding, where no Lua hook fires. Independent of `executionDeadlineMs` and available on every platform; `0` = no reporting. |
 | `framework` | `std::optional<FrameworkConfig>` | unset | Embed a framework module: `{name, version, source}` — privileged Lua the sandbox hosts outside the app (see [Framework modules](#framework-modules)). |
 | `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
@@ -1317,6 +1318,14 @@ Every protected Lua call — `init`, one tick, one event, one chunk, each framew
 
 `SandboxConfig::executionDeadlineMs` is the hard guard: a wall-clock deadline in milliseconds, defaulting to `1000`, with `0` leaving the dispatch unguarded. It is available on every platform — a one-shot `esp_timer` on device, a worker thread on host.
 
+**Counting instructions instead.** Build with `-DRESIDENT_DEADLINE_INSTRUCTIONS=1` and the deadline is counted in Lua VM instructions rather than measured on a clock: a dispatch may run `executionDeadlineMs` × `deadlineInstrPerMs` instructions, then ends with the same `execution deadline exceeded (N ms)` error, and everything below applies unchanged. It is for a build where a wall clock can't stand for the device's:
+
+- a build with no timer that can interrupt the VM, such as WebAssembly without threads;
+- a host many times faster than the device, where a wall-clock deadline would let through an app the device would stop;
+- a host whose clock is virtual, or doesn't move during a dispatch.
+
+A count hook is armed at dispatch start, so every dispatch runs hooked and pays Lua's hook overhead; it isn't meant for the device. It counts on every thread the dispatch runs (a coroutine inherits its creator's hook, and one resumed without a hook gets one), and a thread keeps its count across coroutine switches. The soft deadline's clock is the same count: instructions ÷ `deadlineInstrPerMs`. The default rate, `5000`, comes from an ESP32-S3, where a recursive `fib(24)` (825k instructions) runs in 163 ms. Time spent inside C (a binding, drawing) isn't counted, so for a dispatch that spends most of its time in C the count is more lenient than the device.
+
 It defaults on because lazy arming makes it free until it fires, and because the thing it protects is the loop itself: a wedged `on_tick` holds the loop OTA is driven from, so a bad app push would otherwise take away the mechanism you recover the device with. `1000` leaves roughly 2x headroom over the heaviest legitimate dispatch measured on an ESP32-S3. Raise it for a board whose apps legitimately run longer; set `0` to opt out.
 
 The abort rides a Lua hook, so it always lands on a VM instruction. The hook is installed by the one-shot timer once the deadline has passed, so the abort lands at or after it, never before; the message is `execution deadline exceeded (N ms)`.
@@ -1522,6 +1531,7 @@ ESP-IDF CMake component graph.
 | Event `name` max | `32 chars` | `Event::name` buffer size — driver event names longer than 31 bytes are truncated |
 | `SandboxConfig::executionDeadlineMs` | `1000` | Wall-clock milliseconds per dispatch before abort (`0` = no hard guard) |
 | `SandboxConfig::executionSoftDeadlineMs` | `0` | Wall-clock milliseconds per dispatch before reporting (`0` = no reporting) |
+| `SandboxConfig::deadlineInstrPerMs` | `5000` | Lua instructions per millisecond of either deadline, in a `RESIDENT_DEADLINE_INSTRUCTIONS` build |
 | `SLOW_DISPATCH_COOLDOWN` | `5000 ms` | Minimum interval between `slow_dispatch` reports after the initial burst |
 | `SLOW_DISPATCH_MAX_BURST` | `3` | `slow_dispatch` reports allowed before the cooldown applies |
 | `HARD_ABORT_LIMIT` | `3` | Hard aborts inside `HARD_ABORT_WINDOW_MS` that suspend the app (`app_throttled`) |

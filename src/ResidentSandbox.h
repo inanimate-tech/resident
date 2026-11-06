@@ -487,7 +487,12 @@ private:
     // (lua.c's SIGINT handler); ldebug.c documents the fields as safe to write
     // asynchronously, and OP_FORLOOP refreshes `trap` so a tight loop notices.
     void installDeadlineHook();
-#ifdef ESP_PLATFORM
+#if RESIDENT_DEADLINE_INSTRUCTIONS
+    // The instruction backend's count hook: armed on the running thread at
+    // dispatch start, it counts instructions and installs
+    // executionDeadlineHook once the dispatch has run its budget.
+    static void instructionCountHook(struct lua_State* L, struct lua_Debug* ar);
+#elif defined(ESP_PLATFORM)
     // esp_timer callback; fires on the timer task once a dispatch outlives
     // executionDeadlineMs. The host worker installs the hook inline instead.
     static void executionDeadlineTimeout(void* arg);
@@ -501,6 +506,10 @@ private:
     // was aborted.
     void startDeadlineTimer();
     bool stopDeadlineTimer();
+    // The soft deadline's microsecond clock: wall-clock time, or in an
+    // instruction build, instructions counted / deadlineInstrPerMs. Only
+    // ever differenced, so 32-bit wrap is safe.
+    uint32_t dispatchClockUs() const;
     // Rate-limited report of a dispatch that outlived executionSoftDeadlineMs.
     void reportSlowDispatch(uint32_t elapsedUs);
     // Records a hard abort; the HARD_ABORT_LIMIT-th inside
@@ -530,7 +539,8 @@ private:
     static constexpr unsigned long SLOW_DISPATCH_COOLDOWN = 5000;
     static constexpr uint32_t SLOW_DISPATCH_MAX_BURST = 3;
     // The one-shot that installs the stopping hook: an esp_timer_handle_t on
-    // device, a condition-variable worker thread on host. Opaque either way.
+    // device, a condition-variable worker thread on host, or the instruction
+    // counter in an instruction build. Opaque either way.
     void* _deadlineTimer = nullptr;
     // True between the outermost arm and its disarm. Written and read under
     // the platform lock so the timer never installs a hook for a dispatch
@@ -550,7 +560,9 @@ private:
     static constexpr unsigned long HARD_ABORT_WINDOW_MS = 30000;
     unsigned long _hardAbortMs[HARD_ABORT_LIMIT] = {};
     uint8_t _hardAbortCount = 0;
-#ifdef ESP_PLATFORM
+#if RESIDENT_DEADLINE_INSTRUCTIONS
+    // No lock: the count hook runs on the thread running Lua.
+#elif defined(ESP_PLATFORM)
     portMUX_TYPE _deadlineMux = portMUX_INITIALIZER_UNLOCKED;
 #else
     // Body of the host worker thread; arg is the opaque timer.
