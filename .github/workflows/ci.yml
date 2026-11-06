@@ -8,7 +8,9 @@ on:
 
 jobs:
   static-analysis:
-    runs-on: ubuntu-latest
+    # Pinned: newer images ship cppcheck 2.19, which reports a false-positive
+    # uninitvar on a recursive formatter's scratch buffer (ResidentTimeCore.h).
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
