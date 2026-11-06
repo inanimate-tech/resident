@@ -49,6 +49,8 @@ void loop()  { sandbox.loop(); }
 | `freshAppEnvironment` | `bool` | `true` | Reset app globals to the runtime baseline on every `loadApp` — nothing from the previous app survives except the store slot. Set `false` for builds whose apps need globals to persist across loads. |
 | `executionDeadlineMs` | `uint32_t` | `1000` | Per-dispatch **wall-clock** hard deadline, in milliseconds (init / one tick / one event / one chunk / each framework hook). No Lua hook is installed at dispatch start; a one-shot timer installs a stopping hook once the deadline passes. Over-deadline aborts the dispatch with a `runtime_error` (`execution deadline exceeded (N ms)`); the app survives. Available on every platform; `0` = no hard guard. |
 | `executionSoftDeadlineMs` | `uint32_t` | `0` | Per-dispatch **wall-clock** soft deadline, in milliseconds. A dispatch that outlives it is reported — a rate-limited serial line plus a `slow_dispatch` telemetry event — and allowed to finish. Measured at disarm, so it also covers time spent inside a blocking C binding, where no Lua hook fires. Independent of `executionDeadlineMs` and available on every platform; `0` = no reporting. |
+| `appMemoryBytes` | `size_t` | `0` | The app's memory ceiling, in bytes above the baseline the Lua heap holds once the framework has loaded at boot (see [App memory](#app-memory)). `0` = 1 MB, or a quarter of the Lua heap's backing memory free at the baseline if that is less; `SandboxConfig::kAppMemoryUnlimited` = no ceiling. |
+| `appMemoryProbe` | `size_t (*)()` | `nullptr` | Bytes the app holds outside the Lua heap (a drawing library's widgets, say), charged to the same ceiling. Read whenever the Lua heap would take more memory, so it must be cheap. |
 | `framework` | `std::optional<FrameworkConfig>` | unset | Embed a framework module: `{name, version, source}` — privileged Lua the sandbox hosts outside the app (see [Framework modules](#framework-modules)). |
 | `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
 | `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). On M5 boards use the shipped `Resident::M5Mic` (`#include <ResidentM5Mic.h>`); otherwise implement `Resident::SystemMic`. Not a `Driver` — the pump owns its `begin()`/`end()`. |
@@ -1248,6 +1250,7 @@ Every telemetry emission goes out TWO ways:
 | `store_full` | An over-budget `store.set` was rejected; `data.error` carries the key (once per key per app load) |
 | `framework_applied` | A framework (built-in or slot update) loaded successfully |
 | `framework_error` | A framework chunk failed to compile or run; `data.error` carries the message. A failing slot blob is discarded and the built-in runs |
+| `lua_panic` | At `setup()`, when the previous boot ended in a Lua panic; `data.error` carries the panic's message (see [App memory](#app-memory)) |
 | `dropped` | The drop counter's periodic report; `data.count` = items silently dropped since boot (ring overflow, oversize payloads, rate limits, closed legacy paths). At most one report per minute, only when changed |
 
 The wire path needs no wiring; the callback is there for boards that want an additional sink.
@@ -1322,6 +1325,16 @@ The abort rides a Lua hook, so it always lands on a VM instruction. The hook is 
 `executionSoftDeadlineMs` is independent of it and available on every platform. Elapsed time is compared against it at disarm: a dispatch that outlives it is reported — a rate-limited serial line plus a `slow_dispatch` telemetry event, `SLOW_DISPATCH_MAX_BURST` then one per `SLOW_DISPATCH_COOLDOWN` — and allowed to finish. Nothing is aborted.
 
 **What the guard does not bound.** The hard deadline cannot interrupt a dispatch blocked inside a C binding — no Lua instruction executes, so no hook fires. Only the soft deadline sees that time, and only once the binding has returned. Both limits measure elapsed wall-clock time rather than CPU time, so a dispatch held off by a higher-priority task overshoots by however long it was descheduled and aborts when the Lua task next runs. Nothing bounds the total across one `loop()` iteration: each protected call arms its own guard, so a single iteration can spend several deadlines.
+
+## App memory
+
+An app may hold a bounded amount of memory, so that it cannot take what the network stack and the board need. The ceiling is fixed once, in `setup()`, right after the framework loads: the Lua heap's bytes held at that moment (after a full collection), plus `appMemoryProbe`'s bytes, are the baseline, and the ceiling is the baseline plus `SandboxConfig::appMemoryBytes`. Later app loads do not move it. `Sandbox::appMemoryCeiling()` and `appMemoryCharged()` read the ceiling and the count now.
+
+The count is bytes *held* from the backing heap — the Lua heap's slabs and large blocks — not the bytes live inside them: an app whose live blocks were spread one to a slab would otherwise hold far more than it is charged. `appMemoryProbe` adds memory the app causes outside the Lua heap. That memory is never refused by Resident; once it has taken the count past the ceiling, the app's next Lua allocation fails instead.
+
+The ceiling is enforced only while a dispatch runs (see [The execution guard](#the-execution-guard)): there a refusal is an ordinary Lua error, `not enough memory`, which aborts that dispatch as a `runtime_error`, after Lua has tried a full collection. Outside a dispatch Resident builds Lua values with no protected call around them (the tick's `ctx`, an app load's environment reset), where a refusal could not be caught, so nothing is refused there. A framework's own load is not charged to the app. A block shrinking is never refused.
+
+An error that does escape every protected call is a Lua panic. The sandbox's panic handler logs the message, records it in memory a software restart leaves alone, and restarts the chip (`esp_restart`, so shutdown handlers run); an abort would skip them. The next boot reports it once as `lua_panic` telemetry, and `Sandbox::lastLuaPanic()` returns it.
 
 ## Writing a Driver
 
@@ -1511,6 +1524,7 @@ ESP-IDF CMake component graph.
 | Event `name` max | `32 chars` | `Event::name` buffer size — driver event names longer than 31 bytes are truncated |
 | `SandboxConfig::executionDeadlineMs` | `1000` | Wall-clock milliseconds per dispatch before abort (`0` = no hard guard) |
 | `SandboxConfig::executionSoftDeadlineMs` | `0` | Wall-clock milliseconds per dispatch before reporting (`0` = no reporting) |
+| `SandboxConfig::appMemoryBytes` | 1 MB or ¼ of free | Bytes an app may hold above the boot baseline (`kAppMemoryUnlimited` = no ceiling) |
 | `SLOW_DISPATCH_COOLDOWN` | `5000 ms` | Minimum interval between `slow_dispatch` reports after the initial burst |
 | `SLOW_DISPATCH_MAX_BURST` | `3` | `slow_dispatch` reports allowed before the cooldown applies |
 | Event rate limit | `5/s`, burst `10` | Token bucket shared by `events.send`, `runtime.send` and `publishEvent` |

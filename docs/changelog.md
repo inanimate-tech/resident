@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Hardening
+
+- **An app's memory has a ceiling.** `SandboxConfig::appMemoryBytes` bounds what an app may hold above the baseline the Lua heap holds once the framework has loaded at boot; by default 1 MB, or a quarter of the Lua heap's backing memory free at the baseline if that is less. `LuaHeap` counts bytes held (slabs and large blocks) and refuses a request past its limit (`setLimit`); `appMemoryProbe` charges memory the app causes outside the Lua heap, such as a drawing library's widgets, to the same ceiling. It is enforced only while a dispatch runs, where a refusal is a `not enough memory` runtime error that aborts that dispatch; the device keeps the rest of its RAM. `RESIDENT_HAS_APP_MEMORY_LIMIT` is the feature test.
+- **A Lua panic restarts cleanly.** An error that escapes every protected call no longer aborts: the sandbox's `lua_atpanic` handler logs it, records it where a software restart leaves it, and restarts with `esp_restart`, so the board's shutdown handlers run. The next boot reports it as `lua_panic` telemetry and through `Sandbox::lastLuaPanic()`.
+
 ### Performance
 
 - **Lua's small blocks come from slabs.** On a board with PSRAM, the Lua state's allocator (`LuaHeap`, `ResidentLuaHeap.h`) serves blocks up to 256 bytes from 4 KB slabs of one size class each, with a free list per slab, and sends larger blocks to PSRAM as before. A slab that empties goes back to PSRAM unless it is its class's last with room. Allocation-heavy Lua runs about 4–5× faster (small tables −79%, closures −77%, strings −36% on an ESP32-S3), and the collector's worst pauses shrink with it. A board without PSRAM keeps every block in internal RAM through `heap_caps`, as before.

@@ -361,12 +361,28 @@ public:
     bool isConnected() const;
     bool isTimeSynced() const;
 
+    // The app's memory ceiling (SandboxConfig::appMemoryBytes) as an absolute
+    // count of Lua heap bytes held plus appMemoryProbe's bytes, fixed in
+    // setup() once the framework has loaded; 0 before then, or with no
+    // ceiling. appMemoryCharged() is that count now.
+    size_t appMemoryCeiling() const { return _appMemoryCeiling; }
+    size_t appMemoryCharged() const { return _luaHeap ? _luaHeap->charged() : 0; }
+
+    // Why the previous boot ended in a Lua panic (an error with no protected
+    // call to catch it, after which the sandbox restarts the chip), or nullptr
+    // if it did not. Read from memory that survives a software restart; read
+    // once, at setup(), which also reports it as `lua_panic` telemetry.
+    static const char* lastLuaPanic();
+
     // Test hooks — only used by native tests. Exposed here because the mock
     // Timezone carries its configuration per-instance.
     Timezone& timezoneForTest() { return _tz; }
     bool luaGlobalBoolForTest(const char* name);
     int luaGlobalIntForTest(const char* name);
     void callOnTickForTest(unsigned long dt_ms) { callOnTick(dt_ms); }
+    // The panic handler records the message on L's stack top; on host it then
+    // returns (and Lua would abort), so a test can call it directly.
+    static int luaPanicForTest(struct lua_State* L) { return luaPanic(L); }
 
 private:
     // The Lua state's heap: PSRAM, with small blocks from slabs; on a board
@@ -376,6 +392,20 @@ private:
     static bool luaHeapSlabs();
     std::optional<LuaHeap> _luaHeap;
     struct lua_State* _lua = nullptr;
+
+    // The app memory ceiling: fixed once, after the framework loads at boot
+    // (fixAppMemoryCeiling), and handed to the heap only while a dispatch
+    // runs. Outside one, Resident's own code builds Lua values with no
+    // protected call around it (the tick's ctx, an app load's environment
+    // reset), where a refusal would panic.
+    void fixAppMemoryCeiling();
+    static size_t luaHeapFreeBytes();
+    static size_t appMemoryProbeBytes(void* ctx);
+    size_t _appMemoryCeiling = 0;   // 0 = none
+    bool _frameworkLoading = false; // its load is not the app's
+    // lua_atpanic: log, record the reason, restart.
+    static int luaPanic(struct lua_State* L);
+    static void consumeLuaPanicRecord();
 
     // Unified execution state — the sandbox's single source of truth for what
     // the Lua VM is doing. Ready: no app loaded; the status display rests on
