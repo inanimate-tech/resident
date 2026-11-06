@@ -8,6 +8,7 @@
 #include "ResidentNvsStore.h"   // device-only; no-op on native
 #include "ResidentRenderTargets.h"
 #include "ResidentDatetime.h"
+#include "ResidentAppBaseLib.h"
 
 extern "C" {
   #include "lua/lua.h"
@@ -405,8 +406,8 @@ void Sandbox::setupLuaEnvironment()
   lua_setglobal(_lua, "log");
 
   // Sandbox hardening (0.8): the app environment does not get the unsafe
-  // stdlib unless the board opts in — it is a sandbox. collectgarbage and
-  // the pure libraries (string/table/math/coroutine/utf8) stay.
+  // stdlib unless the board opts in — it is a sandbox. collectgarbage (narrowed
+  // below) and the pure libraries (string/table/math/coroutine/utf8) stay.
   if (!_config.openUnsafeLibs) {
     static const char* const kUnsafeGlobals[] = {
         "os", "io", "package", "require", "dofile",
@@ -417,6 +418,11 @@ void Sandbox::setupLuaEnvironment()
       lua_setglobal(_lua, g);
     }
   }
+
+  // The base functions an app could reach past its own dispatch with —
+  // setmetatable (no __gc), getmetatable (no userdata), collectgarbage (no
+  // lasting mode change) — are narrowed in one place: ResidentAppBaseLib.h.
+  appbase::install(_lua);
 
   // time module: Python 3's time, with MicroPython's integer seconds and
   // ticks where 32-bit Lua numbers bite (see the bindings below).

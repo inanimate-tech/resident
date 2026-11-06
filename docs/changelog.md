@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- **An app's `setmetatable` refuses a metatable that has a `__gc` field**, and raises `setmetatable: __gc is not available to apps`. A finalizer runs inside the garbage collector, at app reset or at whatever allocation triggers a collection step, with debug hooks switched off. So the execution deadline could not stop it, and an error in it vanished as a warning. One `__gc = function() while true do end end` hung the VM for good, and a persisted app re-armed the hang on every boot. Lua looks for `__gc` only when the metatable is attached, so adding the field afterwards does nothing.
+- **An app's `getmetatable` returns `nil` for any userdata.** A binding's userdata metatables are shared by every object of the type and are usually not locked, so `getmetatable(obj).__gc = f` used to redirect the native finalizer of every such object to `f`. Tables keep the stock behaviour, `__metatable` included.
+- **An app's `collectgarbage` takes only `"collect"` (the default), `"count"`, `"step"` and `"isrunning"`**, and raises for any other option. One Lua state serves every app, so `"stop"`, `"restart"`, `"setpause"`, `"setstepmul"`, `"incremental"` and `"generational"` changed the collector for every app that followed.
+
+The three wrappers live in one place, `src/ResidentAppBaseLib.h`, and replace the stock functions in `_G` at setup, before the baseline snapshot. A framework module and the `datetime` module see the same functions an app does. `openUnsafeLibs` does not restore the stock versions.
+
+---
+
 ## v0.12.0
 
 ### Breaking changes
