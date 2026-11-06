@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **Every event, runtime and telemetry frame is valid RFC 8259 JSON, and an event name can no longer be cut short in transit** (#36). ArduinoJson escapes only `"`, `\`, `\b`, `\f`, `\n`, `\r` and `\t`, and writes every other byte below 0x20 raw, which a strict parser rejects. An event's `data` was escaped as `\u00XX`, then parsed back into a document and serialized again with those bytes raw. Its name was never escaped at all, and neither was app text in telemetry. Event names are now limited to 1–31 bytes with no control characters, the receive buffer's size. `publishEventEx` drops any other name, and `events.send` and `runtime.send` return `"dropped"` and say why on `log.warn`'s line. `:` and other printable characters stay valid. A control character in event data or telemetry is written as U+FFFD. The board telemetry callback and driver event fields are now built by the same string writer, so a quote in a driver's string field no longer breaks its event, and a driver field too big for the buffer is left out whole instead of being cut. The hello announces the name limit as `limits.eventNameBytes` (31).
+
+---
+
 ## v0.12.0
 
 ### Breaking changes
