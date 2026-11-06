@@ -45,6 +45,115 @@ void test_a_new_size_or_no_grid_takes_cell_for() {
   TEST_ASSERT_EQUAL(3, shader::cellForDraw(false, false, 5, 320, 172, 3));
 }
 
+// ── the auto-cell budget ───────────────────────────────────────────────────
+
+// 40% of the frame period, capped at 25 ms; fps = 0 (e-paper) takes the cap.
+void test_frame_budget_follows_fps() {
+  TEST_ASSERT_EQUAL_UINT32(25000, shader::frameBudgetUs(0));
+  TEST_ASSERT_EQUAL_UINT32(25000, shader::frameBudgetUs(-1));
+  TEST_ASSERT_EQUAL_UINT32(25000, shader::frameBudgetUs(1));
+  TEST_ASSERT_EQUAL_UINT32(25000, shader::frameBudgetUs(15));   // the default: 26.7 ms, capped
+  TEST_ASSERT_EQUAL_UINT32(20000, shader::frameBudgetUs(20));
+  TEST_ASSERT_EQUAL_UINT32(13333, shader::frameBudgetUs(30));   // the most: 40% of 33 ms
+}
+
+void test_cell_count_rounds_partial_cells_up() {
+  TEST_ASSERT_EQUAL(1600, shader::cellCount(360, 360, 9));
+  TEST_ASSERT_EQUAL(39 * 39, shader::cellCount(468, 468, 12));
+  TEST_ASSERT_EQUAL(54 * 29, shader::cellCount(320, 172, 6));
+}
+
+// One frame over budget cuts the count to two thirds of what it ran, and the
+// grid that count admits is coarser.
+void test_a_slow_frame_coarsens() {
+  shader::AutoBudget b;
+  const int c = shader::cellFor(320, 172, 0, b.cells);
+  b.frame(30000, 25000, 320, 172, c);
+  TEST_ASSERT_EQUAL(shader::cellCount(320, 172, c) * 2 / 3, b.cells);
+  TEST_ASSERT_TRUE(shader::cellFor(320, 172, 0, b.cells) > c);
+}
+
+// A frame within a 25 ms budget at 15 fps is over it at 30.
+void test_the_same_frame_coarsens_at_a_higher_fps() {
+  shader::AutoBudget at15, at30;
+  at15.frame(20000, shader::frameBudgetUs(15), 320, 172, 6);
+  at30.frame(20000, shader::frameBudgetUs(30), 320, 172, 6);
+  TEST_ASSERT_EQUAL(shader::kAutoCells, at15.cells);
+  TEST_ASSERT_TRUE(at30.cells < shader::kAutoCells);
+}
+
+// One slow frame (a GC step) does not coarsen the widget for good: a run of
+// kRegrowFrames quick frames brings back the next finer edge, one at a time,
+// and no further than where it started.
+void test_quick_frames_regrow_after_a_spike() {
+  const int w = 320, h = 172;
+  shader::AutoBudget b;
+  const int start = shader::cellFor(w, h, 0, b.cells);   // 6
+  b.frame(40000, 25000, w, h, start);                     // the spike
+  int c = shader::cellFor(w, h, 0, b.cells);
+  TEST_ASSERT_TRUE(c > start);
+
+  // A cheap fn: 4 us a cell, far inside the budget at any edge.
+  for (int i = 0; i < 1000 && c > start; i++) {
+    const int was = c;
+    for (int f = 0; f < shader::kRegrowFrames - 1; f++) {
+      b.frame(4u * shader::cellCount(w, h, c), 25000, w, h, c);
+      TEST_ASSERT_EQUAL(was, shader::cellFor(w, h, 0, b.cells));   // not yet
+    }
+    b.frame(4u * shader::cellCount(w, h, c), 25000, w, h, c);
+    c = shader::cellFor(w, h, 0, b.cells);
+    TEST_ASSERT_EQUAL(was - 1, c);                                  // one edge finer
+  }
+  TEST_ASSERT_EQUAL(start, c);
+
+  // At the start, the finer edge is past kAutoCells: it stays put.
+  const int back = b.cells;
+  TEST_ASSERT_TRUE(shader::cellCount(w, h, start - 1) > shader::kAutoCells);
+  for (int f = 0; f < shader::kRegrowFrames * 3; f++) b.frame(1000, 25000, w, h, c);
+  TEST_ASSERT_EQUAL(back, b.cells);
+  TEST_ASSERT_EQUAL(start, shader::cellFor(w, h, 0, b.cells));
+}
+
+// A frame whose time per cell predicts the finer grid would take more than
+// three quarters of the budget does not count towards regrowing, and breaks
+// the run: a steadily heavy fn holds its edge rather than oscillating.
+void test_no_regrow_unless_the_finer_grid_fits_with_margin() {
+  const int w = 320, h = 172, c = 8;
+  const int now = shader::cellCount(w, h, c), finer = shader::cellCount(w, h, c - 1);
+  shader::AutoBudget b;
+  b.cells = now;
+  // Just over the line: finer would take 76% of the budget.
+  const uint32_t heavy = (uint32_t)(25000ull * 76 / 100 * now / finer);
+  for (int f = 0; f < shader::kRegrowFrames * 3; f++) b.frame(heavy, 25000, w, h, c);
+  TEST_ASSERT_EQUAL(now, b.cells);
+
+  // kRegrowFrames - 1 quick frames, then one heavy: the run starts again.
+  const uint32_t light = (uint32_t)(25000ull * 50 / 100 * now / finer);
+  for (int f = 0; f < shader::kRegrowFrames - 1; f++) b.frame(light, 25000, w, h, c);
+  b.frame(heavy, 25000, w, h, c);
+  for (int f = 0; f < shader::kRegrowFrames - 1; f++) b.frame(light, 25000, w, h, c);
+  TEST_ASSERT_EQUAL(now, b.cells);
+  b.frame(light, 25000, w, h, c);
+  TEST_ASSERT_EQUAL(finer, b.cells);
+}
+
+// At the coarsest edge an overrun has nowhere to go; at edge 1 there is no
+// finer grid. Neither changes the count, and reset() starts over.
+void test_budget_edges_and_reset() {
+  shader::AutoBudget b;
+  b.cells = 100;
+  b.frame(99999, 25000, 320, 172, shader::kMaxCell);
+  TEST_ASSERT_EQUAL(100, b.cells);
+  for (int f = 0; f < shader::kRegrowFrames * 2; f++) b.frame(1, 25000, 8, 8, 1);
+  TEST_ASSERT_EQUAL(100, b.cells);
+  b.frame(1, 25000, 320, 172, 0);   // no grid yet: ignored
+  TEST_ASSERT_EQUAL(100, b.cells);
+  b.calm = 7;
+  b.reset();
+  TEST_ASSERT_EQUAL(shader::kAutoCells, b.cells);
+  TEST_ASSERT_EQUAL(0, b.calm);
+}
+
 void test_frame_centres_the_shorter_side_on_minus_one_to_one() {
   // 200 x 100 at cell 1: y spans -1..1 (shorter side), x spans -2..2, y up.
   const shader::Frame fr = shader::frameFor(200, 100, 1, 1.0f);
@@ -196,6 +305,13 @@ int main(int, char**) {
   RUN_TEST(test_requested_cell_is_kept_and_capped);
   RUN_TEST(test_the_grid_holds_still_until_the_next_owed_frame);
   RUN_TEST(test_a_new_size_or_no_grid_takes_cell_for);
+  RUN_TEST(test_frame_budget_follows_fps);
+  RUN_TEST(test_cell_count_rounds_partial_cells_up);
+  RUN_TEST(test_a_slow_frame_coarsens);
+  RUN_TEST(test_the_same_frame_coarsens_at_a_higher_fps);
+  RUN_TEST(test_quick_frames_regrow_after_a_spike);
+  RUN_TEST(test_no_regrow_unless_the_finer_grid_fits_with_margin);
+  RUN_TEST(test_budget_edges_and_reset);
   RUN_TEST(test_frame_centres_the_shorter_side_on_minus_one_to_one);
   RUN_TEST(test_frame_scale_zooms_in);
   RUN_TEST(test_palette_spans_its_stops);

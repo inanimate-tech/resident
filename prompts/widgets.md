@@ -24,7 +24,8 @@ end }
   default), or a list of 2..8 colours, dark to light.
 - `speed` (1; 0 freezes t), `scale` (1; 2 zooms in), `cell` (block edge in
   px, 1..16; leave it unset: the widget aims at about 1,600 cells and
-  coarsens when a frame's Lua runs past 25 ms), `fps` (15, at most 30; 0 =
+  coarsens when a frame's Lua runs past 40% of the frame period, at
+  most 25 ms, and refines again once frames are quick), `fps` (15, at most 30; 0 =
   draw only when a key is set).
 - It fills its parent unless given x, y, w, h. `radius` rounds it
   (`lvgl.RADIUS_CIRCLE` for a disc).

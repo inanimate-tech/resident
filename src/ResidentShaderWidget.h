@@ -15,7 +15,7 @@
 // Keys, besides every base-object property (x, y, w, h, align, radius, opa,
 // ...): fn, palette (a name — ember, ocean, aurora, sunset, rainbow, mono —
 // or 2..8 colours), speed (1: t in seconds; 0 freezes), scale (1; 2 zooms
-// in), cell (block size in pixels; 0 = auto, coarsening if a frame runs over
+// in), cell (block size in pixels; 0 = auto, coarsening while frames run over
 // budget) and fps (15; 0 = draw once, for e-paper). It fills its parent
 // unless sized. x, y are centred with the shorter side -1..1 and y up; u, v
 // run 0..1. See ResidentShaderCore.h.
@@ -52,15 +52,13 @@ struct ShaderObj {
   int cellsW = 0, cellsH = 0, cellNow = 0;
   float speed = 1, scale = 1;
   int32_t radius = 0;             // the corners the alpha plane was cut for
-  uint16_t budget = kAutoCells;   // auto mode's cell count, shrinks under load
+  AutoBudget budget;              // auto mode's cell count, follows the frame time
   uint8_t cell = 0;               // the app's own cell; 0 = auto
 };
 
 inline ShaderObj* of(framewidget::Widget* w) { return reinterpret_cast<ShaderObj*>(w); }
 
 inline lv_obj_class_t shaderClass;
-
-static constexpr uint32_t kFrameBudgetUs = 25000;  // auto mode coarsens past this
 
 inline void freeCells(ShaderObj* s) {
   if (s->cells) { lv_free(s->cells); s->cells = nullptr; }
@@ -76,7 +74,7 @@ inline void constructor(const lv_obj_class_t*, lv_obj_t* obj) {
   s->speed = 1;
   s->scale = 1;
   s->radius = 0;
-  s->budget = kAutoCells;
+  new (&s->budget) AutoBudget();
   s->cell = 0;
   framewidget::construct(&s->base, "Shader");
 }
@@ -96,7 +94,7 @@ inline bool prepare(framewidget::Widget* w, int width, int height, bool& fresh) 
   ShaderObj* s = of(w);
   const int32_t radius = lv_obj_get_style_radius(&w->obj, LV_PART_MAIN);
   const bool sameSize = w->buf && (int)w->buf->header.w == width && (int)w->buf->header.h == height;
-  const int c = cellForDraw(w->gate.due, sameSize, s->cellNow, width, height, s->cell, s->budget);
+  const int c = cellForDraw(w->gate.due, sameSize, s->cellNow, width, height, s->cell, s->budget.cells);
   const lv_color_format_t cf = radius > 0 ? LV_COLOR_FORMAT_RGB565A8 : LV_COLOR_FORMAT_RGB565;
   if (!framewidget::ensureBuf(w, width, height, cf, fresh)) { freeCells(s); return false; }
 
@@ -164,10 +162,11 @@ inline void compute(ShaderObj* s, int w, int h) {
   lua_pushcfunction(L, runCells);
   lua_pushlightuserdata(L, &p);
   if (lua_pcall(L, 1, 0, 0) != LUA_OK) { framewidget::reportError(&s->base, L); return; }
-  // Auto mode: a frame that ran long coarsens the grid for the next, so a
-  // heavy fn finds its own resolution on the hardware it runs on.
-  if (s->cell == 0 && micros() - start > kFrameBudgetUs && s->cellNow < kMaxCell) {
-    s->budget = (uint16_t)(s->cellsW * s->cellsH * 2 / 3);
+  // Auto mode: a frame that ran long coarsens the grid for the next, and a
+  // run of quick ones refines it again (AutoBudget). The budget is a share
+  // of the frame period, so it follows fps.
+  if (s->cell == 0) {
+    s->budget.frame(micros() - start, frameBudgetUs(s->base.fps), w, h, s->cellNow);
   }
 }
 
@@ -231,7 +230,7 @@ inline int setKv(lua_State* L, void* data) {
   const char* k = lua_tostring(L, -2);
   if (std::strcmp(k, "fn") == 0) {
     framewidget::setFn(&s->base, L);
-    s->budget = kAutoCells;   // a new fn gets a fresh look at its cost
+    s->budget.reset();   // a new fn gets a fresh look at its cost
   } else if (std::strcmp(k, "palette") == 0) {
     setPalette(L, s);
   } else if (std::strcmp(k, "speed") == 0) {

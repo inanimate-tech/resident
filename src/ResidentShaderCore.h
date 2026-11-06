@@ -51,13 +51,82 @@ inline int cellFor(int w, int h, int requested, int budget = kAutoCells) {
 // The cell edge for one draw: cellFor's while a frame is owed or there is no
 // grid of this widget's size, otherwise the edge the current frame was made
 // at. A partial-mode display draws a widget in several strips per refresh,
-// and a budget that shrank while the frame was made waits for the next owed
+// and a budget that changed while the frame was made waits for the next owed
 // frame rather than resizing the grid under a later strip.
 inline int cellForDraw(bool owed, bool sameSize, int cellNow, int w, int h, int requested,
                        int budget = kAutoCells) {
   if (owed || !sameSize || cellNow <= 0) return cellFor(w, h, requested, budget);
   return cellNow;
 }
+
+// ── the auto-cell budget ───────────────────────────────────────────────────
+
+// The longest a frame's Lua may run before auto mode coarsens the grid: 40%
+// of the frame period, capped at 25 ms. A flat 25 ms is 38% of a frame at
+// the default 15 fps but 75% at 30, which leaves the rest of the loop next
+// to nothing. fps = 0 (a frame only when a key is set, as on e-paper) has no
+// period and takes the cap.
+static constexpr uint32_t kMaxFrameUs = 25000;
+static constexpr uint32_t kFrameSharePermille = 400;
+
+inline uint32_t frameBudgetUs(int fps) {
+  if (fps <= 0) return kMaxFrameUs;
+  const uint32_t share = kFrameSharePermille * 1000u / (uint32_t)fps;
+  return share < kMaxFrameUs ? share : kMaxFrameUs;
+}
+
+// The cells in a w x h widget at edge c.
+inline int cellCount(int w, int h, int c) { return ((w + c - 1) / c) * ((h + c - 1) / c); }
+
+// Frames in a row that must predict a finer grid fits before auto mode
+// takes it: 2 s at 15 fps.
+static constexpr int kRegrowFrames = 30;
+
+// Auto mode's cell count, `cells`, which cellFor sizes the grid under. A
+// frame over budget cuts it to two thirds of the cells that frame ran, so a
+// heavy fn finds its own resolution on the hardware it runs on. It grows
+// back one cell edge at a time, so one slow frame (a garbage-collection
+// step, a burst of other work) does not coarsen the widget for good: after
+// kRegrowFrames frames in a row whose time per cell predicts that the next
+// finer grid would run in three quarters of the budget, it admits that grid.
+// The quarter to spare is the hysteresis: while a frame costs the same per
+// cell, a regrown grid never overruns. It never grows past kAutoCells, where
+// it starts.
+struct AutoBudget {
+  int cells = kAutoCells;
+  int calm = 0;   // frames in a row that predicted the finer grid fits
+
+  void reset() {
+    cells = kAutoCells;
+    calm = 0;
+  }
+
+  // After a frame that ran `us` at edge cellNow of a w x h widget, against
+  // a budget of `budgetUs`.
+  void frame(uint32_t us, uint32_t budgetUs, int w, int h, int cellNow) {
+    if (cellNow <= 0) return;
+    const int now = cellCount(w, h, cellNow);
+    if (us > budgetUs) {
+      calm = 0;
+      if (cellNow < kMaxCell) cells = now * 2 / 3;
+      return;
+    }
+    if (cellNow <= 1) {
+      calm = 0;
+      return;
+    }
+    const int finer = cellCount(w, h, cellNow - 1);
+    const bool fits = (uint64_t)us * (uint64_t)finer * 4 <= (uint64_t)budgetUs * 3 * (uint64_t)now;
+    if (finer > kAutoCells || !fits) {
+      calm = 0;
+      return;
+    }
+    if (++calm >= kRegrowFrames) {
+      if (finer > cells) cells = finer;
+      calm = 0;
+    }
+  }
+};
 
 // ── palettes ───────────────────────────────────────────────────────────────
 
