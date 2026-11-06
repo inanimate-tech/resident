@@ -8,6 +8,7 @@
 #include "ResidentNvsStore.h"   // device-only; no-op on native
 #include "ResidentRenderTargets.h"
 #include "ResidentDatetime.h"
+#include "ResidentAppHealth.h"
 
 extern "C" {
   #include "lua/lua.h"
@@ -46,6 +47,64 @@ static void* psramLuaAlloc(void* ud, void* ptr, size_t osize, size_t nsize) {
   return heap_caps_realloc(ptr, nsize, kLuaHeapCaps);
 }
 #endif
+
+// ── App quarantine: the platform half (ResidentAppHealth.h is the pure one) ──
+//
+// On ESP32 the crash record lives in RTC no-init memory, which a panic,
+// watchdog or software reset leaves alone and a power cycle scrambles (the
+// record's magic and check word reject what power-on leaves there). A
+// shutdown handler disarms it, so esp_restart() (an OTA, a host asking for a
+// restart) never counts as a crash. Elsewhere (native tests, simulators)
+// nothing survives a reset: the record is ordinary memory and the last reset
+// is a power-on unless a test says otherwise, so nothing ever trips.
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#include "esp_system.h"
+
+static RTC_NOINIT_ATTR Resident::app_health::Record s_appHealthRecord;
+
+static Resident::app_health::ResetKind lastResetKind() {
+  using Resident::app_health::ResetKind;
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:
+    case ESP_RST_UNKNOWN:
+      return ResetKind::PowerOn;
+    case ESP_RST_PANIC:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:
+    case ESP_RST_BROWNOUT:
+      return ResetKind::Abnormal;
+    default:  // software, deep sleep, external pin, host (USB/JTAG/SDIO)
+      return ResetKind::Deliberate;
+  }
+}
+
+static void disarmAppHealthOnShutdown();
+
+static void registerAppHealthShutdownHandler() {
+  static bool registered = false;
+  if (registered) return;
+  registered = true;
+  // The reset reason alone already tells esp_restart() from a crash; the
+  // handler makes the record itself say so too.
+  if (esp_register_shutdown_handler(&disarmAppHealthOnShutdown) != ESP_OK) {
+    Serial.println("Resident::Sandbox: no shutdown handler slot for the app quarantine");
+  }
+}
+#else
+static Resident::app_health::Record s_appHealthRecord = {};
+// What the "last reset" was on a host: tests set it to simulate a crash.
+static Resident::app_health::ResetKind s_hostResetKind =
+    Resident::app_health::ResetKind::PowerOn;
+static Resident::app_health::ResetKind lastResetKind() { return s_hostResetKind; }
+static void registerAppHealthShutdownHandler() {}
+#endif
+
+// Runs from esp_restart(), before the chip resets.
+[[maybe_unused]] static void disarmAppHealthOnShutdown() {
+  Resident::app_health::disarm(s_appHealthRecord);
+}
 
 namespace Resident {
 
@@ -523,6 +582,10 @@ void Sandbox::setup()
     _pendingPersistedSource = _store->load();
   }
 
+  // App quarantine: count the crash the last run ended in, if it was one,
+  // and hold back an app that keeps crashing the device.
+  bootAppHealth();
+
   // 6. Kick off Courier (WiFi + transports). The idle screen is then shown on
   // first connection. Standalone has no connection step, so enter it now.
   if (_courier.has_value()) {
@@ -840,11 +903,16 @@ bool Sandbox::sendHello()
   // What the device is running: live app, or the persisted one awaiting the
   // boot countdown. generationId only when the wire stamped one — a restored
   // app's self-generated id means nothing to the host.
-  if (isAppRunning() || _runState == RunState::Pending) {
+  // A quarantined app is reported even though nothing runs, so a host
+  // knows not to send it again.
+  if (isAppRunning() || _runState == RunState::Pending || isAppQuarantined()) {
     JsonObject app = d["app"].to<JsonObject>();
     app["storeNs"] = _storeModule.storeNamespace();
     if (isAppRunning() && _generationIdFromWire) {
       app["generationId"] = _generationId;
+    }
+    if (isAppQuarantined()) {
+      app["quarantined"]["crashes"] = _quarantinedCrashes;
     }
   }
   return sendSystem(doc);
@@ -1967,6 +2035,7 @@ void Sandbox::showIdleScreen(int countdownSecs)
   if (!systemDisplay()) return;
   String s;
   if (_idleScreenTitle.length() > 0) { s += _idleScreenTitle; s += '\n'; }
+  if (isAppQuarantined()) s += "App paused\n";
   s += "Device ID: "; s += _deviceId;
   s += "\nType: ";     s += getDeviceType();
   if (countdownSecs >= 0) { s += '\n'; s += String(countdownSecs); s += 's'; }
@@ -1978,8 +2047,10 @@ void Sandbox::enterIdleScreen()
   // Called when the device is ready to present its idle UI. With a persisted
   // app: show the identity screen + 20s countdown (then load), or restore
   // immediately when there's no display to count down on. With no persisted
-  // app: rest on the identity screen. No-op once an app is loaded or counting
-  // down (so a reconnect doesn't re-arm or repaint over a running app).
+  // app: rest on the identity screen. A quarantined app is never pending
+  // (bootAppHealth drops it), so it rests on the "App paused" screen with no
+  // countdown. No-op once an app is loaded or counting down (so a reconnect
+  // doesn't re-arm or repaint over a running app).
   if (_runState != RunState::Ready) return;
 
   if (_pendingPersistedSource.isEmpty()) {
@@ -2035,6 +2106,8 @@ void Sandbox::loop() {
     updateBootCountdown();
     return;  // app not loaded yet; skip the tick path
   }
+
+  updateAppHealth();
 
   if (_runState != RunState::Running) return;
 
@@ -2301,6 +2374,16 @@ void Sandbox::loadApp(const char* luaCode)
 
 bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
 {
+  // A quarantined app is refused before anything is torn down: whatever the
+  // device shows (the "App paused" idle screen, a running app) stays as it is.
+  const uint32_t appHash = app_health::sourceHash(luaCode, strlen(luaCode));
+  if (appHash == _quarantinedHash) {
+    _nextGenerationId = "";
+    Serial.println("Resident::Sandbox: app is quarantined; load refused");
+    emitTelemetry("app_quarantined", "load refused");
+    return false;
+  }
+
   // Reset the runtime hold detector: a reload (or a failed reload) must never
   // leave stale hold state that would fire a spurious gesture on the next app.
   _holdWasDown = false;
@@ -2350,6 +2433,8 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   _nextGenerationId = "";
   emitTelemetry("app_received");
 
+  // Armed before the app's first line runs, so a crash in init() counts too.
+  armAppHealth(appHash);
   bool compiled = compileApp(luaCode);
   if (compiled) {
     Serial.println("Resident::Sandbox: app compiled successfully");
@@ -2359,6 +2444,11 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   }
 
   bool loadedOk = compiled && _lastInitOk;
+  if (!loadedOk) {
+    disarmAppHealth();
+  } else if (isAppQuarantined()) {
+    clearAppQuarantine();   // a different app runs: nothing is paused now
+  }
 
   // An app loaded while a dual-role overlay claim is held starts suspended
   // rather than ticking (and drawing) beneath the overlay.
@@ -2758,6 +2848,73 @@ void Sandbox::finishBootCountdown()
 void Sandbox::clearPersistedApp()
 {
   if (_store) _store->clear();
+  clearAppQuarantine();
+}
+
+// ── App quarantine ─────────────────────────────────────────────────────────
+
+void Sandbox::bootAppHealth()
+{
+  app_health::Decision d =
+      app_health::decide(s_appHealthRecord, lastResetKind(), _config.appCrashLimit);
+  s_appHealthRecord = d.record;
+  registerAppHealthShutdownHandler();
+
+  if (d.tripped) {
+    _quarantinedHash = d.hash;
+    _quarantinedCrashes = d.crashes;
+    if (_store) _store->saveQuarantine(d.hash, d.crashes);
+    char why[48];
+    snprintf(why, sizeof(why), "%lu consecutive crashes", (unsigned long)d.crashes);
+    Serial.printf("Resident::Sandbox: app quarantined after %s\n", why);
+    emitTelemetry("app_quarantined", why);
+  } else if (_store) {
+    uint32_t hash = 0, crashes = 0;
+    if (_store->loadQuarantine(hash, crashes) && hash) {
+      _quarantinedHash = hash;
+      _quarantinedCrashes = crashes;
+    }
+  }
+
+  // The persisted source stays saved but is not restored, and gets no boot
+  // countdown: nothing on the device can start it. The idle screen reads
+  // "App paused" until forget or a different app clears the quarantine.
+  if (isAppQuarantined() && !_pendingPersistedSource.isEmpty() &&
+      app_health::sourceHash(_pendingPersistedSource.c_str(),
+                             _pendingPersistedSource.length()) == _quarantinedHash) {
+    _pendingPersistedSource = "";
+  }
+}
+
+void Sandbox::clearAppQuarantine()
+{
+  app_health::forgive(s_appHealthRecord);
+  if (!isAppQuarantined()) return;
+  _quarantinedHash = 0;
+  _quarantinedCrashes = 0;
+  if (_store) _store->clearQuarantine();
+  if (_runState == RunState::Ready) showReadyScreen();   // drop "App paused"
+}
+
+void Sandbox::armAppHealth(uint32_t hash)
+{
+  app_health::arm(s_appHealthRecord, hash);
+  _appArmedAtMs = millis();
+  _appForgiven = false;
+}
+
+void Sandbox::disarmAppHealth()
+{
+  app_health::disarm(s_appHealthRecord);
+  _appForgiven = true;
+}
+
+void Sandbox::updateAppHealth()
+{
+  if (_appForgiven || !isAppRunning()) return;
+  if (millis() - _appArmedAtMs < _config.appCleanMs) return;
+  app_health::forgive(s_appHealthRecord);
+  _appForgiven = true;
 }
 
 // Events received while the app is suspended are still queued onto the ring

@@ -53,6 +53,8 @@ void loop()  { sandbox.loop(); }
 | `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
 | `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). On M5 boards use the shipped `Resident::M5Mic` (`#include <ResidentM5Mic.h>`); otherwise implement `Resident::SystemMic`. Not a `Driver` — the pump owns its `begin()`/`end()`. |
 | `persistentStore` | `Resident::PersistentStore*` | `nullptr` | Override the backing store for persistence. `nullptr` uses NVS on device; inject a fake in tests. |
+| `appCrashLimit` | `uint8_t` | `3` | Consecutive crashes after which a running app is quarantined (see [App quarantine](#app-quarantine)). `0` disables the quarantine. |
+| `appCleanMs` | `uint32_t` | `600000` | How long an app must run without a crash for its crash count to be cleared (10 minutes). |
 | `statusDisplay` | `SystemDisplay*` | `nullptr` | **Deprecated** — use `systemDisplay`. Kept as a fallback; a compile-time warning nudges migration. |
 | `statusLED` | `SystemLED*` | `nullptr` | **Deprecated** — use `systemLED`. Kept as a fallback; a compile-time warning nudges migration. |
 
@@ -291,7 +293,8 @@ sandbox.isMicStreaming();              // true while streaming
 sandbox.setMicStreamSink(fn);          // override the binary frame sink
 sandbox.generationId();                // const String& — ID of the last loaded app
 sandbox.setTelemetryCallback(cb);      // wire telemetry JSON to your transport
-sandbox.clearPersistedApp();           // wipe the saved app from the persistent store
+sandbox.clearPersistedApp();           // wipe the saved app from the persistent store (and any quarantine)
+sandbox.isAppQuarantined();            // true while a crashing app is held back
 ```
 
 `loadApp` stops any running app, calls `onAppReset()` on all extensions, generates a new `generationId`, and compiles the new app. An app must define at least one of `init`, `on_tick`, or `on_event` — compilation is rejected otherwise.
@@ -1209,6 +1212,27 @@ Config fields related to persistence:
 
 Send `{"type":"forget"}` (or call `clearPersistedApp()`) to wipe the saved app.
 
+#### App quarantine
+
+A saved app that crashes the device would otherwise crash it again on every boot. The sandbox counts the crashes and stops running an app that keeps causing them.
+
+- **What counts.** The sandbox arms a small record just before an app's `init()` runs, and disarms it when no app is running. An abnormal reset while it is armed — a panic, a watchdog reset or a brownout — counts one crash. A deliberate restart does not: `esp_restart()` (OTA, a host asking for a restart) runs a shutdown handler that disarms the record, and a software, reset-pin or host-triggered reset is not counted whatever the record says. A power cycle starts the count from zero.
+- **Where it lives.** The record is in RTC no-init memory, which survives a reset but not a power cycle, so nothing is written to flash per boot. Builds without RTC memory (native tests, simulators) keep it in ordinary memory, so nothing survives a reset and nothing ever trips.
+- **Tripping.** After `appCrashLimit` (default 3) consecutive crashes of the same app, the app's source hash and the crash count are stored in the `PersistentStore` quarantine slot (NVS key `resident/quarantine`), telemetry `app_quarantined` (error `"3 consecutive crashes"`) is emitted, and the app is not restored. Its source stays saved. Running a *different* app starts a new count; the same app re-sent by a host keeps counting.
+- **Clean running.** An app that runs for `appCleanMs` (default 10 minutes) without a crash has its count cleared.
+- **While quarantined.** A load of the same source is refused before anything is torn down (telemetry `app_quarantined`, error `"load refused"`), the [hello](#hello)'s `app` carries `quarantined: {crashes}`, and the identity screen gains a first line:
+
+```
+App paused
+Device ID: <deviceId>
+Type: <deviceType>
+```
+
+  There is no boot countdown for a quarantined app, on any board: the device goes straight to the screen above and stays there. The app cannot be started from the device: the system button neither runs it (a tap) nor forgets it (a long press).
+- **Clearing it.** Only `forget` (`clearPersistedApp()`), which clears the saved app and the quarantine, or a successful load of a different app. A load of the same source stays refused.
+
+A custom `PersistentStore` keeps quarantines across reboots by overriding `saveQuarantine`/`loadQuarantine`/`clearQuarantine`; without them a quarantine holds only for the boot it tripped in.
+
 ### Telemetry (outgoing)
 
 Every telemetry emission goes out TWO ways:
@@ -1245,6 +1269,7 @@ Every telemetry emission goes out TWO ways:
 | `app_restored` | A persisted app was successfully restored on boot |
 | `persist_load_failed` | A persisted app failed to load on boot and was discarded |
 | `persist_too_big` | An app was too large to save to the persistent store |
+| `app_quarantined` | An app was quarantined after consecutive crashes (`data.error` `"3 consecutive crashes"`), or a load of a quarantined app was refused (`"load refused"`). See [App quarantine](#app-quarantine) |
 | `store_full` | An over-budget `store.set` was rejected; `data.error` carries the key (once per key per app load) |
 | `framework_applied` | A framework (built-in or slot update) loaded successfully |
 | `framework_error` | A framework chunk failed to compile or run; `data.error` carries the message. A failing slot blob is discarded and the built-in runs |
@@ -1271,7 +1296,7 @@ On every transport connect the sandbox queues a device hello — the device anno
 - `firmware` / `profile` come from `SandboxConfig::firmwareVersion` / `profileRef` (omitted when unset).
 - `limits` are the build's actual constants — hosts should size payloads against them instead of assuming.
 - Deliberately absent: surfaces, sensors, driver modules — authoring facts, whose one authority is the document behind `profile`. The hello carries only what a host needs to operate the session.
-- `app` describes what is running (or persisted and awaiting the boot countdown): its store namespace, plus `generationId` only when the wire stamped one (a restored app's self-generated id is omitted).
+- `app` describes what is running (or persisted and awaiting the boot countdown): its store namespace, plus `generationId` only when the wire stamped one (a restored app's self-generated id is omitted). While an app is [quarantined](#app-quarantine), `app` is present even though nothing runs, and carries `"quarantined": {"crashes": 3}` — the number of consecutive crashes that tripped it. A host that re-sends an app on reboot should not re-send it while `quarantined` is present: the load would be refused.
 - `sandbox.requestHello()` re-queues it at any time.
 
 A host hello may answer on the same channel: `{ "channel":"system", "type":"hello", "data": { "protocol":1, "tz":"Europe/London" } }`. The sandbox applies `tz` and records receipt (`sandbox.hostHelloSeen()`). Receipt also **closes the legacy paths**: a host that speaks hello has no business sending un-channelled frames or the `app_event` wrapper, so both are dropped and counted from then on. A host that never hellos keeps them.
