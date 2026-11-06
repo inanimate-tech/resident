@@ -3687,7 +3687,7 @@ int Sandbox::lua_time_strftime(lua_State* L)
   } else {
     t = checkStructTime(L, 2);
   }
-  char buf[256] = {};
+  char buf[256];
   const size_t n = timecore::format(buf, sizeof(buf), fmt, t);
   lua_pushlstring(L, buf, n < sizeof(buf) ? n : sizeof(buf) - 1);
   return 1;
@@ -3847,7 +3847,7 @@ void Sandbox::loadDatetime(lua_State* L, int moduleIdx)
          t.gmtoff = (int32_t)luaL_checkinteger(L, 8);
          snprintf(t.zone, sizeof(t.zone), "%s", luaL_optstring(L, 9, ""));
        }
-       char buf[256] = {};
+       char buf[256];
        const size_t n = timecore::format(buf, sizeof(buf), fmt, t);
        lua_pushlstring(L, buf, n < sizeof(buf) ? n : sizeof(buf) - 1);
        return 1;
