@@ -47,7 +47,7 @@ void loop()  { sandbox.loop(); }
 | `gateTickOnConnection` | `bool` | `false` | Pause `on_tick` and event dispatch while disconnected. The default is offline-first: the app keeps running; only network sends wait. |
 | `openUnsafeLibs` | `bool` | `false` | Give the app environment the full Lua stdlib. The default removes `os`/`io`/`package`/`require`/`load`/`dofile`/`loadstring`/`loadfile`/`debug`. |
 | `freshAppEnvironment` | `bool` | `true` | Reset app globals to the runtime baseline on every `loadApp` — nothing from the previous app survives except the store slot. Set `false` for builds whose apps need globals to persist across loads. |
-| `executionDeadlineMs` | `uint32_t` | `1000` | Per-dispatch **wall-clock** hard deadline, in milliseconds (init / one tick / one event / one chunk / each framework hook). No Lua hook is installed at dispatch start; a one-shot timer installs a stopping hook once the deadline passes. Over-deadline aborts the dispatch with a `runtime_error` (`execution deadline exceeded (N ms)`); the app survives, and the hook keeps raising until the dispatch returns, in every coroutine. The third abort inside 30 s suspends the app (`app_throttled`). Available on every platform; `0` = no hard guard. |
+| `executionDeadlineMs` | `uint32_t` | `1000` | Per-dispatch **wall-clock** hard deadline, in milliseconds (init / one tick / one event / one chunk / each framework hook / each extension's guarded scope, such as one LVGL pump). No Lua hook is installed at dispatch start; a one-shot timer installs a stopping hook once the deadline passes. Over-deadline aborts the dispatch with a `runtime_error` (`execution deadline exceeded (N ms)`); the app survives, and the hook keeps raising until the dispatch returns, in every coroutine. The third abort inside 30 s suspends the app (`app_throttled`). Available on every platform; `0` = no hard guard. |
 | `executionSoftDeadlineMs` | `uint32_t` | `0` | Per-dispatch **wall-clock** soft deadline, in milliseconds. A dispatch that outlives it is reported — a rate-limited `[WARN]` line (`log.warn`'s) plus a `slow_dispatch` telemetry event — and allowed to finish. Measured at disarm, so it also covers time spent inside a blocking C binding, where no Lua hook fires. Independent of `executionDeadlineMs` and available on every platform; `0` = no reporting. |
 | `framework` | `std::optional<FrameworkConfig>` | unset | Embed a framework module: `{name, version, source}` — privileged Lua the sandbox hosts outside the app (see [Framework modules](#framework-modules)). |
 | `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
@@ -377,6 +377,7 @@ Include with:
 | `update()` | no-op | Per-loop tick at full main-loop rate (not Lua's 10 FPS) |
 | `onAppReset()` | no-op | Called before each new app is compiled |
 | `onAppRunning(bool running)` | no-op | Called when an app starts or resumes (`true`), and when it stops or is suspended (`false`) |
+| `setDispatchGuard(DispatchGuard* guard)` | no-op | Hands over the sandbox's execution guard, before `begin()`. An extension that calls app Lua from its own C code keeps it for a `GuardedDispatch` (see [The execution guard](#the-execution-guard)) |
 
 ### Idempotent early init
 
@@ -983,7 +984,7 @@ Handle methods (colon-call), matching LovyanGFX names/argument orders: `fillScre
 
 ### `lvgl` module (optional)
 
-Retained-mode UI from Lua — LVGL 9 through the [Inanimate luavgl fork](https://github.com/inanimate-tech/luavgl)'s display-scoped binding. Present only when the firmware names registered panel targets in an `LvglModule` and lists it in `SandboxConfig::extensions`. Opt-in like the lgfx module, with an extra requirement: the board's own build must supply LVGL and luavgl (`lib_deps`). There is **no glue driver to write**: the module owns `lv_init`, the `millis` tick source, the `lv_display_t` over the board's [`PanelTarget`](#residentrendertargets), its draw buffers, the flush callback, the `lv_timer_handler` pump and the app-reset tree wipe. See `examples/m5stick-demo`'s `m5stick-lvgl` env for the full wiring.
+Retained-mode UI from Lua — LVGL 9 through the [Inanimate luavgl fork](https://github.com/inanimate-tech/luavgl)'s display-scoped binding. Present only when the firmware names registered panel targets in an `LvglModule` and lists it in `SandboxConfig::extensions`. Opt-in like the lgfx module, with an extra requirement: the board's own build must supply LVGL and luavgl (`lib_deps`). There is **no glue driver to write**: the module owns `lv_init`, the `millis` tick source, the `lv_display_t` over the board's [`PanelTarget`](#residentrendertargets), its draw buffers, the flush callback, the `lv_timer_handler` pump (run under the execution guard, so every luavgl callback is held to the dispatch deadline: see [The execution guard](#the-execution-guard)) and the app-reset tree wipe. See `examples/m5stick-demo`'s `m5stick-lvgl` env for the full wiring.
 
 ```cpp
 #include <ResidentLvglModule.h>   // not pulled in by Resident.h
@@ -1313,7 +1314,7 @@ Errors in framework hooks are contained like app errors (`runtime_error`, dispat
 
 ## The execution guard
 
-Every protected Lua call — `init`, one tick, one event, one chunk, each framework hook — runs inside an arm/disarm pair. Exceeding the guard aborts *that dispatch* with a `runtime_error`; the app and the device carry on. Nested protected calls share the outermost dispatch's guard, so an inner call never gets a fresh deadline.
+Every protected Lua call — `init`, one tick, one event, one chunk, each framework hook, each extension's guarded scope (below) — runs inside an arm/disarm pair. Exceeding the guard aborts *that dispatch* with a `runtime_error`; the app and the device carry on. Nested protected calls share the outermost dispatch's guard, so an inner call never gets a fresh deadline.
 
 `SandboxConfig::executionDeadlineMs` is the hard guard: a wall-clock deadline in milliseconds, defaulting to `1000`, with `0` leaving the dispatch unguarded. It is available on every platform — a one-shot `esp_timer` on device, a worker thread on host.
 
@@ -1327,6 +1328,17 @@ Once installed, the hook raises on every instruction until the dispatch returns,
 - Lua that runs while the abort unwinds stops at its first instruction. That covers `__close` handlers and `__gc` finalizers.
 - A Lua `xpcall` message handler is not called once the deadline has passed. The error passes through as it is. Otherwise each handler would raise inside the raise that called it, nesting C frames until Lua's C-stack limit. A C handler such as `debug.traceback` is still called.
 - Coroutines are covered too. A Lua hook belongs to one thread, so the sandbox wraps `coroutine.resume`, `coroutine.wrap` and `coroutine.close` to track which thread is running. The timer hooks that thread, and a coroutine resumed after the deadline is hooked before it runs. This holds wherever the coroutine was created: before the dispatch, during it, or inside another coroutine.
+
+**Extensions that call app Lua.** An extension can run app Lua from its own C code, outside any of the sandbox's calls: a graphics library's timer, animation, event and input callbacks, or a widget's per-frame function, all run from the extension's `update()`. That is app code too. The sandbox hands every extension a `DispatchGuard` before `begin()` (`Extension::setDispatchGuard`), and the extension holds a `GuardedDispatch` (`ResidentGuardedDispatch.h`) over the stretch of C code that may call into Lua:
+
+```cpp
+void update() override {
+  Resident::GuardedDispatch dispatch(_guard, "mylib");
+  mylib_run_callbacks();
+}
+```
+
+The scope is one dispatch with one deadline, however many callbacks run inside it, so N runaway callbacks cost one deadline rather than N: once it has passed, the callback that is running stops at its next instruction and each later one at its first. The C code must reach Lua only through a protected call (`lua_pcall`), so that the abort ends inside that call and the library sees an ordinary failed call; nothing longjmps out of the library. A scope the deadline ended is reported once, as a `runtime_error` naming the source (`mylib: execution deadline exceeded (N ms)`, rate-limited like `on_tick`'s), and counts toward throttling like an aborted tick. Scopes nest, joining the outermost dispatch. `LvglModule` runs each `lv_timer_handler` pump as one such scope (source `lvgl`), so every luavgl callback and every widget's per-frame Lua runs under the deadline; its 5 ms period check comes first, so a loop pass that does not pump arms nothing.
 
 **Throttling.** An app that keeps running into the deadline costs the loop a whole deadline every time. The third hard abort inside 30 seconds (`HARD_ABORT_LIMIT` inside `HARD_ABORT_WINDOW_MS`) suspends the app with `suspendApp()`. It emits an `app_throttled` telemetry event and a `[WARN]` line. The app stays suspended until the next app load or a `resumeApp()`; overlay churn does not resume it. Each app load clears the count.
 

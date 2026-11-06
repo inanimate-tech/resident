@@ -277,6 +277,9 @@ void Sandbox::initialize()
     Extension* ext = _lifecycle[i];
     Serial.printf("  Initializing extension: %s\n", ext->name());
 
+    // The execution guard, for an extension that calls app Lua itself.
+    ext->setDispatchGuard(this);
+
     // Wire event sink first so a Driver's begin() can safely sendEvent().
     Driver* driver = ext->asDriver();
     if (driver) {
@@ -1307,10 +1310,10 @@ void Sandbox::armExecutionGuard()
   if (_deadlineTimer) startDeadlineTimer();
 }
 
-void Sandbox::disarmExecutionGuard()
+bool Sandbox::disarmExecutionGuard()
 {
-  if (_dispatchDepth == 0) return;
-  if (--_dispatchDepth > 0) return;
+  if (_dispatchDepth == 0) return false;
+  if (--_dispatchDepth > 0) return false;
 
   const bool aborted = _deadlineTimer && stopDeadlineTimer();
 
@@ -1322,6 +1325,31 @@ void Sandbox::disarmExecutionGuard()
   }
 
   if (aborted) noteHardAbort();
+  return aborted;
+}
+
+void Sandbox::enterDispatch()
+{
+  armExecutionGuard();
+}
+
+// The extension's own protected calls caught the deadline's error, so this is
+// the only place it is seen: report it here, once per scope, however many
+// callbacks it stopped.
+void Sandbox::exitDispatch(const char* source)
+{
+  if (!disarmExecutionGuard()) return;
+  char msg[96];
+  snprintf(msg, sizeof(msg), "%s: execution deadline exceeded (%d ms)",
+           source ? source : "extension", (int)_config.executionDeadlineMs);
+  Serial.printf("Resident::Sandbox: %s\n", msg);
+  const unsigned long now = millis();
+  if (_runtimeErrorCount < RUNTIME_ERROR_MAX_BURST ||
+      now - _lastRuntimeErrorMillis >= RUNTIME_ERROR_COOLDOWN) {
+    emitTelemetry("runtime_error", msg);
+    _lastRuntimeErrorMillis = now;
+    _runtimeErrorCount++;
+  }
 }
 
 void Sandbox::noteHardAbort()

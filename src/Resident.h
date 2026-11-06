@@ -7,6 +7,7 @@
 #include "ResidentDriver.h"
 #include "ResidentDisplayDriver.h"
 #include "ResidentExtension.h"
+#include "ResidentGuardedDispatch.h"
 #include "ResidentExtensions.h"
 #include "ResidentLuaModule.h"
 #include "ResidentRenderTargets.h"

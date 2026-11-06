@@ -18,6 +18,7 @@
 #include "ResidentOverlay.h"
 #include "ResidentEvents.h"
 #include "ResidentStoreModule.h"
+#include "ResidentGuardedDispatch.h"
 
 // Maximum size (bytes, including the NUL terminator) of a serialized event
 // `data` JSON payload — used by the outgoing events.send serializer, the
@@ -50,7 +51,9 @@
 
 namespace Resident {
 
-class Sandbox {
+// Privately a DispatchGuard: every extension is handed the sandbox as one
+// (Extension::setDispatchGuard), and nothing else can reach it as one.
+class Sandbox : private DispatchGuard {
 public:
     Sandbox();
     explicit Sandbox(const SandboxConfig& config);
@@ -477,7 +480,14 @@ private:
 
     // ── Execution guard (R8): per-dispatch wall-clock deadline ──
     void armExecutionGuard();
-    void disarmExecutionGuard();
+    // Returns true when this was the outermost disarm and the deadline had
+    // passed: the dispatch's Lua was aborted.
+    bool disarmExecutionGuard();
+    // DispatchGuard, for extensions: an extension's guarded scope is a
+    // dispatch like any other, and a deadline that ends one is reported as a
+    // runtime_error naming its source (rate-limited as on_tick's are).
+    void enterDispatch() override;
+    void exitDispatch(const char* source) override;
     // Installed by the deadline timer, never at dispatch start.
     static void executionDeadlineHook(struct lua_State* L, struct lua_Debug* ar);
     // Installs executionDeadlineHook when the dispatch it was armed for is

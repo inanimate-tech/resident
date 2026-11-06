@@ -51,6 +51,7 @@
 #include <Arduino.h>
 #include <cstring>
 #include "ResidentExtension.h"
+#include "ResidentGuardedDispatch.h"
 #include "ResidentLuaModule.h"
 #include "ResidentRenderTargets.h"
 
@@ -147,10 +148,25 @@ public:
   // Pump LVGL. Animations advance at up to 200 Hz, decoupled from the
   // sandbox's 10 Hz on_tick; the period gate keeps a multi-kHz idle loop
   // from grinding LVGL's timer list continuously.
+  //
+  // The pump is app code: every luavgl callback (event, timer, anim, indev)
+  // and every widget's per-frame Lua runs inside lv_timer_handler. So the
+  // whole pump is one guarded dispatch, under the sandbox's execution
+  // deadline like a tick. One guard for the pump, not one per callback: N
+  // runaway callbacks then cost one deadline, not N. It is safe because
+  // luavgl reaches Lua only through lua_pcall, so the deadline's error ends
+  // inside the callback and LVGL sees an ordinary return; nothing longjmps
+  // out of lv_timer_handler. The period check comes first, so a loop pass
+  // that does not pump pays nothing for the guard.
   void update() override {
     if (_displays == 0) return;
-    lv_timer_handler_run_in_period(5);
+    if (lv_tick_elaps(_lastPumpMs) < PUMP_PERIOD_MS) return;
+    _lastPumpMs = lv_tick_get();
+    GuardedDispatch dispatch(_guard, "lvgl");
+    lv_timer_handler();
   }
+
+  void setDispatchGuard(DispatchGuard* guard) override { _guard = guard; }
 
   // The app stopped, was suspended, or resumed. A suspension is the overlay
   // arbiter taking a surface this app draws on (bar, oracle, fan-p1, face-p1's
@@ -296,6 +312,9 @@ private:
   int _count = 0;
   int _displays = 0;
   lua_State* _lua = nullptr;   // the sandbox's one Lua state (registerModule)
+  DispatchGuard* _guard = nullptr;   // the sandbox's (setDispatchGuard)
+  static constexpr uint32_t PUMP_PERIOD_MS = 5;
+  uint32_t _lastPumpMs = 0;          // lv_tick_get() at the last pump
   FontResolver _fontResolver = nullptr;
   WidgetInstaller _widgets[MAX_WIDGETS] = {};
   int _widgetCount = 0;
