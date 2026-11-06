@@ -1,10 +1,11 @@
 // Framework module hosting (R16) + the execution deadline (R8).
 //
 // A framework module is privileged Lua hosted OUTSIDE the app: private
-// environment (bare assignments stay framework-local; _G.x is the explicit
-// app-facing install), the runtime-channel sender as a capability, and
-// lifecycle interception. The framework slot persists over-the-wire
-// updates; only {channel:"system", type:"framework"} can write it.
+// environment (bare assignments stay framework-local; framework_install(env)
+// writes the app-facing API into the app's own environment), the
+// runtime-channel sender as a capability, and lifecycle interception. The
+// framework slot persists over-the-wire updates; only {channel:"system",
+// type:"framework"} can write it.
 #include <unity.h>
 #include <string>
 #include <vector>
@@ -13,18 +14,20 @@
 
 namespace {
 
-// Built-in test framework: installs an API, mirrors private state into
-// app-visible globals, consumes "secret" events, publishes on runtime.
+// Built-in test framework: installs an API into the app's environment,
+// mirrors private state into app-visible globals, consumes "secret"
+// events, publishes on runtime.
 constexpr const char* FRAMEWORK_V1 =
     "installs = 0\n"                       // private: framework env only
-    "function framework_install()\n"
+    "function framework_install(env)\n"
+    "  app = env\n"
     "  installs = installs + 1\n"
-    "  _G.api = { tag = 'v1', double = function(x) return x * 2 end }\n"
-    "  _G.fw_installs = installs\n"
+    "  env.api = { tag = 'v1', double = function(x) return x * 2 end }\n"
+    "  env.fw_installs = installs\n"
     "end\n"
     "function framework_tick(ctx, dt)\n"
     "  ticks = (ticks or 0) + 1\n"
-    "  _G.fw_ticks = ticks\n"
+    "  app.fw_ticks = ticks\n"
     "end\n"
     "function framework_event(ctx, e)\n"
     "  if e.name == 'secret' then\n"
@@ -34,7 +37,7 @@ constexpr const char* FRAMEWORK_V1 =
     "  return false\n"
     "end\n"
     "function framework_app_loaded()\n"
-    "  _G.fw_loaded = true\n"
+    "  app.fw_loaded = true\n"
     "end\n";
 
 class FakeStore : public Resident::PersistentStore {
@@ -211,7 +214,7 @@ void test_framework_slot_update_applies_persists_and_survives_reboot(void) {
   doc["name"] = "testfw";
   doc["version"] = 2;
   doc["code"] =
-      "function framework_install() _G.api = { tag = 'v2' } end\n";
+      "function framework_install(env) env.api = { tag = 'v2' } end\n";
   sandbox->injectMessage("test", "framework", doc);
   // Applied live: the next app load installs v2's API.
   loadApp("tag = api.tag\n");
@@ -251,7 +254,7 @@ void test_framework_empty_code_reverts_to_builtin(void) {
   up["channel"] = "system";
   up["type"] = "framework";
   up["version"] = 2;
-  up["code"] = "function framework_install() _G.api = { tag = 'v2' } end\n";
+  up["code"] = "function framework_install(env) env.api = { tag = 'v2' } end\n";
   sandbox->injectMessage("test", "framework", up);
   JsonDocument down;
   down["channel"] = "system";

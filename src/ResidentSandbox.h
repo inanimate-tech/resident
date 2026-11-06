@@ -356,6 +356,8 @@ public:
     // Test hooks — only used by native tests. Exposed here because the mock
     // Timezone carries its configuration per-instance.
     Timezone& timezoneForTest() { return _tz; }
+    // A global of the running app (from its environment), or before the
+    // first load the pristine one.
     bool luaGlobalBoolForTest(const char* name);
     int luaGlobalIntForTest(const char* name);
     void callOnTickForTest(unsigned long dt_ms) { callOnTick(dt_ms); }
@@ -471,9 +473,14 @@ private:
     // Active capture bracket (startCapture/endCapture).
     uint16_t _captureStream = 0;
 
-    // Fresh app environment (R5): baseline snapshot + per-load reset.
+    // The app's environment (R5, ResidentAppEnv.h): the baseline names,
+    // the locked shared metatables, and a fresh _ENV built at each load.
+    static constexpr const char* kBaselineGlobalsKey = "resident.baseline_globals";
     void snapshotBaselineGlobals();
-    void resetAppGlobals();
+    void lockSharedMetatables();
+    void buildAppEnv();
+    bool hasAppEnv();
+    void pushGlobalForTest(const char* name);
 
     // ── Execution guard (R8): per-dispatch wall-clock deadline ──
     void armExecutionGuard();
@@ -537,8 +544,9 @@ private:
     // channel sender is a C closure handed into that env — no app path to
     // it exists. Hook contract (all optional, looked up in the framework
     // env after its chunk runs):
-    //   framework_install()        — before each app chunk: (re)install the
-    //                                framework's app-facing API into _G
+    //   framework_install(env)     — before each app chunk: (re)install the
+    //                                framework's app-facing API into env,
+    //                                the app's fresh environment
     //   framework_tick(ctx, dt)    — before the app's on_tick
     //   framework_event(ctx, e)    — before the app's on_event; return
     //                                true to consume (app never sees it)
@@ -559,7 +567,7 @@ private:
     void setupFramework();       // boot: slot blob if valid, else built-in
     void handleFrameworkMessage(JsonDocument& doc);
     void refreshFrameworkHooks();
-    bool callFrameworkNoArg(int ref, const char* what);
+    bool callFrameworkHook(int ref, const char* what, bool passAppEnv = false);
     void callFrameworkTick(unsigned long dt_ms);
     static int luaRuntimeSend(struct lua_State* L);
 
@@ -814,8 +822,9 @@ private:
     uint8_t _timeDeprecationsWarned = 0;
     // The `datetime` module: Lua (ResidentDatetime.h) over C primitives,
     // installed as a stub that loads on first touch. Re-installed at every
-    // app load, so an app that never touches it pays nothing.
-    void installDatetime();
+    // app load, into the app's environment, so an app that never touches it
+    // pays nothing; once at setup into _G, for the framework.
+    void installDatetime(bool intoAppEnv);
     static void loadDatetime(lua_State* L, int moduleIdx);
     static int lua_datetime_stub_index(lua_State* L);
     static int lua_datetime_stub_call(lua_State* L);

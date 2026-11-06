@@ -9,6 +9,7 @@
 #include "ResidentRenderTargets.h"
 #include "ResidentDatetime.h"
 #include "ResidentAppBaseLib.h"
+#include "ResidentAppEnv.h"
 
 extern "C" {
   #include "lua/lua.h"
@@ -159,10 +160,21 @@ void Sandbox::setTimezone(const char* ianaZone)
   }
 }
 
+// The running app's global, or before the first load the pristine one an
+// app would start with.
+void Sandbox::pushGlobalForTest(const char* name)
+{
+  if (hasAppEnv()) {
+    getAppGlobal(_lua, name);
+  } else {
+    lua_getglobal(_lua, name);
+  }
+}
+
 bool Sandbox::luaGlobalBoolForTest(const char* name)
 {
   if (!_lua || !name) return false;
-  lua_getglobal(_lua, name);
+  pushGlobalForTest(name);
   bool result = lua_toboolean(_lua, -1);
   lua_pop(_lua, 1);
   return result;
@@ -171,7 +183,7 @@ bool Sandbox::luaGlobalBoolForTest(const char* name)
 int Sandbox::luaGlobalIntForTest(const char* name)
 {
   if (!_lua || !name) return 0;
-  lua_getglobal(_lua, name);
+  pushGlobalForTest(name);
   int result = (int)lua_tointeger(_lua, -1);
   lua_pop(_lua, 1);
   return result;
@@ -337,60 +349,165 @@ void Sandbox::initialize()
   _triggerResetTime = millis();
   _lastTickTime = millis();
 
-  // Snapshot the baseline global names (stdlib, math globals, log/time,
-  // driver + internal modules) — everything a fresh app environment keeps.
-  // Anything an app defines on top is cleared at the next load (R5).
+  // Record the baseline global names (stdlib, log/time/screens, driver +
+  // internal modules): the template every app's environment is built from.
+  // Then lock the metatables an app's copy of a module shares with it.
   snapshotBaselineGlobals();
+  lockSharedMetatables();
 
   Serial.println("Resident::Sandbox initialized");
 }
 
-// Record the names present in _G right after environment setup: the
-// runtime-owned baseline a fresh app environment resets to.
+// Record the names present in _G right after environment setup, as a
+// sequence: the globals every app's environment starts with. Their values
+// are read from _G at each load, and no app can write _G, so the template
+// stays what setup made it. Not _G (each env is its own) or datetime (each
+// app gets a fresh one, installDatetime; the one in _G is the framework's,
+// and the module sets its own metatable when it loads, so it stays
+// unlocked).
 void Sandbox::snapshotBaselineGlobals()
 {
-  lua_newtable(_lua);                       // the baseline set
+  lua_newtable(_lua);                       // the baseline names
   lua_pushglobaltable(_lua);
+  lua_Integer n = 0;
   lua_pushnil(_lua);
   while (lua_next(_lua, -2)) {
     lua_pop(_lua, 1);                       // drop the value
-    lua_pushvalue(_lua, -1);                // key
-    lua_pushboolean(_lua, 1);
-    lua_settable(_lua, -5);                 // baseline[key] = true
-  }
-  lua_pop(_lua, 1);                         // _G
-  lua_setfield(_lua, LUA_REGISTRYINDEX, "resident_baseline_globals");
-}
-
-// Fresh app environment (R5): clear every global that is not in the
-// baseline. Runs at app LOAD only — chunks deliberately keep the running
-// environment (that is their point).
-void Sandbox::resetAppGlobals()
-{
-  lua_getfield(_lua, LUA_REGISTRYINDEX, "resident_baseline_globals");
-  if (!lua_istable(_lua, -1)) {
-    lua_pop(_lua, 1);
-    return;
-  }
-  lua_pushglobaltable(_lua);                // [baseline, _G]
-  lua_pushnil(_lua);
-  while (lua_next(_lua, -2)) {              // [baseline, _G, key, value]
-    lua_pop(_lua, 1);                       // [baseline, _G, key]
-    lua_pushvalue(_lua, -1);                // [baseline, _G, key, key]
-    lua_gettable(_lua, -4);                 // [baseline, _G, key, inBaseline]
-    bool inBaseline = lua_toboolean(_lua, -1);
-    lua_pop(_lua, 1);                       // [baseline, _G, key]
-    if (!inBaseline) {
-      // Clearing an EXISTING field during traversal is defined behavior
-      // (adding one is not — and we only ever remove).
-      lua_pushvalue(_lua, -1);              // key
-      lua_pushnil(_lua);
-      lua_settable(_lua, -4);               // _G[key] = nil
+    if (lua_type(_lua, -1) == LUA_TSTRING &&
+        strcmp(lua_tostring(_lua, -1), "_G") != 0 &&
+        strcmp(lua_tostring(_lua, -1), "datetime") != 0) {
+      lua_pushvalue(_lua, -1);
+      lua_rawseti(_lua, -4, ++n);           // names[n] = key
     }
   }
-  lua_pop(_lua, 2);                         // _G, baseline
+  lua_pop(_lua, 1);                         // _G
+  lua_setfield(_lua, LUA_REGISTRYINDEX, kBaselineGlobalsKey);
+}
+
+namespace {
+
+// Lock the metatable of the value at idx, if it has one: __metatable =
+// false, so getmetatable answers false and setmetatable refuses to replace
+// it. The metatable works as it did otherwise.
+void lockMetatable(lua_State* L, int idx)
+{
+  if (!lua_getmetatable(L, idx)) return;
+  lua_pushliteral(L, "__metatable");
+  lua_pushboolean(L, 0);
+  lua_rawset(L, -3);
+  lua_pop(L, 1);
+}
+
+// Push a shallow copy of the table at idx, sharing its metatable (set from
+// C, so a locked one too). With copyInner, the plain tables in it (no
+// metatable: a module's constants, such as lvgl.SYMBOL) are copied one
+// level further, so writing one of those stays in the app too.
+void pushTableCopy(lua_State* L, int idx, bool copyInner)
+{
+  idx = lua_absindex(L, idx);
+  lua_newtable(L);
+  lua_pushnil(L);
+  while (lua_next(L, idx)) {                // [copy, key, value]
+    if (copyInner && lua_type(L, -1) == LUA_TTABLE) {
+      if (lua_getmetatable(L, -1)) {
+        lua_pop(L, 1);                      // not plain: shared as it is
+      } else {
+        pushTableCopy(L, -1, false);        // [copy, key, value, inner]
+        lua_replace(L, -2);                 // [copy, key, inner]
+      }
+    }
+    lua_pushvalue(L, -2);                   // [copy, key, value, key]
+    lua_insert(L, -2);                      // [copy, key, key, value]
+    lua_rawset(L, -4);                      // copy[key] = value
+  }
+  if (lua_getmetatable(L, idx)) lua_setmetatable(L, -2);
+}
+
+}  // namespace
+
+// The metatables an app's copy of a module shares with the original, and
+// the string metatable every string shares, are locked once: getmetatable
+// answers false for them, so an app can neither rewrite nor replace them.
+// (A userdata's metatable is out of reach already: getmetatable answers
+// nil for any userdata, ResidentAppBaseLib.h.)
+void Sandbox::lockSharedMetatables()
+{
+  lua_pushliteral(_lua, "");
+  lockMetatable(_lua, -1);
+  lua_pop(_lua, 1);
+
+  lua_getfield(_lua, LUA_REGISTRYINDEX, kBaselineGlobalsKey);
+  lua_pushglobaltable(_lua);
+  const lua_Integer n = (lua_Integer)lua_rawlen(_lua, -2);
+  for (lua_Integer i = 1; i <= n; i++) {
+    lua_rawgeti(_lua, -2, i);               // name
+    if (lua_rawget(_lua, -2) == LUA_TTABLE) lockMetatable(_lua, -1);
+    lua_pop(_lua, 1);
+  }
+  lua_pop(_lua, 2);                         // _G, names
+}
+
+// A fresh environment for the app about to load (R5): every baseline
+// global, each library and module table copied (with the plain tables in
+// it), and env._G = env. The previous app's environment is dropped first,
+// and collected, so nothing that app defined or replaced survives. The
+// string metatable's __index becomes this app's `string`, so s:format()
+// and string.format are the same function to the app, whatever it does to
+// its copy.
+//
+// The framework environment's __index is _G itself, which no app reaches:
+// an app has its own _G, the shared metatables are locked, and the
+// functions in its copies are the ones in _G. So one app cannot steer the
+// next one, or the framework, through a global. (Except through the string
+// metatable, which is shared by every string: framework code calls
+// string.* functions it captured, never s:method().)
+void Sandbox::buildAppEnv()
+{
+  lua_pushnil(_lua);
+  lua_setfield(_lua, LUA_REGISTRYINDEX, kAppEnvRegistryKey);
   lua_gc(_lua, LUA_GCCOLLECT, 0);
   lua_gc(_lua, LUA_GCCOLLECT, 0);           // finalizers, then their garbage
+
+  lua_getfield(_lua, LUA_REGISTRYINDEX, kBaselineGlobalsKey);
+  const int names = lua_gettop(_lua);
+  const lua_Integer n =
+      lua_istable(_lua, names) ? (lua_Integer)lua_rawlen(_lua, names) : 0;
+  lua_createtable(_lua, 0, (int)n + 4);     // + _G and the lifecycle names
+  const int env = lua_gettop(_lua);
+  lua_pushglobaltable(_lua);
+  const int g = lua_gettop(_lua);
+  for (lua_Integer i = 1; i <= n; i++) {
+    lua_rawgeti(_lua, names, i);            // name
+    lua_pushvalue(_lua, -1);
+    if (lua_rawget(_lua, g) == LUA_TTABLE) {
+      pushTableCopy(_lua, -1, true);
+      lua_replace(_lua, -2);
+    }
+    lua_rawset(_lua, env);                  // env[name] = value, or its copy
+  }
+  lua_pushvalue(_lua, env);
+  lua_setfield(_lua, env, "_G");
+  lua_settop(_lua, env);                    // [names, env]
+
+  lua_pushliteral(_lua, "");
+  if (lua_getmetatable(_lua, -1)) {         // [names, env, "", mt]
+    lua_pushliteral(_lua, "__index");
+    lua_pushliteral(_lua, "string");
+    lua_rawget(_lua, env);
+    lua_rawset(_lua, -3);                   // mt.__index = env.string
+    lua_pop(_lua, 1);
+  }
+  lua_pop(_lua, 1);                         // ""
+
+  lua_setfield(_lua, LUA_REGISTRYINDEX, kAppEnvRegistryKey);
+  lua_pop(_lua, 1);                         // names
+}
+
+bool Sandbox::hasAppEnv()
+{
+  const bool has = pushAppEnv(_lua) == LUA_TTABLE;
+  lua_pop(_lua, 1);
+  return has;
 }
 
 void Sandbox::setupLuaEnvironment()
@@ -446,7 +563,7 @@ void Sandbox::setupLuaEnvironment()
   lua_setglobal(_lua, "time");
 
   // datetime module: Python's datetime, loaded on first touch.
-  installDatetime();
+  installDatetime(/*intoAppEnv=*/false);
 
   // screens module: the screens of the board's display drivers — their facts
   // and their settings. Always present: a board with no screen lists none.
@@ -1312,7 +1429,9 @@ void Sandbox::reportSlowDispatch(uint32_t elapsedUs)
 //
 // A framework module is privileged Lua the sandbox hosts OUTSIDE the app:
 // its chunk runs in a private environment (__index → _G, so it reads the
-// baseline but its own globals are unreachable from app code), it holds
+// pristine baseline, which no app can write, and its own globals are
+// unreachable from app code; each app gets its own environment, handed to
+// framework_install so the framework can put its API there), it holds
 // the runtime-channel sender as a capability, and it intercepts the
 // lifecycle. Resident is generic here — `name` is data, never interpreted.
 
@@ -1477,12 +1596,17 @@ void Sandbox::handleFrameworkMessage(JsonDocument& doc)
   }
 }
 
-bool Sandbox::callFrameworkNoArg(int ref, const char* what)
+// A hook with no arguments, or with the app's environment as its one
+// argument: framework_install(env), so the framework writes its API there
+// (env.api = ...). The framework's own _G is the pristine global table,
+// where the app would never see it.
+bool Sandbox::callFrameworkHook(int ref, const char* what, bool passAppEnv)
 {
   if (!_lua || ref == LUA_NOREF) return true;
   lua_rawgeti(_lua, LUA_REGISTRYINDEX, ref);
+  if (passAppEnv) pushAppEnv(_lua);
   armExecutionGuard();
-  int r = lua_pcall(_lua, 0, 0, 0);
+  int r = lua_pcall(_lua, passAppEnv ? 1 : 0, 0, 0);
   disarmExecutionGuard();
   if (r != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
@@ -2370,7 +2494,7 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   // rather than ticking (and drawing) beneath the overlay.
   if (loadedOk) reconcileOverlaySuspension();
   if (loadedOk && frameworkActive() && _fwAppLoadedRef != LUA_NOREF) {
-    callFrameworkNoArg(_fwAppLoadedRef, "framework_app_loaded");
+    callFrameworkHook(_fwAppLoadedRef, "framework_app_loaded");
   }
 
   // Persist only an app we know loaded cleanly, and never re-persist a restore.
@@ -2429,6 +2553,8 @@ bool Sandbox::loadChunk(const char* code)
     lua_pop(_lua, 1);
     return false;
   }
+  pushAppEnv(_lua);                         // the running app's environment
+  lua_setupvalue(_lua, -2, 1);              // chunk _ENV = env
   armExecutionGuard();
   int chunkResult = lua_pcall(_lua, 0, 0, 0);
   disarmExecutionGuard();
@@ -2450,7 +2576,7 @@ bool Sandbox::loadChunk(const char* code)
 
 void Sandbox::refreshLifecycleRef(const char* global, int& ref)
 {
-  lua_getglobal(_lua, global);
+  getAppGlobal(_lua, global);
   if (!lua_isfunction(_lua, -1)) { lua_pop(_lua, 1); return; }
   if (ref != LUA_NOREF) luaL_unref(_lua, LUA_REGISTRYINDEX, ref);
   ref = luaL_ref(_lua, LUA_REGISTRYINDEX);  // pops the function
@@ -2828,36 +2954,37 @@ bool Sandbox::compileApp(const char* code)
   _lastRuntimeErrorMillis = 0;
   _lastInitOk = false;
 
-  // Fresh app environment (R5): nothing from the previous app survives —
-  // every non-baseline global goes, not just the three lifecycle names.
-  // ("Fresh boot" finally means fresh.)
-  if (_config.freshAppEnvironment) resetAppGlobals();
+  // Fresh app environment (R5): the app gets an _ENV of its own, built from
+  // the pristine globals, so nothing from the previous app survives — not
+  // a global it defined, nor a library function it replaced. With
+  // freshAppEnvironment off, the previous app's environment carries over.
+  if (_config.freshAppEnvironment || !hasAppEnv()) buildAppEnv();
 
   // A fresh, unloaded datetime for every app: one that never touches it pays
   // nothing, and nothing the last app did to it survives. And the `time`
   // deprecation notices are owed again.
-  installDatetime();
+  installDatetime(/*intoAppEnv=*/true);
   _timeDeprecationsWarned = 0;
 
-  // Clear old global functions (covered by the reset above, but explicit —
-  // and still required when freshAppEnvironment is off)
-  lua_pushnil(_lua);
-  lua_setglobal(_lua, "init");
-  lua_pushnil(_lua);
-  lua_setglobal(_lua, "on_tick");
-  lua_pushnil(_lua);
-  lua_setglobal(_lua, "on_event");
-
-  // Framework install (R16): the framework (re)writes its app-facing API
-  // into the fresh environment BEFORE the app chunk runs.
-  if (frameworkActive() && _fwInstallRef != LUA_NOREF) {
-    callFrameworkNoArg(_fwInstallRef, "framework_install");
+  // Clear old global functions (only left over when freshAppEnvironment is
+  // off: a fresh environment has none)
+  for (const char* name : {"init", "on_tick", "on_event"}) {
+    lua_pushnil(_lua);
+    setAppGlobal(_lua, name);
   }
 
-  // Load and execute the chunk
+  // Framework install (R16): the framework (re)writes its app-facing API
+  // into the app's environment BEFORE the app chunk runs.
+  if (frameworkActive() && _fwInstallRef != LUA_NOREF) {
+    callFrameworkHook(_fwInstallRef, "framework_install", /*passAppEnv=*/true);
+  }
+
+  // Load and execute the chunk, in the app's environment
   int loadResult = luaL_loadstring(_lua, code);
 
   if (loadResult == 0) {
+    pushAppEnv(_lua);
+    lua_setupvalue(_lua, -2, 1);            // chunk _ENV = env
     armExecutionGuard();
     int execResult = lua_pcall(_lua, 0, 0, 0);
     disarmExecutionGuard();
@@ -2875,47 +3002,19 @@ bool Sandbox::compileApp(const char* code)
     return false;
   }
 
-  // Check for callback functions
-  lua_getglobal(_lua, "init");
-  bool hasInit = lua_isfunction(_lua, -1);
-  lua_pop(_lua, 1);
+  // The callbacks, read raw from the app's environment (an app may give it
+  // a metatable; none of its code runs here, outside the guard)
+  refreshLifecycleRef("init", _initFuncRef);
+  refreshLifecycleRef("on_tick", _onTickFuncRef);
+  refreshLifecycleRef("on_event", _onEventFuncRef);
 
-  lua_getglobal(_lua, "on_tick");
-  bool hasOnTick = lua_isfunction(_lua, -1);
-  lua_pop(_lua, 1);
-
-  lua_getglobal(_lua, "on_event");
-  bool hasOnEvent = lua_isfunction(_lua, -1);
-  lua_pop(_lua, 1);
-
-  if (!hasInit && !hasOnTick && !hasOnEvent && !frameworkActive()) {
+  if (_initFuncRef == LUA_NOREF && _onTickFuncRef == LUA_NOREF &&
+      _onEventFuncRef == LUA_NOREF && !frameworkActive()) {
     // With a framework module hosting the lifecycle, apps legitimately
     // define none of these — validity is the framework's business.
     Serial.println("Resident::Sandbox: no callbacks found (init, on_tick, or on_event required)");
     emitTelemetry("compile_error", "no callbacks found (init, on_tick, or on_event required)");
     return false;
-  }
-
-  // Extract function references
-  lua_getglobal(_lua, "init");
-  if (lua_isfunction(_lua, -1)) {
-    _initFuncRef = luaL_ref(_lua, LUA_REGISTRYINDEX);
-  } else {
-    lua_pop(_lua, 1);
-  }
-
-  lua_getglobal(_lua, "on_tick");
-  if (lua_isfunction(_lua, -1)) {
-    _onTickFuncRef = luaL_ref(_lua, LUA_REGISTRYINDEX);
-  } else {
-    lua_pop(_lua, 1);
-  }
-
-  lua_getglobal(_lua, "on_event");
-  if (lua_isfunction(_lua, -1)) {
-    _onEventFuncRef = luaL_ref(_lua, LUA_REGISTRYINDEX);
-  } else {
-    lua_pop(_lua, 1);
   }
 
   // Reset timing
@@ -3783,7 +3882,7 @@ int pushFields(lua_State* L, const timecore::Tm& t)
 
 }  // namespace
 
-void Sandbox::installDatetime()
+void Sandbox::installDatetime(bool intoAppEnv)
 {
   lua_newtable(_lua);                       // the module, filled on first touch
   lua_createtable(_lua, 0, 2);              // the stub's metatable
@@ -3792,7 +3891,11 @@ void Sandbox::installDatetime()
   lua_pushcfunction(_lua, lua_datetime_stub_call);
   lua_setfield(_lua, -2, "__call");
   lua_setmetatable(_lua, -2);
-  lua_setglobal(_lua, "datetime");
+  if (intoAppEnv) {
+    setAppGlobal(_lua, "datetime");
+  } else {
+    lua_setglobal(_lua, "datetime");        // the framework's, in _G
+  }
 }
 
 // Run the module's source with the primitives and the table at moduleIdx,
