@@ -35,14 +35,6 @@
 // capability introduces its own hello field when it exists).
 #define RESIDENT_PROTOCOL_VERSION 1
 
-// Lua incremental-GC pause on boards without PSRAM (Lua's default is 200:
-// a cycle starts once the heap doubles). Lower keeps less garbage — and
-// less fragmentation — in the heap the network stack also allocates from.
-// Override with a build flag, e.g. -DRESIDENT_NO_PSRAM_GC_PAUSE=150.
-#ifndef RESIDENT_NO_PSRAM_GC_PAUSE
-#define RESIDENT_NO_PSRAM_GC_PAUSE 120
-#endif
-
 // Event ring depth (slots; one is kept free, so usable depth is one less).
 // Override with a build flag, e.g. -DRESIDENT_EVENT_RING_SIZE=16.
 // RAM note: each slot holds RESIDENT_EVENT_JSON_MAX bytes of data.
@@ -54,6 +46,17 @@
 // drain in order on capacity or reconnect).
 #ifndef RESIDENT_EVENT_QUEUE_SIZE
 #define RESIDENT_EVENT_QUEUE_SIZE 16
+#endif
+
+// Lua incremental-GC pause on boards without PSRAM (boards with PSRAM run
+// Lua's default, 200: a cycle starts once the heap doubles). Lower keeps
+// less garbage — and less fragmentation — in the heap the network stack
+// also allocates from, at some CPU cost. Applied once the Lua state is
+// created. Lua keeps the pause as value/4 in a byte and reads 0 as "leave
+// unchanged", so it must be 1..1023 (checked at compile time).
+// Override with a build flag, e.g. -DRESIDENT_NO_PSRAM_GC_PAUSE=150.
+#ifndef RESIDENT_NO_PSRAM_GC_PAUSE
+#define RESIDENT_NO_PSRAM_GC_PAUSE 120
 #endif
 
 namespace Resident {

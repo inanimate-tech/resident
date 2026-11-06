@@ -27,6 +27,12 @@ extern "C" {
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 
+// Whether the board has any SPIRAM at all: decides where the Lua heap lives
+// and which GC pause it runs with.
+static bool boardHasPsram() {
+  return heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0;
+}
+
 // Custom Lua allocator. Prefers PSRAM, but transparently falls back to
 // internal RAM on boards without PSRAM (e.g. ESP32-S3FN8). The capability is
 // resolved once on first use from whether any SPIRAM is actually present.
@@ -34,8 +40,7 @@ static void* psramLuaAlloc(void* ud, void* ptr, size_t osize, size_t nsize) {
   (void)ud;
   (void)osize;
   static const uint32_t kLuaHeapCaps =
-      (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0) ? MALLOC_CAP_SPIRAM
-                                                        : MALLOC_CAP_8BIT;
+      boardHasPsram() ? MALLOC_CAP_SPIRAM : MALLOC_CAP_8BIT;
   if (nsize == 0) {
     heap_caps_free(ptr);
     return NULL;
@@ -46,6 +51,24 @@ static void* psramLuaAlloc(void* ud, void* ptr, size_t osize, size_t nsize) {
   return heap_caps_realloc(ptr, nsize, kLuaHeapCaps);
 }
 #endif
+
+static_assert(RESIDENT_NO_PSRAM_GC_PAUSE >= 1 &&
+                  RESIDENT_NO_PSRAM_GC_PAUSE <= 1023,
+              "RESIDENT_NO_PSRAM_GC_PAUSE must be 1..1023: Lua keeps the "
+              "pause as value/4 in a byte, and reads 0 as 'leave unchanged'");
+
+// The collector pause this board runs. Without PSRAM, Lua shares the
+// internal heap with the network stack, and Lua's default pause (200) lets
+// garbage grow to the size of the live heap before a cycle starts; that
+// garbage is what chops the largest free block down until an incoming
+// message no longer fits. A shorter pause keeps less garbage outstanding, at
+// some CPU cost. Boards with PSRAM, and host builds, keep Lua's default.
+static int boardGcPause() {
+#ifdef ESP_PLATFORM
+  if (!boardHasPsram()) return RESIDENT_NO_PSRAM_GC_PAUSE;
+#endif
+  return 200;  // Lua's default: lgc.h's LUAI_GCPAUSE (lgc.h is internal)
+}
 
 namespace Resident {
 
@@ -242,18 +265,9 @@ void Sandbox::initialize()
   }
 
   luaL_openlibs(_lua);
-
-#ifdef ESP_PLATFORM
-  // Without PSRAM, Lua shares the internal heap with the network stack.
-  // Lua's default pause (200) lets garbage grow to the size of the live
-  // heap before a cycle starts, and that garbage is what chops the largest
-  // free block down until an incoming message no longer fits. A shorter
-  // pause keeps less garbage outstanding, at some CPU cost. PSRAM boards
-  // keep the default.
-  if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) == 0) {
-    lua_gc(_lua, LUA_GCINC, RESIDENT_NO_PSRAM_GC_PAUSE, 0, 0);
-  }
-#endif
+  // The board's collector pause (see boardGcPause); step multiplier and
+  // size stay at Lua's defaults.
+  lua_gc(_lua, LUA_GCINC, boardGcPause(), 0, 0);
 
   // Store sandbox instance in registry
   lua_pushlightuserdata(_lua, this);
