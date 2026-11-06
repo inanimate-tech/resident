@@ -145,8 +145,8 @@ public:
   }
 
   // Pump LVGL. Animations advance at up to 200 Hz, decoupled from the
-  // sandbox's 10 Hz on_tick; the period gate keeps a multi-kHz idle loop
-  // from grinding LVGL's timer list continuously.
+  // sandbox's tick; the period gate keeps a multi-kHz idle loop from
+  // grinding LVGL's timer list continuously.
   void update() override {
     if (_displays == 0) return;
 #if RESIDENT_TICK_DIAGS
@@ -155,6 +155,34 @@ public:
     noteDiagPump(micros() - t0);
 #else
     lv_timer_handler_run_in_period(5);
+#endif
+  }
+
+  // Render what the tick just changed, now. update() pumps LVGL earlier in
+  // the loop pass than the tick, so left alone, a widget the app changed in
+  // on_tick waits for the next pass, then for the display's refresh timer
+  // to come due (up to LV_DEF_REFR_PERIOD) and for update()'s 5 ms gate.
+  // Instead, mark the refresh timer of every display this module owns ready
+  // and pump once: LVGL renders the dirty areas (if any) before the pass
+  // ends, and its refresh period restarts from this frame.
+  void afterTick() override {
+    if (_displays == 0) return;
+    bool any = false;
+    for (int i = 0; i < _count; i++) {
+      if (!_slots[i].disp) continue;
+      if (!RenderTargets::isOwner(_slots[i].name, RenderTargets::MODULE_LVGL)) continue;
+      lv_timer_t* t = lv_display_get_refr_timer(_slots[i].disp);
+      if (!t) continue;
+      lv_timer_ready(t);
+      any = true;
+    }
+    if (!any) return;
+#if RESIDENT_TICK_DIAGS
+    const uint32_t t0 = micros();
+    lv_timer_handler();
+    noteDiagPump(micros() - t0);
+#else
+    lv_timer_handler();
 #endif
   }
 

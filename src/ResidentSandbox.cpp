@@ -1511,14 +1511,15 @@ bool Sandbox::callFrameworkNoArg(int ref, const char* what)
   return true;
 }
 
-int32_t Sandbox::callFrameworkTick(unsigned long dt_ms)
+int32_t Sandbox::callFrameworkTick(unsigned long dt_ms, bool isFrame)
 {
   if (!_lua || !frameworkActive() || _fwTickRef == LUA_NOREF) return -1;
   lua_rawgeti(_lua, LUA_REGISTRYINDEX, _fwTickRef);
   pushCtxTable();
   lua_pushinteger(_lua, dt_ms);
+  lua_pushboolean(_lua, isFrame);
   armExecutionGuard();
-  int r = lua_pcall(_lua, 2, 1, 0);
+  int r = lua_pcall(_lua, 3, 1, 0);
   disarmExecutionGuard();
   if (r != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
@@ -2128,7 +2129,7 @@ void Sandbox::loopOnce() {
 #if RESIDENT_TICK_DIAGS
     uint32_t diagT0 = micros();
 #endif
-    scheduleFrameworkWake(now, callFrameworkTick(now - _lastFrameworkTickTime));
+    scheduleFrameworkWake(now, callFrameworkTick(now - _lastFrameworkTickTime, tickDue));
     _lastFrameworkTickTime = now;
 #if RESIDENT_TICK_DIAGS
     uint32_t diagT1 = micros();
@@ -2143,6 +2144,11 @@ void Sandbox::loopOnce() {
       // A tick missed outright is skipped, never made up in a burst.
       _nextTickDue += tickInterval();
       if ((long)(now - _nextTickDue) >= 0) _nextTickDue = now + tickInterval();
+      // The tick set new state; let the extensions show it in this pass
+      // (unless the tick stopped the app).
+      if (_runState == RunState::Running) {
+        for (uint8_t i = 0; i < _lifecycleCount; i++) _lifecycle[i]->afterTick();
+      }
     }
 #if RESIDENT_TICK_DIAGS
     else {

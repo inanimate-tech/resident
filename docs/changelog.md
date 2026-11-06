@@ -6,9 +6,12 @@
 
 - **The board sets the tick rate.** `SandboxConfig::tickIntervalMs` (default 100, so 10 Hz as before) paces the app's `on_tick`, the framework's `framework_tick` and a winning overlay's `onDraw`. A tick is due one interval after the last one was due, so the rate holds when a loop pass runs late; a tick missed outright is skipped, not made up in a burst.
 - **A framework can ask to run before the next tick.** `framework_tick` may return the milliseconds until it next needs to run (its next timer, say); the sandbox calls it again then, 4 ms apart at the closest, with `dt_ms` the time since its own last call. A framework that returns nothing ticks with the app, as before.
+- **The framework is told which calls are frames.** `framework_tick(ctx, dt_ms, is_frame)`: `is_frame` is `true` on a tick (the app's `on_tick` follows) and `false` on an early run, so a framework can keep per-frame work, such as anything that draws, to the frames. A hook that takes two arguments is unaffected.
+- **Extensions hear each tick: `Extension::afterTick()`.** It runs right after each tick, in the same loop pass, and not after a framework's early run.
 
 ### Performance
 
+- **LVGL renders right after the tick.** `LvglModule::afterTick()` marks each owned display's refresh timer ready and pumps LVGL once, so what a tick changed reaches the glass in the same loop pass. Before, it waited for the next pass, the display's refresh period (`LV_DEF_REFR_PERIOD`, 33 ms by default) and the pump's 5 ms gate. In a diagnostics build, that render counts in `[loopdiag]`'s tick section and in `[lvgldiag]`'s pump time.
 - **Lua's small blocks come from slabs.** On a board with PSRAM, the Lua state's allocator (`LuaHeap`, `ResidentLuaHeap.h`) serves blocks up to 256 bytes from 4 KB slabs of one size class each, with a free list per slab, and sends larger blocks to PSRAM as before. A slab that empties goes back to PSRAM unless it is its class's last with room. Allocation-heavy Lua runs about 4–5× faster (small tables −79%, closures −77%, strings −36% on an ESP32-S3), and the collector's worst pauses shrink with it. A board without PSRAM keeps every block in internal RAM through `heap_caps`, as before.
 
 ### Diagnostics

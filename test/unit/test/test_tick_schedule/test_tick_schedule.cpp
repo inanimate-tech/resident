@@ -20,12 +20,36 @@ constexpr const char* APP =
     "ticks = 0\n"
     "function on_tick(ctx, dt) ticks = ticks + 1; last_dt = dt end\n";
 
+// Counts its tick calls by the third argument: frames (a tick) and wakes (an
+// early run the framework asked for).
+constexpr const char* FRAMEWORK_FRAMES =
+    "function framework_tick(ctx, dt, is_frame)\n"
+    "  if is_frame then _G.fw_frames = (_G.fw_frames or 0) + 1\n"
+    "  elseif is_frame == false then _G.fw_wakes = (_G.fw_wakes or 0) + 1 end\n"
+    "  return _G.wake\n"
+    "end\n";
+
 Resident::Sandbox* sandbox = nullptr;
+
+// Counts afterTick calls, and records the app's tick count at the last one,
+// to show it runs after on_tick.
+class AfterTickProbe : public Resident::Extension {
+ public:
+  const char* name() const override { return "probe"; }
+  void afterTick() override {
+    calls++;
+    ticksSeen = sandbox->luaGlobalIntForTest("ticks");
+  }
+  int calls = 0;
+  int ticksSeen = -1;
+};
+AfterTickProbe probe;
 
 void build(uint16_t intervalMs, const char* fwSource = nullptr, const char* app = APP) {
   Resident::SandboxConfig cfg;
   cfg.deviceType = "native-test";
   cfg.persistApps = false;
+  cfg.extensions = {&probe};
   if (intervalMs) cfg.tickIntervalMs = intervalMs;
   if (fwSource) {
     Resident::SandboxConfig::FrameworkConfig fw;
@@ -56,7 +80,10 @@ int fwTicks() { return sandbox->luaGlobalIntForTest("fw_ticks"); }
 
 }  // namespace
 
-void setUp(void) { testMillis() = 1000; }
+void setUp(void) {
+  testMillis() = 1000;
+  probe = AfterTickProbe();
+}
 void tearDown(void) {
   delete sandbox;
   sandbox = nullptr;
@@ -128,6 +155,36 @@ void test_a_framework_wake_has_a_floor(void) {
   TEST_ASSERT_INT_WITHIN(1, 101, fwTicks());
 }
 
+void test_the_framework_is_told_which_calls_are_frames(void) {
+  build(100, FRAMEWORK_FRAMES,
+        "wake = 20\n"
+        "ticks = 0\n"
+        "function on_tick(ctx, dt) ticks = ticks + 1 end\n");
+  run(1000, 1);
+  TEST_ASSERT_EQUAL_INT(10, ticks());
+  TEST_ASSERT_EQUAL_INT(10, sandbox->luaGlobalIntForTest("fw_frames"));
+  // Every 20 ms from the first tick at 100 ms, less the ten frames.
+  TEST_ASSERT_INT_WITHIN(1, 36, sandbox->luaGlobalIntForTest("fw_wakes"));
+}
+
+void test_extensions_hear_after_each_tick_not_each_wake(void) {
+  build(100, FRAMEWORK,
+        "wake = 20\n"
+        "ticks = 0\n"
+        "function on_tick(ctx, dt) ticks = ticks + 1 end\n");
+  run(1000, 1);
+  TEST_ASSERT_EQUAL_INT(10, ticks());
+  TEST_ASSERT_EQUAL_INT(10, probe.calls);
+  // The last call came after that tick's on_tick.
+  TEST_ASSERT_EQUAL_INT(10, probe.ticksSeen);
+}
+
+void test_no_after_tick_while_no_app_runs(void) {
+  build(100, nullptr, "error('no app')\n");
+  run(500, 1);
+  TEST_ASSERT_EQUAL_INT(0, probe.calls);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_default_interval_is_100_ms);
@@ -137,5 +194,8 @@ int main(int, char**) {
   RUN_TEST(test_a_framework_returning_nothing_ticks_with_the_app);
   RUN_TEST(test_a_framework_runs_again_when_it_asks);
   RUN_TEST(test_a_framework_wake_has_a_floor);
+  RUN_TEST(test_the_framework_is_told_which_calls_are_frames);
+  RUN_TEST(test_extensions_hear_after_each_tick_not_each_wake);
+  RUN_TEST(test_no_after_tick_while_no_app_runs);
   return UNITY_END();
 }
