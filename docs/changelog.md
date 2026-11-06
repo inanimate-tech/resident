@@ -9,7 +9,11 @@
 ### Diagnostics
 
 - **A diagnostics build profiles the whole loop, not just the tick.** With `-DRESIDENT_TICK_DIAGS=1`, every 5 s `[loopdiag]` reports what one pass of `Sandbox::loop()` costs per section (network, extensions, system, tick, events) and per extension, and the longest gap between two passes, which is the longest a polled input can wait unread. `[evdiag]` reports how long events wait in the ring before Lua sees them. `[lvgldiag]` reports frames presented, and splits `LvglModule`'s time into render, byte swap, blit and the board's present. Nothing changes without the flag.
-- **`Sandbox::benchmarkLuaHeap()`** times six Lua workloads in scratch states over today's PSRAM heap, a size-class pool allocator over PSRAM (incremental and generational collector) and the same pool over internal RAM, so allocator cost and memory speed can be told apart on the device. Diagnostics builds only; the board calls it, for example from a serial command.
+- **`Sandbox::benchmarkLuaHeap()`** times six Lua workloads in scratch states over seven heaps: `heap_caps` over PSRAM and over internal RAM; the heap component's own allocator (`multi_heap`) on a private PSRAM arena, through its poisoning layer and past it; and the slab allocator over PSRAM (incremental and generational collector) and over internal RAM. Allocator cost, its parts (the caps walk and lock, heap poisoning) and memory speed can be told apart on the device. Heap poisoning is a build option, so the row without it calls the heap component's internal `multi_heap_*_impl` functions, which sit below the poisoning layer in every build. Diagnostics builds only; the board calls it, for example from a serial command.
+
+### Hardening
+
+- **The slab allocator checks its free lists.** A freed block keeps its free list link in its first word, where a C binding that writes through a stale pointer (a use-after-free) can overwrite it, and following that link would let Lua write anywhere. Before following a link, `LuaHeap` checks that it is a block of the same slab that has been handed out before. It also checks each free: the block must be one it handed out, at that size, and not the block it freed last. A failed check is heap corruption: by default `LuaHeap` prints what it found and aborts, as a general heap with poisoning does on a damaged block. `LuaHeap::setCorruptionHandler` replaces that; a handler that returns lets the heap go on without the damage (the slab with the bad list is never allocated from again, a bad free is ignored), at the cost of the memory involved.
 
 ## v0.12.0
 

@@ -81,12 +81,13 @@ public:
     // each hook configuration against an unhooked baseline. Blocking, several
     // seconds; the caller is a diagnostics build's serial command.
     void benchmarkExecutionGuard();
-    // Times a set of Lua workloads in scratch states, one per heap: the app
-    // heap's own allocator over PSRAM, and a size-class pool over PSRAM and
-    // over internal RAM, under the incremental and generational collectors.
-    // Separates the allocator's cost from the memory's, in one boot under the
-    // same load. Blocking, several seconds; the caller is a diagnostics
-    // build's serial command.
+    // Times a set of Lua workloads in scratch states, one per heap: heap_caps
+    // over PSRAM and over internal RAM, the heap component's allocator on a
+    // private PSRAM arena with and without heap poisoning, and the slab
+    // allocator over PSRAM (incremental and generational collector) and over
+    // internal RAM. Separates the allocator's cost, its parts and the
+    // memory's, in one boot under the same load. Blocking, several seconds;
+    // the caller is a diagnostics build's serial command.
     void benchmarkLuaHeap();
     // Retunes the execution guard live, so the same running app can be timed
     // under the guard and under none without a reflash. 0 = unguarded.

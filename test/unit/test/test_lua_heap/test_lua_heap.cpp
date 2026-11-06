@@ -2,6 +2,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <csignal>
+#include <cstdio>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "ResidentLuaHeap.h"
 extern "C" {
   #include "lua/lua.h"
@@ -193,6 +197,178 @@ void test_lua_sees_a_refused_slab_as_out_of_memory(void) {
   TEST_ASSERT_EQUAL_UINT(0, heap.stats().smallBytes);
 }
 
+// ── Corruption ────────────────────────────────────────────────────────────
+
+// Records what the heap reported and returns, so the heap carries on.
+struct Reported {
+  int count = 0;
+  const char* what = nullptr;
+  void* block = nullptr;
+};
+
+static void recordCorruption(const char* what, void* block, void* ctx) {
+  Reported* r = static_cast<Reported*>(ctx);
+  r->count++;
+  r->what = what;
+  r->block = block;
+}
+
+// Frees a, then b, so b heads its slab's free list and b's first word is the
+// link to a: the word a write through a stale pointer to b would overwrite.
+static void freeTwo(LuaHeap& heap, void* a, void* b, size_t n) {
+  heap.reallocate(a, n, 0);
+  heap.reallocate(b, n, 0);
+}
+
+static void expectLinkCaught(void* (*badLink)(void* a, void* b)) {
+  LuaHeap heap(backing());
+  Reported reported;
+  heap.setCorruptionHandler(recordCorruption, &reported);
+  void* keep = heap.reallocate(nullptr, 0, 32);   // keeps the slab alive
+  void* a = heap.reallocate(nullptr, 0, 32);
+  void* b = heap.reallocate(nullptr, 0, 32);
+  void* tail = heap.reallocate(nullptr, 0, 32);   // so b's successor is handed out
+  freeTwo(heap, a, b, 32);
+  *static_cast<void**>(b) = badLink(a, b);
+
+  void* p = heap.reallocate(nullptr, 0, 32);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  TEST_ASSERT_EQUAL_STRING("free list link is not a block of its slab", reported.what);
+  TEST_ASSERT_EQUAL_PTR(b, reported.block);
+  // Neither the overwritten block nor anything on its list comes back: the
+  // block is a fresh slab's.
+  TEST_ASSERT_NOT_NULL(p);
+  TEST_ASSERT_TRUE(p != a && p != b);
+  TEST_ASSERT_EQUAL_UINT32(2, heap.stats().slabs);
+  memset(p, 0xA5, 32);
+
+  // The heap goes on working, and the damaged slab's live blocks still free.
+  void* q = heap.reallocate(nullptr, 0, 32);
+  TEST_ASSERT_NOT_NULL(q);
+  heap.reallocate(q, 32, 0);
+  heap.reallocate(p, 32, 0);
+  heap.reallocate(tail, 32, 0);
+  heap.reallocate(keep, 32, 0);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  TEST_ASSERT_EQUAL_UINT(0, heap.stats().smallBytes);
+}
+
+static void* linkOutsideTheSlab(void*, void*) {
+  static uint64_t elsewhere;
+  return &elsewhere;
+}
+static void* linkToTheSlabHeader(void*, void* b) {
+  return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(b) &
+                                 ~(uintptr_t)(LuaHeap::kSlabBytes - 1));
+}
+static void* linkBetweenTwoBlocks(void* a, void*) {
+  return static_cast<char*>(a) + 8;
+}
+static void* linkIntoTheUnusedTail(void*, void* b) {
+  return static_cast<char*>(b) + 8 * 32;   // a block never handed out
+}
+static void* linkIntoTheNextSlab(void*, void* b) {
+  return static_cast<char*>(b) + LuaHeap::kSlabBytes;   // never dereferenced
+}
+
+void test_a_free_list_link_outside_its_slab_is_caught(void) {
+  expectLinkCaught(linkOutsideTheSlab);
+}
+// Masking the link down to its slab would pass the next three.
+void test_a_free_list_link_to_the_slab_header_is_caught(void) {
+  expectLinkCaught(linkToTheSlabHeader);
+}
+void test_a_free_list_link_between_two_blocks_is_caught(void) {
+  expectLinkCaught(linkBetweenTwoBlocks);
+}
+void test_a_free_list_link_to_a_block_never_handed_out_is_caught(void) {
+  expectLinkCaught(linkIntoTheUnusedTail);
+}
+void test_a_free_list_link_into_the_next_slab_is_caught(void) {
+  expectLinkCaught(linkIntoTheNextSlab);
+}
+
+void test_an_intact_free_list_reports_nothing(void) {
+  LuaHeap heap(backing());
+  Reported reported;
+  heap.setCorruptionHandler(recordCorruption, &reported);
+  void* blocks[64];
+  const int n = fillSlab(heap, blocks);
+  for (int i = 0; i < n; i += 2) heap.reallocate(blocks[i], 256, 0);
+  for (int i = 0; i < n; i += 2) blocks[i] = heap.reallocate(nullptr, 0, 256);
+  for (int i = 0; i < n; i++) heap.reallocate(blocks[i], 256, 0);
+  TEST_ASSERT_EQUAL_INT(0, reported.count);
+  TEST_ASSERT_EQUAL_UINT(0, heap.stats().smallBytes);
+}
+
+void test_a_block_freed_twice_is_caught_and_ignored(void) {
+  LuaHeap heap(backing());
+  Reported reported;
+  heap.setCorruptionHandler(recordCorruption, &reported);
+  void* keep = heap.reallocate(nullptr, 0, 48);
+  void* a = heap.reallocate(nullptr, 0, 48);
+  heap.reallocate(a, 48, 0);
+  heap.reallocate(a, 48, 0);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  TEST_ASSERT_EQUAL_STRING("block freed twice", reported.what);
+  // Ignored: a is handed out once, not twice.
+  void* p = heap.reallocate(nullptr, 0, 48);
+  void* q = heap.reallocate(nullptr, 0, 48);
+  TEST_ASSERT_EQUAL_PTR(a, p);
+  TEST_ASSERT_TRUE(q != a);
+  heap.reallocate(p, 48, 0);
+  heap.reallocate(q, 48, 0);
+  heap.reallocate(keep, 48, 0);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+}
+
+void test_a_free_at_the_wrong_size_is_caught_and_ignored(void) {
+  LuaHeap heap(backing());
+  Reported reported;
+  heap.setCorruptionHandler(recordCorruption, &reported);
+  void* a = heap.reallocate(nullptr, 0, 64);
+  heap.reallocate(a, 128, 0);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  TEST_ASSERT_EQUAL_PTR(a, reported.block);
+  TEST_ASSERT_EQUAL_UINT(64, heap.stats().smallBytes);   // still live
+  heap.reallocate(a, 64, 0);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  TEST_ASSERT_EQUAL_UINT(0, heap.stats().smallBytes);
+}
+
+void test_a_free_of_a_misaligned_address_is_caught(void) {
+  LuaHeap heap(backing());
+  Reported reported;
+  heap.setCorruptionHandler(recordCorruption, &reported);
+  char* a = static_cast<char*>(heap.reallocate(nullptr, 0, 64));
+  heap.reallocate(a + 8, 64, 0);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  heap.reallocate(a, 64, 0);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+}
+
+// By default corruption aborts the process, so this runs in a child.
+void test_by_default_a_corrupt_link_aborts(void) {
+  fflush(stdout);
+  const pid_t pid = fork();
+  TEST_ASSERT_TRUE(pid >= 0);
+  if (pid == 0) {
+    if (!freopen("/dev/null", "w", stderr)) _exit(2);
+    LuaHeap heap(backing());
+    heap.reallocate(nullptr, 0, 32);   // keeps the slab alive
+    void* a = heap.reallocate(nullptr, 0, 32);
+    void* b = heap.reallocate(nullptr, 0, 32);
+    freeTwo(heap, a, b, 32);
+    *static_cast<void**>(b) = linkOutsideTheSlab(a, b);
+    heap.reallocate(nullptr, 0, 32);
+    _exit(0);   // reached only if the heap carried on
+  }
+  int status = 0;
+  TEST_ASSERT_EQUAL_INT(pid, waitpid(pid, &status, 0));
+  TEST_ASSERT_TRUE(WIFSIGNALED(status));
+  TEST_ASSERT_EQUAL_INT(SIGABRT, WTERMSIG(status));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_small_blocks_share_a_slab_and_are_aligned);
@@ -205,5 +381,15 @@ int main(int, char**) {
   RUN_TEST(test_without_slabs_every_block_goes_to_the_backing_heap);
   RUN_TEST(test_a_lua_state_runs_on_it_and_leaves_nothing);
   RUN_TEST(test_lua_sees_a_refused_slab_as_out_of_memory);
+  RUN_TEST(test_a_free_list_link_outside_its_slab_is_caught);
+  RUN_TEST(test_a_free_list_link_to_the_slab_header_is_caught);
+  RUN_TEST(test_a_free_list_link_between_two_blocks_is_caught);
+  RUN_TEST(test_a_free_list_link_to_a_block_never_handed_out_is_caught);
+  RUN_TEST(test_a_free_list_link_into_the_next_slab_is_caught);
+  RUN_TEST(test_an_intact_free_list_reports_nothing);
+  RUN_TEST(test_a_block_freed_twice_is_caught_and_ignored);
+  RUN_TEST(test_a_free_at_the_wrong_size_is_caught_and_ignored);
+  RUN_TEST(test_a_free_of_a_misaligned_address_is_caught);
+  RUN_TEST(test_by_default_a_corrupt_link_aborts);
   return UNITY_END();
 }

@@ -18,12 +18,23 @@
 // which internal RAM can rarely spare. Constructed without them, every block
 // goes straight to the backing heap.
 //
+// A freed block holds its free list link in its first word, where a C binding
+// that writes through a pointer it no longer owns (a use-after-free) can
+// overwrite it. Followed, such a link would hand Lua any address at all to
+// write into. So a link is checked before it is followed: it must be a block
+// of the same slab that has been handed out before. One that is not, a block
+// freed twice in a row, or a block freed with the wrong size class, is heap
+// corruption: the heap calls its corruption handler, which by default prints
+// what it found and aborts.
+//
 // Pure: the backing heap is a set of functions, so the native tests run it
 // over malloc and the device over heap_caps. Not thread-safe; a lua_State is
 // used from one task.
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace Resident {
@@ -100,10 +111,23 @@ public:
         freeSlab(s);
       }
     }
-    // Full slabs are on no list; with no live block there are none.
+    // Full slabs are on no list; with no live block there are none, except a
+    // slab whose free list was dropped after corruption, which is never freed.
   }
 
   const Stats& stats() const { return _stats; }
+
+  // Called when the heap finds its bookkeeping overwritten, with what it found
+  // and the block concerned. The default prints both and aborts, as a general
+  // heap with poisoning does on a damaged block. A handler that returns lets
+  // the heap carry on without the damage: no block on a bad free list is
+  // handed out again, and a bad free is ignored. Either leaks memory the heap
+  // can no longer trust.
+  using CorruptionHandler = void (*)(const char* what, void* block, void* ctx);
+  void setCorruptionHandler(CorruptionHandler handler, void* ctx) {
+    _onCorrupt = handler ? handler : abortOnCorruption;
+    _onCorruptCtx = ctx;
+  }
 
 private:
   struct Slab {
@@ -133,23 +157,33 @@ private:
       return p;
     }
     const size_t c = classOf(n);
-    Slab* s = _open[c];
-    if (!s) {
-      s = newSlab(c);
-      if (!s) return nullptr;
+    for (;;) {
+      Slab* s = _open[c];
+      if (!s) {
+        s = newSlab(c);
+        if (!s) return nullptr;
+      }
+      void* p;
+      if (s->freeList) {
+        // The head was checked when it became the head; its link was written
+        // into a freed block and may not be what the heap left there.
+        p = s->freeList;
+        void* next = *static_cast<void**>(p);
+        if (next && !isHandedOut(s, next)) {
+          corrupt("free list link is not a block of its slab", p);
+          dropFreeList(s);
+          continue;
+        }
+        s->freeList = next;
+      } else {
+        p = blocks(s) + (size_t)s->bumped * classSize(c);
+        s->bumped++;
+      }
+      s->inUse++;
+      if (s->inUse == s->capacity) unlink(s);
+      _stats.smallBytes += classSize(c);
+      return p;
     }
-    void* p;
-    if (s->freeList) {
-      p = s->freeList;
-      s->freeList = *static_cast<void**>(p);
-    } else {
-      p = blocks(s) + (size_t)s->bumped * classSize(c);
-      s->bumped++;
-    }
-    s->inUse++;
-    if (s->inUse == s->capacity) unlink(s);
-    _stats.smallBytes += classSize(c);
-    return p;
   }
 
   void release(void* p, size_t n) {
@@ -159,6 +193,14 @@ private:
       return;
     }
     Slab* s = slabOf(p);
+    if (s->cls != classOf(n) || !isHandedOut(s, p)) {
+      corrupt("free of a block this heap did not hand out at that size", p);
+      return;
+    }
+    if (p == s->freeList) {
+      corrupt("block freed twice", p);
+      return;
+    }
     *static_cast<void**>(p) = s->freeList;
     s->freeList = p;
     s->inUse--;
@@ -169,6 +211,35 @@ private:
       unlink(s);
       freeSlab(s);
     }
+  }
+
+  // Whether p is a block of s that has been handed out at some time: past the
+  // header, before the never-used tail, on a block boundary. Masking p down to
+  // its slab is not enough, since that admits the header (whose list pointers
+  // unlink writes through) and addresses that straddle two blocks.
+  bool isHandedOut(Slab* s, const void* p) const {
+    // Wraps to a huge offset when p lies below the blocks.
+    const uintptr_t offset = reinterpret_cast<uintptr_t>(p) - reinterpret_cast<uintptr_t>(blocks(s));
+    const size_t size = classSize(s->cls);
+    return offset < (size_t)s->bumped * size && offset % size == 0;
+  }
+
+  void corrupt(const char* what, void* block) { _onCorrupt(what, block, _onCorruptCtx); }
+
+  static void abortOnCorruption(const char* what, void* block, void*) {
+    fprintf(stderr, "LuaHeap: heap corruption: %s (block %p)\n", what, block);
+    fflush(stderr);
+    abort();
+  }
+
+  // Forgets a free list that cannot be trusted, with every block on it and the
+  // never-used tail: all count as in use, so the slab is never allocated from
+  // again until Lua frees one of its live blocks, and never empties.
+  void dropFreeList(Slab* s) {
+    s->freeList = nullptr;
+    s->bumped = s->capacity;
+    s->inUse = s->capacity;
+    if (s->open) unlink(s);
   }
 
   Slab* newSlab(size_t c) {
@@ -214,6 +285,8 @@ private:
   size_t _smallMax;   // 0 without slabs: no block is small
   Slab* _open[kClasses] = {};
   Stats _stats = {};
+  CorruptionHandler _onCorrupt = abortOnCorruption;
+  void* _onCorruptCtx = nullptr;
 };
 
 }  // namespace Resident

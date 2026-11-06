@@ -2456,43 +2456,93 @@ void Sandbox::reportLoopWindow(unsigned long windowMs)
 // audio pipeline need while the bench runs on a live device.
 static constexpr size_t kBenchInternalReserve = 24 * 1024;
 
+// What the bench states over internal RAM may hold between them.
+struct BenchBudget {
+  size_t limit = 0;
+  size_t used = 0;
+};
+
 // One bench state's memory: heap_caps over `caps`, with what it holds counted
-// against its budget. Counting its own bytes keeps the budget check off the
-// heap's lock; asking heap_caps for its free size on every allocation would be
-// the most expensive thing being timed.
+// against a budget when it has one. Counting its own bytes keeps the budget
+// check off the heap's lock; asking heap_caps for its free size on every
+// allocation would be the most expensive thing being timed.
 struct BenchMemory {
   uint32_t caps = 0;
-  size_t budget = 0;   // 0 = unlimited
-  size_t used = 0;
+  BenchBudget* budget = nullptr;   // nullptr = unlimited
 
-  bool fits(size_t n) const { return !budget || used + n <= budget; }
+  bool fits(size_t n) const { return !budget || budget->used + n <= budget->limit; }
+  void take(size_t n) { if (budget) budget->used += n; }
+  void give(size_t n) { if (budget) budget->used -= n; }
 };
 
 static void* benchAligned(size_t align, size_t size, void* ctx) {
   BenchMemory* m = static_cast<BenchMemory*>(ctx);
   if (!m->fits(size)) return nullptr;
   void* p = heap_caps_aligned_alloc(align, size, m->caps);
-  if (p) m->used += size;
+  if (p) m->take(size);
   return p;
 }
 static void* benchAlloc(size_t size, void* ctx) {
   BenchMemory* m = static_cast<BenchMemory*>(ctx);
   if (!m->fits(size)) return nullptr;
   void* p = heap_caps_malloc(size, m->caps);
-  if (p) m->used += size;
+  if (p) m->take(size);
   return p;
 }
 static void* benchRealloc(void* ptr, size_t oldSize, size_t newSize, void* ctx) {
   BenchMemory* m = static_cast<BenchMemory*>(ctx);
   if (newSize > oldSize && !m->fits(newSize - oldSize)) return nullptr;
   void* p = heap_caps_realloc(ptr, newSize, m->caps);
-  if (p) m->used = m->used - oldSize + newSize;
+  if (p) {
+    m->give(oldSize);
+    m->take(newSize);
+  }
   return p;
 }
 static void benchRelease(void* ptr, size_t size, void* ctx) {
   heap_caps_free(ptr);
-  static_cast<BenchMemory*>(ctx)->used -= size;
+  static_cast<BenchMemory*>(ctx)->give(size);
 }
+
+// The heap component's allocator below heap_caps and below its poisoning
+// layer. heap_caps_malloc finds a heap whose caps match, takes the heap's lock
+// and, with CONFIG_HEAP_POISONING_* set, calls multi_heap_malloc, which adds a
+// canary around the block and checks it on free; that calls these. Declared in
+// the heap component's private multi_heap_internal.h, and global in every
+// build: with poisoning off, the public multi_heap_* functions are aliases of
+// them. Heap poisoning is a build option, so these are the only way to time an
+// allocator without it on a build that has it.
+extern "C" {
+multi_heap_handle_t multi_heap_register_impl(void* start, size_t size);
+void* multi_heap_malloc_impl(multi_heap_handle_t heap, size_t size);
+void multi_heap_free_impl(multi_heap_handle_t heap, void* p);
+void* multi_heap_realloc_impl(multi_heap_handle_t heap, void* p, size_t size);
+}
+
+// lua_Alloc onto a private multi_heap (a PSRAM arena of the bench's own, with
+// no lock), through the poisoning layer or, `raw`, past it.
+template <bool raw>
+static void* benchMultiHeapAlloc(void* ud, void* ptr, size_t osize, size_t nsize)
+{
+  (void)osize;
+  multi_heap_handle_t heap = static_cast<multi_heap_handle_t>(ud);
+  if (nsize == 0) {
+    if (ptr) {
+      if (raw) multi_heap_free_impl(heap, ptr);
+      else multi_heap_free(heap, ptr);
+    }
+    return NULL;
+  }
+  if (ptr == NULL) {
+    return raw ? multi_heap_malloc_impl(heap, nsize) : multi_heap_malloc(heap, nsize);
+  }
+  return raw ? multi_heap_realloc_impl(heap, ptr, nsize)
+             : multi_heap_realloc(heap, ptr, nsize);
+}
+
+// Each multi_heap row's arena: space for the scan workload's 64 KB array while
+// it doubles, with the libraries and the collector's slack.
+static constexpr size_t kBenchArenaBytes = 384 * 1024;
 
 // lua_Alloc straight onto a BenchMemory, every block through heap_caps. With
 // ptr == NULL, osize is an object type tag, not a size, so it is not read.
@@ -2533,17 +2583,33 @@ void Sandbox::benchmarkLuaHeap()
     {"scan",    "local t={} for i=1,8192 do t[i]=i end local s=0 "
                 "for r=1,8 do for i=1,8192 do s=s+t[(i*97)%8192+1] end end return s"},
   };
-  // heap_caps vs slab/inc is the app heap's allocator against heap_caps alone,
-  // both over PSRAM; slab/inc vs islab/inc is PSRAM against internal RAM under
-  // the same allocator. Internal RAM is one state only, so the reserve is
-  // shared by nothing else.
-  struct Config { const char* name; uint32_t caps; bool slabs; bool generational; };
+  // Each row against heap_caps (PSRAM), and against its neighbours:
+  //   iheap_caps  internal RAM under heap_caps: the memory's share of the cost;
+  //   mheap       the heap component's allocator on a private PSRAM arena,
+  //               with the build's poisoning: heap_caps's caps walk and lock;
+  //   mheap/raw   the same arena past the poisoning layer: poisoning's share;
+  //   slab/inc    the app heap's allocator over PSRAM;
+  //   slab/gen    the same under the generational collector;
+  //   islab/inc   slabs over internal RAM: PSRAM's share under slabs.
+  // The two internal-RAM states share one budget.
+  enum class Heap : uint8_t { Caps, Slab, Multi, MultiRaw };
+  struct Config { const char* name; uint32_t caps; Heap heap; bool generational; };
   static const Config kConfigs[] = {
-    {"heap_caps", MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   false, false},
-    {"slab/inc",  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   true,  false},   // the app heap's
-    {"slab/gen",  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   true,  true},
-    {"islab/inc", MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, true,  false},
+    {"heap_caps",  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   Heap::Caps,     false},
+    {"iheap_caps", MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, Heap::Caps,     false},
+    {"mheap",      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   Heap::Multi,    false},
+    {"mheap/raw",  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   Heap::MultiRaw, false},
+    {"slab/inc",   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   Heap::Slab,     false},   // the app heap's
+    {"slab/gen",   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,   Heap::Slab,     true},
+    {"islab/inc",  MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, Heap::Slab,     false},
   };
+#if CONFIG_HEAP_POISONING_COMPREHENSIVE
+  static const char* const kPoisoning = "comprehensive";
+#elif CONFIG_HEAP_POISONING_LIGHT
+  static const char* const kPoisoning = "light";
+#else
+  static const char* const kPoisoning = "off";
+#endif
   constexpr int kWorkloadCount = sizeof(kWorkloads) / sizeof(kWorkloads[0]);
   constexpr int kConfigCount = sizeof(kConfigs) / sizeof(kConfigs[0]);
   constexpr int kReps = 3;
@@ -2552,22 +2618,47 @@ void Sandbox::benchmarkLuaHeap()
   const size_t internalBudget =
       internalFree > kBenchInternalReserve ? internalFree - kBenchInternalReserve : 0;
 
+  BenchBudget internal;
+  internal.limit = internalBudget;
   BenchMemory memory[kConfigCount];
   std::optional<LuaHeap> heaps[kConfigCount];
+  void* arenas[kConfigCount] = {};
   lua_State* states[kConfigCount] = {};
   for (int c = 0; c < kConfigCount; c++) {
     memory[c].caps = kConfigs[c].caps;
     if (kConfigs[c].caps & MALLOC_CAP_INTERNAL) {
       if (internalBudget == 0) continue;
-      memory[c].budget = internalBudget;
+      memory[c].budget = &internal;
     }
-    lua_State* L;
-    if (kConfigs[c].slabs) {
-      heaps[c].emplace(LuaHeap::Backing{benchAligned, benchAlloc, benchRealloc,
-                                        benchRelease, &memory[c]});
-      L = lua_newstate(LuaHeap::luaAlloc, &*heaps[c]);
-    } else {
-      L = lua_newstate(benchHeapCapsAlloc, &memory[c]);
+    lua_State* L = nullptr;
+    switch (kConfigs[c].heap) {
+      case Heap::Caps:
+        L = lua_newstate(benchHeapCapsAlloc, &memory[c]);
+        break;
+      case Heap::Slab:
+        heaps[c].emplace(LuaHeap::Backing{benchAligned, benchAlloc, benchRealloc,
+                                          benchRelease, &memory[c]});
+        L = lua_newstate(LuaHeap::luaAlloc, &*heaps[c]);
+        break;
+      case Heap::Multi:
+      case Heap::MultiRaw: {
+        arenas[c] = heap_caps_malloc(kBenchArenaBytes, kConfigs[c].caps);
+        if (!arenas[c]) {
+          Serial.printf("[heapbench] %s: no %uK arena\n", kConfigs[c].name,
+                        (unsigned)(kBenchArenaBytes / 1024));
+          continue;
+        }
+        // Registered the way each row allocates, so the poisoning layer's own
+        // register fills the arena when comprehensive poisoning expects it.
+        const bool raw = kConfigs[c].heap == Heap::MultiRaw;
+        multi_heap_handle_t heap = raw ? multi_heap_register_impl(arenas[c], kBenchArenaBytes)
+                                       : multi_heap_register(arenas[c], kBenchArenaBytes);
+        if (heap) {
+          L = lua_newstate(raw ? benchMultiHeapAlloc<true> : benchMultiHeapAlloc<false>,
+                           heap);
+        }
+        break;
+      }
     }
     if (!L) {
       Serial.printf("[heapbench] %s: no state\n", kConfigs[c].name);
@@ -2591,11 +2682,12 @@ void Sandbox::benchmarkLuaHeap()
   }
 
   Serial.printf("[heapbench] %d workloads x %d configs x %d reps; min of each "
-                "cell; internal free %uK, largest %uK, budget %uK\n",
+                "cell; internal free %uK, largest %uK, budget %uK; "
+                "heap poisoning %s\n",
                 kWorkloadCount, kConfigCount, kReps,
                 (unsigned)(internalFree / 1024),
                 (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
-                (unsigned)(internalBudget / 1024));
+                (unsigned)(internalBudget / 1024), kPoisoning);
 
   for (int w = 0; w < kWorkloadCount; w++) {
     uint32_t best[kConfigCount];
@@ -2615,7 +2707,8 @@ void Sandbox::benchmarkLuaHeap()
     }
 
     // Round-robin the configs so drift (WiFi, audio, thermals) lands on all
-    // of them alike; each run starts from a collected heap.
+    // of them alike; each run starts from a collected heap, and leaves one,
+    // so a state's garbage never holds the internal budget another needs.
     for (int rep = 0; rep < kReps; rep++) {
       for (int c = 0; c < kConfigCount; c++) {
         lua_State* L = states[c];
@@ -2631,6 +2724,7 @@ void Sandbox::benchmarkLuaHeap()
         } else if (us < best[c]) {
           best[c] = us;
         }
+        lua_gc(L, LUA_GCCOLLECT, 0);
         delay(2);   // let the other tasks on this core run between cells
       }
     }
@@ -2639,15 +2733,15 @@ void Sandbox::benchmarkLuaHeap()
     for (int c = 0; c < kConfigCount; c++) {
       if (!states[c]) continue;
       if (failed[c] || best[c] == UINT32_MAX) {
-        Serial.printf("[heapbench] %-9s %s\n", kConfigs[c].name,
+        Serial.printf("[heapbench] %-10s %s\n", kConfigs[c].name,
                       failed[c] ? failed[c] : "not run");
       } else if (best[0] == UINT32_MAX) {
-        Serial.printf("[heapbench] %-9s %8luus\n", kConfigs[c].name,
+        Serial.printf("[heapbench] %-10s %8luus\n", kConfigs[c].name,
                       (unsigned long)best[c]);
       } else {
         const long pct = (long)(((int64_t)best[c] - (int64_t)best[0]) * 1000 /
                                 (int64_t)best[0]);
-        Serial.printf("[heapbench] %-9s %8luus  %s%ld.%ld%%\n", kConfigs[c].name,
+        Serial.printf("[heapbench] %-10s %8luus  %s%ld.%ld%%\n", kConfigs[c].name,
                       (unsigned long)best[c], pct < 0 ? "-" : "+",
                       labs(pct) / 10, labs(pct) % 10);
       }
@@ -2658,6 +2752,7 @@ void Sandbox::benchmarkLuaHeap()
   for (int c = 0; c < kConfigCount; c++) {
     if (states[c]) lua_close(states[c]);
     heaps[c].reset();
+    if (arenas[c]) heap_caps_free(arenas[c]);
   }
   Serial.println("[heapbench] done");
 #endif
