@@ -105,12 +105,13 @@ struct SandboxConfig {
   // Per-dispatch WALL-CLOCK hard deadline, in milliseconds (0.8): init, one
   // tick, one event, one chunk, or one framework hook may run for at most this
   // long before the dispatch is aborted with a runtime_error — the app
-  // survives. Raise it for a board whose apps legitimately run longer.
+  // survives, and the third abort inside 30 s suspends it (`app_throttled`).
+  // Raise it for a board whose apps legitimately run longer.
   // Available on every platform; 0 = no hard guard.
   uint32_t executionDeadlineMs = 1000;
 
   // Per-dispatch WALL-CLOCK soft deadline, in milliseconds. A dispatch that
-  // outlives it is reported — a rate-limited serial line plus a
+  // outlives it is reported — a rate-limited [WARN] line, log.warn's, plus a
   // `slow_dispatch` telemetry event — and allowed to finish. Independent of
   // executionDeadlineMs and of the platform; 0 = no reporting.
   uint32_t executionSoftDeadlineMs = 0;

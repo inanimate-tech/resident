@@ -30,7 +30,9 @@ The environment is a sandbox: there is no `os`, `io`, `require`, `load`,
 `__gc` (apps get no finalizers), `getmetatable` returns nil for a userdata
 such as a widget, and `collectgarbage` takes only `"collect"`, `"count"`,
 `"step"` and `"isrunning"`. Each callback runs under a wall-clock
-deadline — an unbounded loop aborts that dispatch, not the device.
+deadline — an unbounded loop aborts that dispatch, not the device. `pcall`
+cannot catch the abort, a coroutine cannot outrun it, and an app that hits it
+three times in 30 seconds is suspended.
 
 Numbers are 32-bit: integers wrap past ±2,147,483,647 and floats carry about
 7 significant digits. Math is `math.*` only — there are no bare `floor`,
