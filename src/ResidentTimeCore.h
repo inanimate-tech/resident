@@ -168,7 +168,7 @@ inline size_t format(char* buf, size_t cap, const char* fmt, const Tm& t) {
       case 'b': o.putn(detail::kMonths[mon0], 3); break;
       case 'B': o.puts(detail::kMonths[mon0]); break;
       case 'c': {  // C locale: "Sat Oct  3 14:05:09 2026"
-        char tmp[64];
+        char tmp[64] = {};
         format(tmp, sizeof(tmp), "%a %b %e %H:%M:%S %Y", t);
         o.puts(tmp);
         break;
@@ -186,13 +186,13 @@ inline size_t format(char* buf, size_t cap, const char* fmt, const Tm& t) {
       case 'w': o.num((wday + 1) % 7, 1, '0'); break;
       case 'W': o.num(detail::weekNumber(t, 0), 2, '0'); break;
       case 'x': {  // C locale: "10/03/26"
-        char tmp[32];
+        char tmp[32] = {};
         format(tmp, sizeof(tmp), "%m/%d/%y", t);
         o.puts(tmp);
         break;
       }
       case 'X': {
-        char tmp[32];
+        char tmp[32] = {};
         format(tmp, sizeof(tmp), "%H:%M:%S", t);
         o.puts(tmp);
         break;
