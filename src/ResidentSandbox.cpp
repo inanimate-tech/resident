@@ -52,6 +52,19 @@ namespace Resident {
 // Registry key for accessing the sandbox instance from Lua C functions
 static const char* REGISTRY_KEY = "ResidentSandbox_instance";
 
+// The one way untrusted Lua (an app, a chunk, the framework slot) is
+// compiled: text only. Mode "t" refuses a precompiled binary chunk whatever
+// its length, so the guarantee no longer rests on the callers' strings
+// ending at the first NUL (every Lua 5.4 binary chunk has one at byte 5).
+// The chunkname is short ("=app"), so an error reads "app:3: ..." instead of
+// quoting the source. Leaves the chunk or the error message on the stack and
+// returns the luaL_loadbufferx status.
+static int compileUntrusted(lua_State* L, const char* code, size_t len,
+                            const char* chunkname)
+{
+  return luaL_loadbufferx(L, code, len, chunkname, "t");
+}
+
 Sandbox::Sandbox() {
   memset(_events, 0, sizeof(_events));
   _eventsModule.bind(this);
@@ -416,6 +429,11 @@ void Sandbox::setupLuaEnvironment()
       lua_pushnil(_lua);
       lua_setglobal(_lua, g);
     }
+    // string.dump only makes bytecode, which nothing here loads (mode "t").
+    lua_getglobal(_lua, "string");
+    lua_pushnil(_lua);
+    lua_setfield(_lua, -2, "dump");
+    lua_pop(_lua, 1);
   }
 
   // time module: Python 3's time, with MicroPython's integer seconds and
@@ -1348,7 +1366,7 @@ bool Sandbox::loadFramework(const char* code, const char* name, int version,
   lua_setfield(_lua, -2, "send");
   lua_setfield(_lua, -2, "runtime");         // env.runtime = { send }
 
-  if (luaL_loadstring(_lua, code) != 0) {
+  if (compileUntrusted(_lua, code, strlen(code), "=framework") != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: framework compile failed: %s\n", errMsg);
     emitTelemetry("framework_error", errMsg);
@@ -2436,7 +2454,7 @@ bool Sandbox::loadChunk(const char* code)
     return false;
   }
 
-  if (luaL_loadstring(_lua, code) != 0) {
+  if (compileUntrusted(_lua, code, strlen(code), "=chunk") != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: chunk compile failed: %s\n", errMsg);
     emitTelemetry("chunk_error", errMsg);
@@ -2869,7 +2887,7 @@ bool Sandbox::compileApp(const char* code)
   }
 
   // Load and execute the chunk
-  int loadResult = luaL_loadstring(_lua, code);
+  int loadResult = compileUntrusted(_lua, code, strlen(code), "=app");
 
   if (loadResult == 0) {
     armExecutionGuard();

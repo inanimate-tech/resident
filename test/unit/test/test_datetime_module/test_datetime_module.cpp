@@ -31,7 +31,7 @@ const char* kChecks =
     // 'no error'.
     "function err(fn, ...)\n"
     "  local ok, e = pcall(fn, ...)\n"
-    "  return ok and 'no error' or (tostring(e):gsub('^%[string \".-\"%]:%d+: ', ''))\n"
+    "  return ok and 'no error' or (tostring(e):gsub('^%a+:%d+: ', ''))\n"
     "end\n";
 
 void load(const char* app = "function on_tick(ctx, dt) end\n") {
@@ -369,7 +369,7 @@ void test_bad_arguments_raise_naming_the_call(void) {
   // An argument error points at the app's line, not inside the module.
   TEST_ASSERT_TRUE(sandbox->loadChunk(
       "local ok, where = pcall(function() local d = datetime.date(2026, 13, 1) return d end)\n"
-      "pointed = where:find('^%[string') ~= nil\n"));
+      "pointed = where:find('^chunk:%d+:') ~= nil\n"));
   TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("pointed"));
 }
 

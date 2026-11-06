@@ -10,6 +10,12 @@
 
 - **`handleAppMessage` always delivers `event.channel == "app"`.** It used to copy the frame's own `channel` field into the event, so a frame from an ingress any peer can write (a LAN multicast group, a broadcast topic every device publishes to) could stamp `channel:"runtime"` and be handed to a framework module as its trusted host, or stamp `"driver"` and pose as hardware. The plane now comes from which entry point the ingress calls, not from the frame. A wrapper that passed host frames stating `channel:"runtime"` through `handleAppMessage` calls `handleRuntimeMessage` for them instead; until it does, they arrive as `app`.
 
+### Changes
+
+- **Apps, chunks and the framework load as Lua source only.** The three loaders compiled with `luaL_loadstring`, whose mode accepts precompiled binary chunks too. Loading crafted bytecode is a known route to native code execution in Lua 5.4. It was closed only by accident: every caller passes a C string, and a 5.4 binary chunk has a NUL at byte 5, so `strlen` cut each one short. A future caller that passed an explicit length would have opened it. All three now compile through one function, `compileUntrusted`, with mode `"t"`, which refuses a binary chunk whatever its length ("attempt to load a binary chunk").
+- **Errors name the chunk, not its source.** The chunkname was the whole source, so a message began with up to 60 characters of it, as in `[string "function on_tick..."]:3:`. It is now `app:3:`, `chunk:3:` or `framework:3:`. A host that parses the old `[string "..."]` prefix must change.
+- **`string.dump` is removed from the app environment** unless `openUnsafeLibs` is set, as `load` already was. It only makes bytecode, which nothing loads now.
+
 ---
 
 ## v0.13.1
