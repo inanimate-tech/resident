@@ -234,6 +234,75 @@ void test_chunks_keep_the_running_environment(void) {
   TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("fresh"));
 }
 
+// The collector is one Lua state's, shared by every app: whatever an app
+// does to it must not outlive the app. Reads the settings back through
+// collectgarbage itself — setpause/setstepmul return the previous value,
+// incremental the previous mode.
+const char* const kReadGcPolicy =
+    "running = collectgarbage('isrunning')\n"
+    "incremental = (collectgarbage('incremental') == 'incremental')\n"
+    "pause = collectgarbage('setpause', 200)\n"
+    "stepmul = collectgarbage('setstepmul', 100)\n"
+    "function on_tick(ctx, dt) end\n";
+
+static void assertGcPolicyRestored() {
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("running"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("incremental"));
+  TEST_ASSERT_EQUAL_INT(200, sandbox->luaGlobalIntForTest("pause"));
+  TEST_ASSERT_EQUAL_INT(100, sandbox->luaGlobalIntForTest("stepmul"));
+}
+
+void test_gc_policy_holds_from_state_creation(void) {
+  build();
+  loadApp(kReadGcPolicy);
+  assertGcPolicyRestored();
+}
+
+void test_stopped_collector_restarts_for_next_app(void) {
+  build();
+  loadApp(
+      "collectgarbage('stop')\n"
+      "stopped = not collectgarbage('isrunning')\n"
+      "function on_tick(ctx, dt) end\n");
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("stopped"));
+  loadApp(kReadGcPolicy);
+  assertGcPolicyRestored();
+}
+
+void test_generational_mode_reverts_for_next_app(void) {
+  build();
+  loadApp(
+      "collectgarbage('generational')\n"
+      "function on_tick(ctx, dt) end\n");
+  loadApp(kReadGcPolicy);
+  assertGcPolicyRestored();
+}
+
+void test_incremental_params_revert_for_next_app(void) {
+  build();
+  loadApp(
+      "collectgarbage('incremental', 1000, 400, 20)\n"
+      "collectgarbage('stop')\n"
+      "function on_tick(ctx, dt) end\n");
+  loadApp(kReadGcPolicy);
+  assertGcPolicyRestored();
+}
+
+void test_gc_policy_restored_without_fresh_environment(void) {
+  Resident::SandboxConfig cfg;
+  cfg.deviceType = "native-test";
+  cfg.persistApps = false;
+  cfg.freshAppEnvironment = false;
+  sandbox = new Resident::Sandbox(cfg);
+  sandbox->setup();
+  loadApp(
+      "collectgarbage('generational')\n"
+      "collectgarbage('stop')\n"
+      "function on_tick(ctx, dt) end\n");
+  loadApp(kReadGcPolicy);
+  assertGcPolicyRestored();
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_disconnected_device_still_ticks_and_dispatches);
@@ -246,5 +315,10 @@ int main(int, char**) {
   RUN_TEST(test_fresh_environment_clears_app_globals);
   RUN_TEST(test_fresh_environment_flag_off_keeps_leakage);
   RUN_TEST(test_chunks_keep_the_running_environment);
+  RUN_TEST(test_gc_policy_holds_from_state_creation);
+  RUN_TEST(test_stopped_collector_restarts_for_next_app);
+  RUN_TEST(test_generational_mode_reverts_for_next_app);
+  RUN_TEST(test_incremental_params_revert_for_next_app);
+  RUN_TEST(test_gc_policy_restored_without_fresh_environment);
   return UNITY_END();
 }

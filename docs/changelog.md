@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **What an app does to the collector no longer outlives it.** GC state belongs to the one Lua state every app shares, so an app's `collectgarbage("stop")` stayed in force for every later app and for the framework, and the heap grew until an allocation failed. A `collectgarbage("generational")` or `collectgarbage("incremental", pause, stepmul, stepsize)` likewise held. `Sandbox::applyGcPolicy()` now restarts the collector and sets incremental mode with the board's pause and Lua's default step multiplier and size, once the state is created and on every app load (after the reset's collects, and whether or not `freshAppEnvironment` is on). An app that wants generational mode must ask for it again in its own chunk. The pause is Lua's default, 200, on boards with PSRAM and `RESIDENT_NO_PSRAM_GC_PAUSE` on boards without, also 200 by default, so no board's collector tuning changes.
+
+---
+
 ## v0.12.0
 
 ### Breaking changes

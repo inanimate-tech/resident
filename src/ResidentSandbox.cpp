@@ -27,6 +27,12 @@ extern "C" {
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 
+// Whether the board has any SPIRAM at all: decides where the Lua heap lives
+// and which GC pause it runs with.
+static bool boardHasPsram() {
+  return heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0;
+}
+
 // Custom Lua allocator. Prefers PSRAM, but transparently falls back to
 // internal RAM on boards without PSRAM (e.g. ESP32-S3FN8). The capability is
 // resolved once on first use from whether any SPIRAM is actually present.
@@ -34,8 +40,7 @@ static void* psramLuaAlloc(void* ud, void* ptr, size_t osize, size_t nsize) {
   (void)ud;
   (void)osize;
   static const uint32_t kLuaHeapCaps =
-      (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0) ? MALLOC_CAP_SPIRAM
-                                                        : MALLOC_CAP_8BIT;
+      boardHasPsram() ? MALLOC_CAP_SPIRAM : MALLOC_CAP_8BIT;
   if (nsize == 0) {
     heap_caps_free(ptr);
     return NULL;
@@ -242,6 +247,7 @@ void Sandbox::initialize()
   }
 
   luaL_openlibs(_lua);
+  applyGcPolicy();
 
   // Store sandbox instance in registry
   lua_pushlightuserdata(_lua, this);
@@ -390,6 +396,25 @@ void Sandbox::resetAppGlobals()
   lua_pop(_lua, 2);                         // _G, baseline
   lua_gc(_lua, LUA_GCCOLLECT, 0);
   lua_gc(_lua, LUA_GCCOLLECT, 0);           // finalizers, then their garbage
+}
+
+// Lua 5.4's defaults (lgc.h's LUAI_GCPAUSE, LUAI_GCMUL, LUAI_GCSTEPSIZE),
+// restated because lgc.h is internal. Stated explicitly rather than passed
+// as 0 ("leave unchanged"), so an app's collectgarbage("incremental", ...)
+// arguments do not survive it either.
+static constexpr int kGcPause = 200;
+static constexpr int kGcStepMul = 100;
+static constexpr int kGcStepSize = 13;      // log2 bytes: 8 KB
+
+void Sandbox::applyGcPolicy()
+{
+  if (!_lua) return;
+  int pause = kGcPause;
+#ifdef ESP_PLATFORM
+  if (!boardHasPsram()) pause = RESIDENT_NO_PSRAM_GC_PAUSE;
+#endif
+  lua_gc(_lua, LUA_GCRESTART);
+  lua_gc(_lua, LUA_GCINC, pause, kGcStepMul, kGcStepSize);
 }
 
 void Sandbox::setupLuaEnvironment()
@@ -2826,6 +2851,11 @@ bool Sandbox::compileApp(const char* code)
   // every non-baseline global goes, not just the three lifecycle names.
   // ("Fresh boot" finally means fresh.)
   if (_config.freshAppEnvironment) resetAppGlobals();
+
+  // Nothing the last app did to the collector survives either: it is
+  // running, incremental and on the board's settings again, whether or not
+  // the globals were reset.
+  applyGcPolicy();
 
   // A fresh, unloaded datetime for every app: one that never touches it pays
   // nothing, and nothing the last app did to it survives. And the `time`
