@@ -264,6 +264,106 @@ void test_app_channel_distinct_nonces_both_deliver(void) {
   TEST_ASSERT_EQUAL_INT(2, sandbox->luaGlobalIntForTest("cnt"));
 }
 
+// ── The plane comes from the ingress, not the frame ──
+namespace {
+// The app counts events by the channel it sees them on.
+constexpr const char* APP_COUNTS_CHANNELS =
+    "function init(ctx) app_n = 0; runtime_n = 0; other_n = 0 end\n"
+    "function on_tick(ctx, dt) end\n"
+    "function on_event(ctx, e)\n"
+    "  if e.channel == 'app' then app_n = app_n + 1\n"
+    "  elseif e.channel == 'runtime' then runtime_n = runtime_n + 1\n"
+    "  else other_n = other_n + 1 end\n"
+    "end\n";
+
+void loadChannelCounter() {
+  JsonDocument doc;
+  doc["channel"] = "system";
+  doc["type"] = "app";
+  doc["code"] = APP_COUNTS_CHANNELS;
+  sandbox->injectMessage("test", "app", doc);
+  TEST_ASSERT_TRUE(sandbox->isAppRunning());
+}
+
+void assertChannelCounts(int app, int runtime) {
+  TEST_ASSERT_EQUAL_INT(app, sandbox->luaGlobalIntForTest("app_n"));
+  TEST_ASSERT_EQUAL_INT(runtime, sandbox->luaGlobalIntForTest("runtime_n"));
+  TEST_ASSERT_EQUAL_INT(0, sandbox->luaGlobalIntForTest("other_n"));
+}
+}  // namespace
+
+// A frame handed to handleAppMessage arrives as "app" whatever it stamps: an
+// ingress any peer can write cannot reach the runtime plane, nor pose as a
+// driver.
+void test_handle_app_message_always_delivers_app(void) {
+  build();
+  loadChannelCounter();
+  const char* stamped[] = {"runtime", "driver", "system", "app"};
+  for (const char* channel : stamped) {
+    JsonDocument evt;
+    evt["channel"] = channel;
+    evt["type"] = "turn";
+    sandbox->handleAppMessage("test", "turn", evt);
+  }
+  for (int i = 0; i < 4; i++) pump();
+  assertChannelCounts(4, 0);
+}
+
+// handleRuntimeMessage delivers "runtime" whatever the frame stamps.
+void test_handle_runtime_message_delivers_runtime(void) {
+  build();
+  loadChannelCounter();
+  const char* stamped[] = {"runtime", "app"};
+  for (const char* channel : stamped) {
+    JsonDocument evt;
+    evt["channel"] = channel;
+    evt["type"] = "patch";
+    sandbox->handleRuntimeMessage("test", "patch", evt);
+  }
+  pump(); pump();
+  assertChannelCounts(0, 2);
+}
+
+// The runtime plane keeps the data plane's checks: self-echo and nonce dedup,
+// with one nonce ring shared by both entries.
+void test_handle_runtime_message_drops_self_echo_and_duplicates(void) {
+  build();
+  loadChannelCounter();
+  JsonDocument echo;
+  echo["type"] = "patch";
+  echo["from"] = sandbox->getDeviceId();
+  sandbox->handleRuntimeMessage("test", "patch", echo);
+  for (int i = 0; i < 2; i++) {
+    JsonDocument evt;
+    evt["type"] = "reply";
+    evt["nonce"] = "host:7";
+    if (i == 0) {
+      sandbox->handleAppMessage("test", "reply", evt);
+    } else {
+      sandbox->handleRuntimeMessage("test", "reply", evt);
+    }
+  }
+  pump(); pump(); pump();
+  assertChannelCounts(1, 0);
+}
+
+// Courier's default transport is the sandbox's own host connection, so a
+// frame there that states channel:"runtime" keeps it, and "app" stays "app".
+void test_courier_runtime_channel_routes_to_runtime_plane(void) {
+  build();
+  loadChannelCounter();
+  JsonDocument rt;
+  rt["channel"] = "runtime";
+  rt["type"] = "patch";
+  sandbox->injectMessage("test", "patch", rt);
+  JsonDocument app;
+  app["channel"] = "app";
+  app["type"] = "turn";
+  sandbox->injectMessage("test", "turn", app);
+  pump(); pump();
+  assertChannelCounts(1, 1);
+}
+
 void test_send_system_stamps_channel(void) {
   build();  // no network configured
   JsonDocument doc;
@@ -307,6 +407,10 @@ int main(int, char**) {
   RUN_TEST(test_app_channel_drops_self_echo_under_an_overridden_id);
   RUN_TEST(test_app_channel_dedups_by_nonce);
   RUN_TEST(test_app_channel_distinct_nonces_both_deliver);
+  RUN_TEST(test_handle_app_message_always_delivers_app);
+  RUN_TEST(test_handle_runtime_message_delivers_runtime);
+  RUN_TEST(test_handle_runtime_message_drops_self_echo_and_duplicates);
+  RUN_TEST(test_courier_runtime_channel_routes_to_runtime_plane);
   RUN_TEST(test_send_system_stamps_channel);
   RUN_TEST(test_description_shown_on_system_display);
   return UNITY_END();

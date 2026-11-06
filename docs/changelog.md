@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- **`Sandbox::handleRuntimeMessage(transportName, type, doc)`, the runtime plane's own entry point.** It runs the same checks as `handleAppMessage` (self-echo, the nonce ring, the size cap, the gate) and delivers `event.channel == "runtime"`. Courier's default transport routes a frame stating `channel:"runtime"` to it. A wrapper with its own receive path calls it only from an ingress that only the device's own host can write.
+
+### Fixes
+
+- **`handleAppMessage` always delivers `event.channel == "app"`.** It used to copy the frame's own `channel` field into the event, so a frame from an ingress any peer can write (a LAN multicast group, a broadcast topic every device publishes to) could stamp `channel:"runtime"` and be handed to a framework module as its trusted host, or stamp `"driver"` and pose as hardware. The plane now comes from which entry point the ingress calls, not from the frame. A wrapper that passed host frames stating `channel:"runtime"` through `handleAppMessage` calls `handleRuntimeMessage` for them instead; until it does, they arrive as `app`.
+
+---
+
 ## v0.13.1
 
 ### Dependencies
