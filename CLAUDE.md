@@ -44,7 +44,10 @@ The runner self-installs its Python deps via `uv` (PEP 723 inline metadata).
   under `src/`. The current API is centred on `Resident::Sandbox` (renamed
   from `Resident::Device` in 0.5). Since 0.7, incoming messages carry an
   envelope `channel` field that routes them onto a plane: `"app"` (data
-  plane) reaches `Sandbox::handleAppMessage` → Lua `on_event`; `"system"`
+  plane) reaches `Sandbox::handleAppMessage` → Lua `on_event`; `"runtime"`
+  (framework plane) reaches `Sandbox::handleRuntimeMessage`, the same queue
+  (the plane comes from which of the two an ingress calls, never from the
+  frame's own field, so `handleAppMessage` always delivers `"app"`); `"system"`
   (control plane) reaches `Sandbox::handleSystemMessage`, which still handles
   the reserved `app`/`forget` types and falls through to a
   `"system"` slot for anything else; any other channel name goes to a slot

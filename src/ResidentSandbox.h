@@ -274,8 +274,19 @@ public:
     // nonce dedup (Task 4), then delivery to on_event with event.name = type.
     // Public because wrappers call it directly from per-transport hooks
     // (e.g. MQTT topic mapping) — no loopback through Courier.
+    // Always delivers event.channel == "app": the frame's own `channel` field
+    // is not read, so a frame from an ingress any peer can write (a
+    // multicast group, a shared broadcast topic) cannot claim the runtime
+    // plane by stamping it.
     void handleAppMessage(const char* transportName, const char* type,
                           JsonDocument& doc);
+
+    // Runtime-plane entry: the same checks and delivery as handleAppMessage,
+    // with event.channel == "runtime". A framework trusts that plane as its
+    // own host talking, so call this only from an ingress that only the
+    // host can write (the sandbox's own Courier default transport does).
+    void handleRuntimeMessage(const char* transportName, const char* type,
+                              JsonDocument& doc);
 
     // Control-plane entry: every message on channel "system". Reserved types
     // app/forget are handled internally (deferral included); all other
@@ -790,6 +801,9 @@ private:
     void pushAppEvent(const char* name, const char* dataJson, const char* from, uint32_t ts_ms,
                       const char* channel = "driver", const char* src = "",
                       bool hasSeq = false, uint32_t seq = 0);
+    // Shared body of handleAppMessage/handleRuntimeMessage: legacy unwrap,
+    // self-echo, nonce dedup, gate, size check, then queue on `channel`.
+    void deliverWireEvent(const char* type, JsonDocument& doc, const char* channel);
     void notifyAppRunning(bool running);
     static void driverEventHandler(void* ctx, const char* name,
                                    const EventField* fields, int fieldCount);
