@@ -42,7 +42,12 @@
 // adapter, and direct-to-panel targets where drawing is already live).
 //
 // Deliberately small this pass: default font + setTextSize multiplier only,
-// no font selection, no images, no Lua-created sprites.
+// no font selection, no Lua-created sprites. One image call: pushImage, a
+// block of RGB565 pixels from a Lua string, for apps that keep their own
+// picture and send what changed in one call instead of a fillRect a run; or,
+// with a palette, a block of palette indices with one of them transparent, so
+// an app can lay sprites over a backdrop, clipped to a rectangle
+// (setClipRect), and leave every pixel's work to C.
 #ifndef RESIDENT_LGFX_MODULE_H
 #define RESIDENT_LGFX_MODULE_H
 
@@ -90,6 +95,47 @@ public:
   virtual int32_t width() = 0;
   virtual int32_t height() = 0;
 
+  // A block of w x h pixels at x, y: RGB565, big-endian (high byte first),
+  // row by row. The default draws it a pixel at a time, so every target has
+  // it; a target over LovyanGFX hands it to pushImage.
+  virtual void pushImage(int32_t x, int32_t y, int32_t w, int32_t h, const uint8_t* rgb565be) {
+    int32_t c0, c1, r0, r1;
+    if (!visible(x, y, w, h, c0, c1, r0, r1)) return;
+    for (int32_t r = r0; r < r1; r++) {
+      for (int32_t c = c0; c < c1; c++) {
+        drawPixel(x + c, y + r, rgb888(rgb565be + ((size_t)r * (size_t)w + (size_t)c) * 2));
+      }
+    }
+  }
+
+  // An indexed block: w x h bytes, row by row, each an index into palette
+  // (ncolors colours, RGB565 big-endian). An index equal to transparent (-1
+  // for none) or past the palette's end isn't drawn. The default draws a
+  // pixel at a time; a target with a frame buffer should write it straight in.
+  virtual void pushIndexed(int32_t x, int32_t y, int32_t w, int32_t h, const uint8_t* idx,
+                           const uint8_t* palette, int32_t ncolors, int32_t transparent) {
+    int32_t c0, c1, r0, r1;
+    if (!visible(x, y, w, h, c0, c1, r0, r1)) return;
+    for (int32_t r = r0; r < r1; r++) {
+      const uint8_t* row = idx + (size_t)r * (size_t)w;
+      for (int32_t c = c0; c < c1; c++) {
+        int32_t i = row[c];
+        if (i != transparent && i < ncolors) drawPixel(x + c, y + r, rgb888(palette + i * 2));
+      }
+    }
+  }
+
+  // Drawing limited to a rectangle until clearClipRect(), as LovyanGFX's. The
+  // base keeps it and clips the blocks its own pushImage and pushIndexed draw;
+  // a target over LovyanGFX passes it on, so everything it draws is clipped; a
+  // target with a frame buffer of its own should clip everything it draws.
+  // App reset clears it.
+  virtual void setClipRect(int32_t x, int32_t y, int32_t w, int32_t h) {
+    _clipped = true;
+    _clipX0 = x; _clipY0 = y; _clipX1 = x + w; _clipY1 = y + h;
+  }
+  virtual void clearClipRect() { _clipped = false; }
+
   // R19 machinery hooks. Defaults keep pre-R19 targets (their own presenter,
   // or direct-to-panel) working unchanged.
   //
@@ -103,6 +149,30 @@ public:
   // Present the frame to the glass. Only called when pixels() is null (or no
   // panel is registered); default: drawing is live, nothing to do.
   virtual void flip() {}
+
+protected:
+  // The part of a w x h block at x, y inside the clip, as the block's own
+  // columns c0..c1 and rows r0..r1 (ends exclusive); false when none of it is.
+  bool visible(int32_t x, int32_t y, int32_t w, int32_t h,
+               int32_t& c0, int32_t& c1, int32_t& r0, int32_t& r1) const {
+    c0 = 0; r0 = 0; c1 = w; r1 = h;
+    if (_clipped) {
+      if (_clipX0 > x) c0 = _clipX0 - x;
+      if (_clipY0 > y) r0 = _clipY0 - y;
+      if (_clipX1 < x + w) c1 = _clipX1 - x;
+      if (_clipY1 < y + h) r1 = _clipY1 - y;
+    }
+    return c0 < c1 && r0 < r1;
+  }
+  static uint16_t be16(const uint8_t* p) { return (uint16_t)((p[0] << 8) | p[1]); }
+  static uint32_t rgb888(const uint8_t* be) {
+    uint16_t v = be16(be);
+    uint32_t r5 = (v >> 11) & 0x1F, g6 = (v >> 5) & 0x3F, b5 = v & 0x1F;
+    return ((r5 << 3 | r5 >> 2) << 16) | ((g6 << 2 | g6 >> 4) << 8) | (b5 << 3 | b5 >> 2);
+  }
+
+  bool _clipped = false;
+  int32_t _clipX0 = 0, _clipY0 = 0, _clipX1 = 0, _clipY1 = 0;
 };
 
 // ── Duck-typed LovyanGFX adapter (also instantiable with a test fake) ────
@@ -160,6 +230,52 @@ public:
 
   int32_t width() override { return _gfx->width(); }
   int32_t height() override { return _gfx->height(); }
+
+  // LovyanGFX's pushImage(x, y, w, h, const uint16_t*) reads native-endian
+  // RGB565; the Lua string is big-endian, so rows go through a small buffer,
+  // as many whole rows at a time as fit.
+  void pushImage(int32_t x, int32_t y, int32_t w, int32_t h, const uint8_t* be) override {
+    static constexpr int32_t N = 1024;
+    static uint16_t buf[N];
+    if (w > N) { LgfxTarget::pushImage(x, y, w, h, be); return; }
+    const int32_t rowsPer = N / w;
+    for (int32_t r0 = 0; r0 < h; r0 += rowsPer) {
+      const int32_t rows = (h - r0 < rowsPer) ? h - r0 : rowsPer;
+      const uint8_t* p = be + (size_t)r0 * (size_t)w * 2;
+      for (int32_t i = 0; i < rows * w; i++) buf[i] = (uint16_t)((p[2 * i] << 8) | p[2 * i + 1]);
+      _gfx->pushImage(x, y + r0, w, rows, buf);
+    }
+  }
+
+  // An indexed block goes to LovyanGFX a run of drawn pixels at a time, as
+  // native-endian RGB565 through a small buffer; LovyanGFX does the clipping.
+  void pushIndexed(int32_t x, int32_t y, int32_t w, int32_t h, const uint8_t* idx,
+                   const uint8_t* palette, int32_t ncolors, int32_t transparent) override {
+    static constexpr int32_t N = 1024;
+    static uint16_t buf[N];
+    int32_t c0, c1, r0, r1;
+    if (!this->visible(x, y, w, h, c0, c1, r0, r1)) return;
+    for (int32_t r = r0; r < r1; r++) {
+      const uint8_t* row = idx + (size_t)r * (size_t)w;
+      int32_t c = c0;
+      while (c < c1) {
+        while (c < c1 && (row[c] == transparent || row[c] >= ncolors)) c++;
+        const int32_t start = c;
+        int32_t n = 0;
+        while (c < c1 && n < N && row[c] != transparent && row[c] < ncolors) buf[n++] = this->be16(palette + row[c++] * 2);
+        if (n) _gfx->pushImage(x + start, y + r, n, 1, buf);
+      }
+    }
+  }
+
+  void setClipRect(int32_t x, int32_t y, int32_t w, int32_t h) override {
+    LgfxTarget::setClipRect(x, y, w, h);
+    _gfx->setClipRect(x, y, w, h);
+  }
+  void clearClipRect() override {
+    LgfxTarget::clearClipRect();
+    _gfx->clearClipRect();
+  }
 
   void flip() override { if (_present) _present(); }
 
@@ -251,6 +367,7 @@ public:
   // is a clean claim, and until then this module's flips stand down.
   void onAppReset() override {
     RenderTargets::release(RenderTargets::MODULE_LGFX);
+    for (int i = 0; i < _count; i++) _slots[i].target->clearClipRect();   // the next app draws everywhere
   }
 
   void registerModule(LuaModule& m) override {
@@ -304,6 +421,9 @@ public:
       {"setCursor", l_setCursor},
       {"print", l_print},
       {"drawString", l_drawString},
+      {"pushImage", l_pushImage},
+      {"setClipRect", l_setClipRect},
+      {"clearClipRect", l_clearClipRect},
       {"width", l_width},
       {"height", l_height},
       {"flip", l_flip},
@@ -413,6 +533,41 @@ private:
   static int l_drawString(lua_State* L) {
     tgt(L)->drawString(luaL_checkstring(L, 2), geti(L, 3), geti(L, 4)); return 0;
   }
+  // g:pushImage(x, y, w, h, data[, palette[, transparent]]): without a
+  // palette, data is exactly w * h * 2 bytes, RGB565 big-endian, row by row.
+  // With one (a string of 1 to 256 colours, RGB565 big-endian, 2 bytes each),
+  // data is exactly w * h bytes, each an index into it; an index equal to
+  // transparent (0-255) or past the palette's end isn't drawn.
+  static int l_pushImage(lua_State* L) {
+    int32_t x = geti(L, 2), y = geti(L, 3), w = geti(L, 4), h = geti(L, 5);
+    size_t len = 0;
+    const char* data = luaL_checklstring(L, 6, &len);
+    if (lua_isnoneornil(L, 7)) {
+      if (w <= 0 || h <= 0) return 0;
+      if (w > 4096 || h > 4096 || len != (size_t)w * (size_t)h * 2) {
+        return luaL_argerror(L, 6, "expected w * h * 2 bytes of RGB565, big-endian");
+      }
+      tgt(L)->pushImage(x, y, w, h, (const uint8_t*)data);
+      return 0;
+    }
+    size_t plen = 0;
+    const char* palette = luaL_checklstring(L, 7, &plen);
+    int32_t transparent = (int32_t)luaL_optinteger(L, 8, -1);
+    if (plen == 0 || plen > 512 || plen % 2 != 0) {
+      return luaL_argerror(L, 7, "expected 1 to 256 colours of RGB565, big-endian");
+    }
+    if (w <= 0 || h <= 0) return 0;
+    if (w > 4096 || h > 4096 || len != (size_t)w * (size_t)h) {
+      return luaL_argerror(L, 6, "expected w * h bytes of palette indices");
+    }
+    tgt(L)->pushIndexed(x, y, w, h, (const uint8_t*)data, (const uint8_t*)palette,
+                        (int32_t)(plen / 2), transparent);
+    return 0;
+  }
+  static int l_setClipRect(lua_State* L) {
+    tgt(L)->setClipRect(geti(L, 2), geti(L, 3), geti(L, 4), geti(L, 5)); return 0;
+  }
+  static int l_clearClipRect(lua_State* L) { tgt(L)->clearClipRect(); return 0; }
   static int l_width(lua_State* L) { lua_pushinteger(L, tgt(L)->width()); return 1; }
   static int l_height(lua_State* L) { lua_pushinteger(L, tgt(L)->height()); return 1; }
   static int l_flip(lua_State* L) { present(*slot(L)); return 0; }
