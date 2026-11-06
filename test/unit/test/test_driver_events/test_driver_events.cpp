@@ -42,6 +42,27 @@ public:
     };
     sendEvent("button", fields, 1);
   }
+
+  // A string a driver passes through from outside (a network name, a
+  // scanned tag): it must reach the app intact, quotes and all.
+  void emitAwkwardString() {
+    Resident::EventField fields[] = {
+        {"index", Resident::EventField::INT, {.i = 1}},
+        {"text", Resident::EventField::STRING, {.s = "say \"hi\" \\ \n"}},
+    };
+    sendEvent("awkward", fields, 2);
+  }
+
+  // A field too big for the data buffer is left out whole, with those after.
+  void emitOversizeField() {
+    static std::string big(RESIDENT_EVENT_JSON_MAX, 'z');
+    Resident::EventField fields[] = {
+        {"index", Resident::EventField::INT, {.i = 3}},
+        {"big", Resident::EventField::STRING, {.s = big.c_str()}},
+        {"after", Resident::EventField::INT, {.i = 4}},
+    };
+    sendEvent("oversize", fields, 3);
+  }
 };
 
 ProbeDriver* driver = nullptr;
@@ -146,6 +167,29 @@ void test_driver_event_channel_is_driver(void) {
   TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("is_driver"));
 }
 
+void test_driver_string_field_reaches_lua_intact(void) {
+  build();
+  loadApp(
+      "function on_event(ctx, e)\n"
+      "  text_ok = (e.data.text == 'say \"hi\" \\\\ \\n') and (e.data.index == 1)\n"
+      "end\n");
+  driver->emitAwkwardString();
+  pump();
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("text_ok"));
+}
+
+void test_driver_field_too_big_is_left_out_whole(void) {
+  build();
+  loadApp(
+      "function on_event(ctx, e)\n"
+      "  kept = (e.data.index == 3) and (e.data.big == nil)\n"
+      "    and (e.data.after == nil)\n"
+      "end\n");
+  driver->emitOversizeField();
+  pump();
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("kept"));
+}
+
 // ctx.trigger_count (a button-press counter for the retired shader templates)
 // is gone: a button is an event, and an app counts its own.
 void test_ctx_has_no_trigger_count(void) {
@@ -165,6 +209,8 @@ int main(int, char**) {
   RUN_TEST(test_driver_shadow_never_clobbers_envelope_keys);
   RUN_TEST(test_wire_events_get_no_shadow);
   RUN_TEST(test_driver_event_channel_is_driver);
+  RUN_TEST(test_driver_string_field_reaches_lua_intact);
+  RUN_TEST(test_driver_field_too_big_is_left_out_whole);
   RUN_TEST(test_ctx_has_no_trigger_count);
   return UNITY_END();
 }

@@ -14,6 +14,7 @@ namespace {
 
 Resident::Sandbox* sandbox = nullptr;
 std::vector<std::string>* frames = nullptr;
+std::vector<std::string>* boardFrames = nullptr;   // the telemetry callback's
 
 // A do-nothing LgfxTarget with real geometry — enough to feed the
 // render-target registry via the lgfx module's addDisplay path.
@@ -96,6 +97,7 @@ void setUp(void) {
 void tearDown(void) {
   delete sandbox; sandbox = nullptr;
   delete frames; frames = nullptr;
+  delete boardFrames; boardFrames = nullptr;
 }
 
 void test_telemetry_rides_the_wire(void) {
@@ -110,6 +112,71 @@ void test_telemetry_rides_the_wire(void) {
   TEST_ASSERT_TRUE(f->find("\"channel\":\"system\"") != std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"type\":\"telemetry\"") != std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"error\":") != std::string::npos);
+}
+
+bool hasRawControlByte(const std::string& s) {
+  for (unsigned char c : s) {
+    if (c < 0x20) return true;
+  }
+  return false;
+}
+
+void captureBoardTelemetry() {
+  boardFrames = new std::vector<std::string>();
+  sandbox->setTelemetryCallback([](const char* json) {
+    boardFrames->push_back(json ? json : "");
+  });
+}
+
+const std::string* boardFrameWith(const char* needle) {
+  for (auto& s : *boardFrames)
+    if (s.find(needle) != std::string::npos) return &s;
+  return nullptr;
+}
+
+// An app's text reaches telemetry (log.error, runtime errors), and the host
+// stamps the generation id: neither may put a raw control byte in a frame,
+// on the wire or in the board callback's flat copy.
+void test_telemetry_frames_never_carry_raw_control_bytes(void) {
+  build();
+  attachSink();
+  captureBoardTelemetry();
+  loadApp("function init(ctx) log.error('bad\\1thing \"q\" \\\\ \\31') end\n"
+          "function on_tick(ctx, dt) end\n",
+          "g\x01" "1");
+  pump();
+  const std::string* f = frameWith("\"name\":\"log_error\"");
+  TEST_ASSERT_NOT_NULL(f);
+  for (auto& w : *frames) TEST_ASSERT_FALSE(hasRawControlByte(w));
+  TEST_ASSERT_TRUE(f->find("\"error\":\"bad\xEF\xBF\xBDthing \\\"q\\\" \\\\ "
+                           "\xEF\xBF\xBD\"") != std::string::npos);
+  TEST_ASSERT_TRUE(f->find("\"generationId\":\"g\xEF\xBF\xBD" "1\"") !=
+                   std::string::npos);
+
+  const std::string* b = boardFrameWith("\"name\":\"log_error\"");
+  TEST_ASSERT_NOT_NULL(b);
+  for (auto& s : *boardFrames) TEST_ASSERT_FALSE(hasRawControlByte(s));
+  JsonDocument parsed;
+  TEST_ASSERT_FALSE(deserializeJson(parsed, *b));
+  TEST_ASSERT_EQUAL_STRING("bad\xEF\xBF\xBDthing \"q\" \\ \xEF\xBF\xBD",
+                           parsed["data"]["error"].as<const char*>());
+  TEST_ASSERT_EQUAL_STRING("g\xEF\xBF\xBD" "1",
+                           parsed["generationId"].as<const char*>());
+}
+
+// The board callback's copy is bounded: a long error is cut, never inside a
+// character, and the frame stays valid JSON.
+void test_telemetry_callback_cuts_a_long_error_at_a_character(void) {
+  build();
+  captureBoardTelemetry();
+  // 'a' then 300 two-byte characters: byte 256 is the middle of one.
+  loadApp("function init(ctx) log.error('a' .. string.rep('\\195\\169', 300)) end\n"
+          "function on_tick(ctx, dt) end\n");
+  const std::string* b = boardFrameWith("\"name\":\"log_error\"");
+  TEST_ASSERT_NOT_NULL(b);
+  JsonDocument parsed;
+  TEST_ASSERT_FALSE(deserializeJson(parsed, *b));
+  TEST_ASSERT_EQUAL_INT(255, (int)strlen(parsed["data"]["error"].as<const char*>()));
 }
 
 void test_telemetry_queue_drops_oldest_when_unsendable(void) {
@@ -139,6 +206,7 @@ void test_hello_carries_identity_limits_and_app(void) {
   // via its bracket; telemetry needs no advance notice.
   TEST_ASSERT_TRUE(f->find("\"features\"") == std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"eventBytes\":1024") != std::string::npos);
+  TEST_ASSERT_TRUE(f->find("\"eventNameBytes\":31") != std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"storeBytes\":2048") != std::string::npos);
   TEST_ASSERT_TRUE(f->find("\"storeNsChars\":32") != std::string::npos);
   // The running app: namespace + the wire-stamped generation id.
@@ -245,6 +313,8 @@ void test_on_event_ctx_carries_no_wallclock_fields(void) {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_telemetry_rides_the_wire);
+  RUN_TEST(test_telemetry_frames_never_carry_raw_control_bytes);
+  RUN_TEST(test_telemetry_callback_cuts_a_long_error_at_a_character);
   RUN_TEST(test_telemetry_queue_drops_oldest_when_unsendable);
   RUN_TEST(test_hello_carries_identity_limits_and_app);
   RUN_TEST(test_hello_without_app_omits_app_field);

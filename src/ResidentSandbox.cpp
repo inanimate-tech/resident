@@ -827,6 +827,113 @@ bool Sandbox::sendSystem(JsonDocument& doc)
   return _courier->send(doc);
 }
 
+// ── JSON strings: one writer for every frame the device builds ──────────
+//
+// ArduinoJson escapes only " \ \b \f \n \r \t, and writes every other byte
+// below 0x20 raw, which RFC 8259 forbids inside a string: a strict parser
+// rejects the whole frame. A \u00XX escape would not survive either, since
+// an event's data is parsed back into a document before it is queued and
+// the transport serialises that document with ArduinoJson again. So such a
+// byte is written as U+FFFD REPLACEMENT CHARACTER, which survives any number
+// of round trips.
+namespace {
+
+constexpr char kReplacementChar[] = "\xEF\xBF\xBD";  // U+FFFD in UTF-8
+
+// True for a control byte ArduinoJson would write raw.
+bool isUnescapedControl(unsigned char c) {
+  return c < 0x20 && c != '\b' && c != '\f' && c != '\n' && c != '\r' &&
+         c != '\t';
+}
+
+// s with each byte isUnescapedControl() names replaced by U+FFFD: a string
+// ArduinoJson serialises as valid JSON. Also safe to run over ArduinoJson's
+// compact output, where such a byte can only sit inside a string.
+String jsonSafe(const char* s) {
+  if (!s) return String();
+  size_t len = 0;
+  size_t extra = 0;  // each replacement grows 1 byte to 3
+  for (const unsigned char* p = (const unsigned char*)s; *p; p++, len++) {
+    if (isUnescapedControl(*p)) extra += 2;
+  }
+  if (extra == 0) return String(s);  // the usual case: a plain copy
+  String out;
+  out.reserve(len + extra);
+  for (const unsigned char* p = (const unsigned char*)s; *p; p++) {
+    if (isUnescapedControl(*p)) {
+      out += kReplacementChar;
+    } else {
+      out += (char)*p;
+    }
+  }
+  return out;
+}
+
+// Bounded writer: never writes past cap, never truncates silently — once
+// `overflow` is set every subsequent write is a no-op and the caller must
+// discard the buffer.
+struct JsonWriter {
+  char* buf = nullptr;
+  size_t cap = 0;
+  size_t len = 0;
+  bool overflow = false;
+
+  void putc_(char c) {
+    if (overflow) return;
+    if (len + 1 >= cap) { overflow = true; return; }  // reserve NUL slot
+    buf[len++] = c;
+  }
+  void puts_(const char* s) { while (*s) putc_(*s++); }
+  void terminate() { buf[len < cap ? len : cap - 1] = '\0'; }
+};
+
+// Writes s as a quoted JSON string, reading at most maxIn bytes of it. A cut
+// backs off to the start of a UTF-8 sequence, so it never splits a character.
+void writeJsonString(JsonWriter& w, const char* s, size_t maxIn = SIZE_MAX) {
+  const unsigned char* p = (const unsigned char*)(s ? s : "");
+  size_t n = strnlen((const char*)p, maxIn);
+  if (p[n] != '\0') {
+    while (n > 0 && (p[n] & 0xC0) == 0x80) n--;
+  }
+  w.putc_('"');
+  for (size_t i = 0; i < n; i++) {
+    unsigned char c = p[i];
+    switch (c) {
+      case '"':  w.puts_("\\\""); break;
+      case '\\': w.puts_("\\\\"); break;
+      case '\b': w.puts_("\\b");  break;
+      case '\f': w.puts_("\\f");  break;
+      case '\n': w.puts_("\\n");  break;
+      case '\r': w.puts_("\\r");  break;
+      case '\t': w.puts_("\\t");  break;
+      default:
+        if (c < 0x20) {
+          w.puts_(kReplacementChar);
+        } else {
+          w.putc_((char)c);
+        }
+    }
+  }
+  w.putc_('"');
+}
+
+// Why `name` cannot be an event's name, or nullptr if it can.
+const char* eventNameProblem(const char* name) {
+  if (!name || !name[0]) return "is empty";
+  size_t n = 0;
+  for (const unsigned char* p = (const unsigned char*)name; *p; p++, n++) {
+    if (*p < 0x20 || *p == 0x7F) return "holds a control character";
+  }
+  static_assert(RESIDENT_EVENT_NAME_MAX == 31, "the message states the limit");
+  if (n > RESIDENT_EVENT_NAME_MAX) return "is longer than 31 bytes";
+  return nullptr;
+}
+
+}  // namespace
+
+// log.warn's line, which the runtime's own warnings to the author share.
+static void writeWarn(const char* msg);
+
 // ── Outbound control plane: hello + wire telemetry ──────────────────────
 //
 // Both are QUEUED and drained from loop(): emitTelemetry fires from paths
@@ -858,6 +965,7 @@ bool Sandbox::sendHello()
   // extension point is a field with no consumer.
   JsonObject limits = d["limits"].to<JsonObject>();
   limits["eventBytes"] = RESIDENT_EVENT_JSON_MAX;
+  limits["eventNameBytes"] = RESIDENT_EVENT_NAME_MAX;
   limits["replyBytes"] = RESIDENT_EVENT_JSON_MAX;
   limits["storeBytes"] = RESIDENT_STORE_JSON_MAX;
   limits["storeNsChars"] = (int)StoreModule::STORE_NS_MAX;
@@ -888,7 +996,9 @@ bool Sandbox::sendHello()
 }
 
 // Wire copy of every telemetry emission. Bounded ring; overflow drops the
-// oldest (telemetry is a report, not a ledger).
+// oldest (telemetry is a report, not a ledger). The error (often an app's
+// own text) and the generation id (the host's) are made JSON-safe here,
+// since the transport serialises the frame with ArduinoJson.
 void Sandbox::queueTelemetryWire(const char* name, const char* error, long count)
 {
   int nextHead = (_telemetryHead + 1) % TELEMETRY_QUEUE_SIZE;
@@ -897,8 +1007,8 @@ void Sandbox::queueTelemetryWire(const char* name, const char* error, long count
   }
   PendingTelemetry& t = _pendingTelemetry[_telemetryHead];
   t.name = name;
-  t.generationId = _generationId;
-  t.error = error ? error : "";
+  t.generationId = jsonSafe(_generationId.c_str());
+  t.error = jsonSafe(error);
   t.count = count;
   _telemetryHead = nextHead;
 }
@@ -954,7 +1064,18 @@ Sandbox::SendResult Sandbox::publishEventEx(const char* name,
                                             const char* dataJson, bool keep,
                                             const char* channel)
 {
-  if (!name || !name[0]) return SendResult::Dropped;
+  // A receiver copies the name into a 32-byte buffer and the frame must be
+  // valid JSON, so a name that fits neither is the author's to fix: warn and
+  // drop rather than send something no handler matches.
+  if (const char* why = eventNameProblem(name)) {
+    char msg[112];
+    snprintf(msg, sizeof(msg),
+             "event dropped: its name %s (names are 1-%d bytes, no control "
+             "characters)",
+             why, RESIDENT_EVENT_NAME_MAX);
+    writeWarn(msg);
+    return SendResult::Dropped;
+  }
   JsonDocument doc;
   doc["channel"] = (channel && channel[0]) ? channel : "app";
   doc["type"] = name;
@@ -1008,7 +1129,10 @@ Sandbox::SendResult Sandbox::publishEventEx(const char* name,
   }
   serializeJson(doc, buf, need);
   QueuedEvent q;
-  q.json = buf;
+  // events.send's data already holds no raw control byte (writeJsonString);
+  // a C++ caller's dataJson may carry \u00XX escapes, which the parse above
+  // turned back into raw bytes.
+  q.json = jsonSafe(buf);
   free(buf);
   q.keep = keep;
   q.seq = seq;
@@ -1585,7 +1709,8 @@ void Sandbox::endCapture()
 // ── Lua table → JSON serializer (outgoing events.send data) ──────────────
 //
 // Successor to the flat serializer ported from RoomModule::announce. Adds:
-//   - proper JSON string escaping (" \ and control chars) for keys AND values
+//   - proper JSON string escaping (" \ and control chars, see
+//     writeJsonString) for keys AND values
 //   - booleans (Lua true/false → JSON true/false)
 //   - nested tables to LUA_JSON_MAX_DEPTH table levels: string-keyed tables
 //     become objects; tables with a non-empty array part (lua_rawlen > 0)
@@ -1607,46 +1732,8 @@ namespace {
 
 constexpr int LUA_JSON_MAX_DEPTH = 3;  // table levels, counting the top one
 
-// Bounded writer: never writes past cap, never truncates silently — once
-// `overflow` is set every subsequent write is a no-op and the caller must
-// discard the buffer.
-struct JsonWriter {
-  char* buf = nullptr;
-  size_t cap = 0;
-  size_t len = 0;
-  bool overflow = false;
-
-  void putc_(char c) {
-    if (overflow) return;
-    if (len + 1 >= cap) { overflow = true; return; }  // reserve NUL slot
-    buf[len++] = c;
-  }
-  void puts_(const char* s) { while (*s) putc_(*s++); }
-  void terminate() { buf[len < cap ? len : cap - 1] = '\0'; }
-};
-
-void writeJsonString(JsonWriter& w, const char* s) {
-  w.putc_('"');
-  for (const unsigned char* p = (const unsigned char*)s; *p; p++) {
-    unsigned char c = *p;
-    switch (c) {
-      case '"':  w.puts_("\\\""); break;
-      case '\\': w.puts_("\\\\"); break;
-      case '\n': w.puts_("\\n");  break;
-      case '\r': w.puts_("\\r");  break;
-      case '\t': w.puts_("\\t");  break;
-      default:
-        if (c < 0x20) {
-          char esc[8];
-          snprintf(esc, sizeof(esc), "\\u%04x", c);
-          w.puts_(esc);
-        } else {
-          w.putc_((char)c);
-        }
-    }
-  }
-  w.putc_('"');
-}
+// JsonWriter and writeJsonString are defined above, with the outbound
+// control plane, which builds its frames with them too.
 
 void writeLuaObject(lua_State* L, int idx, JsonWriter& w, int depth);
 void writeLuaArray(lua_State* L, int idx, JsonWriter& w, int depth);
@@ -3224,22 +3311,41 @@ void Sandbox::driverEventHandler(void* ctx, const char* name,
 
   // Serialize EventField array into data as compact JSON. The same
   // ArduinoJson parse that handles wire events delivers this (one payload
-  // shape since 0.8), so it must be a valid JSON object.
-  char* p = e.data;
-  char* end = e.data + sizeof(e.data) - 1;
-  *p++ = '{';
-  for (int i = 0; i < fieldCount && p < end - 20; i++) {
-    if (i > 0 && p < end) *p++ = ',';
-    p += snprintf(p, end - p, "\"%s\":", fields[i].key);
+  // shape since 0.8), so it must be a valid JSON object: keys and strings go
+  // through writeJsonString, and a field that does not fit is left out
+  // whole, with every field after it.
+  JsonWriter w{e.data, sizeof(e.data) - 1};  // one byte held back for the '}'
+  w.putc_('{');
+  for (int i = 0; i < fieldCount; i++) {
+    size_t mark = w.len;
+    if (i > 0) w.putc_(',');
+    writeJsonString(w, fields[i].key);
+    w.putc_(':');
+    char num[24];
     switch (fields[i].type) {
-      case EventField::INT:    p += snprintf(p, end - p, "%d", fields[i].i); break;
-      case EventField::FLOAT:  p += snprintf(p, end - p, "%g", (double)fields[i].f); break;
-      case EventField::BOOL:   p += snprintf(p, end - p, "%s", fields[i].b ? "true" : "false"); break;
-      case EventField::STRING: p += snprintf(p, end - p, "\"%s\"", fields[i].s); break;
+      case EventField::INT:
+        snprintf(num, sizeof(num), "%d", fields[i].i);
+        w.puts_(num);
+        break;
+      case EventField::FLOAT:
+        snprintf(num, sizeof(num), "%g", (double)fields[i].f);
+        w.puts_(num);
+        break;
+      case EventField::BOOL:
+        w.puts_(fields[i].b ? "true" : "false");
+        break;
+      case EventField::STRING:
+        writeJsonString(w, fields[i].s);
+        break;
+    }
+    if (w.overflow) {
+      w.len = mark;
+      w.overflow = false;
+      break;
     }
   }
-  if (p < end) *p++ = '}';
-  *p = '\0';
+  e.data[w.len++] = '}';
+  e.data[w.len] = '\0';
 
   self->_eventHead = nextHead;
 }
@@ -3266,61 +3372,30 @@ void Sandbox::emitTelemetry(const char* name, const char* error)
 
   if (!_telemetryCb) return;
 
-  char buf[768];
-  char escapedError[256] = "";
-
-  if (error) {
-    // JSON-escape the error string (just escape quotes and backslashes)
-    const char* src = error;
-    char* dst = escapedError;
-    char* end = escapedError + sizeof(escapedError) - 2;
-    while (*src && dst < end) {
-      if (*src == '"' || *src == '\\') {
-        *dst++ = '\\';
-      } else if (*src == '\n') {
-        *dst++ = '\\';
-        *dst++ = 'n';
-        src++;
-        continue;
-      }
-      *dst++ = *src++;
-    }
-    *dst = '\0';
-  }
-
   // Format: { generationId?, name, data }
-  // Matches server-side telemetry protocol
-  char dataStr[300];
+  // Matches server-side telemetry protocol. The error and the generation id
+  // are cut (at a character boundary) so the frame always fits: at most
+  // 3 bytes out per byte in, 3 * (256 + 160) + names and punctuation < 1536.
+  constexpr size_t kGenIdMaxIn = 160;
+  constexpr size_t kErrorMaxIn = 256;
+  char buf[1536];
+  JsonWriter w{buf, sizeof(buf)};
+  w.puts_("{\"type\":\"telemetry\",");
+  if (_generationId.length() > 0) {
+    w.puts_("\"generationId\":");
+    writeJsonString(w, _generationId.c_str(), kGenIdMaxIn);
+    w.putc_(',');
+  }
+  w.puts_("\"name\":");
+  writeJsonString(w, name);
+  w.puts_(",\"data\":{");
   if (error) {
-    snprintf(dataStr, sizeof(dataStr), "{\"error\":\"%s\"}", escapedError);
-  } else {
-    strcpy(dataStr, "{}");
+    w.puts_("\"error\":");
+    writeJsonString(w, error, kErrorMaxIn);
   }
-
-  // JSON-escape the generationId (it's a JSON string like {"traceId":"...","spanId":"..."})
-  char escapedGenId[256] = "";
-  if (_generationId.length() > 0) {
-    const char* src = _generationId.c_str();
-    char* dst = escapedGenId;
-    char* end = escapedGenId + sizeof(escapedGenId) - 2;
-    while (*src && dst < end) {
-      if (*src == '"' || *src == '\\') {
-        *dst++ = '\\';
-      }
-      *dst++ = *src++;
-    }
-    *dst = '\0';
-  }
-
-  if (_generationId.length() > 0) {
-    snprintf(buf, sizeof(buf),
-      "{\"type\":\"telemetry\",\"generationId\":\"%s\",\"name\":\"%s\",\"data\":%s}",
-      escapedGenId, name, dataStr);
-  } else {
-    snprintf(buf, sizeof(buf),
-      "{\"type\":\"telemetry\",\"name\":\"%s\",\"data\":%s}",
-      name, dataStr);
-  }
+  w.puts_("}}");
+  w.terminate();
+  if (w.overflow) return;  // only a runaway telemetry name; never send a cut frame
 
   _telemetryCb(buf);
 }

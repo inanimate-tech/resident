@@ -29,6 +29,13 @@
 #define RESIDENT_EVENT_JSON_MAX 1024
 #endif
 
+// Longest event name, in bytes (no NUL): the receive side copies a name into
+// a fixed 32-byte buffer (Event::name), so a longer one would arrive cut short
+// and match no handler. Not a build flag: every device in a group must agree,
+// and the hello announces it as limits.eventNameBytes. publishEventEx drops a
+// name that is empty, longer than this, or holds a control character.
+#define RESIDENT_EVENT_NAME_MAX 31
+
 // The wire-protocol version announced in the device hello (data.protocol).
 // Bumped only on incompatible envelope changes — this is the whole
 // compatibility story (there is no feature list; a genuinely optional
@@ -315,7 +322,10 @@ public:
     // under the rate limit (5/s, burst 10) and a sink/transport is up;
     // otherwise queued (bounded; oldest non-keeper evicted on overflow)
     // and drained in order from loop(). Shared by the Lua path
-    // (events.send) and the C++ path (wrapper aliases).
+    // (events.send) and the C++ path (wrapper aliases). A name that is
+    // empty, longer than RESIDENT_EVENT_NAME_MAX bytes or holds a control
+    // character is dropped with a warning; a control character in a data
+    // string goes out as U+FFFD, so the frame is always valid JSON.
     enum class SendResult { Sent, Queued, Dropped };
     SendResult publishEventEx(const char* name, const char* dataJson,
                               bool keep = false,
@@ -752,7 +762,7 @@ private:
     // Event queue
     struct Event {
         enum Type { BUTTON, APP_EVENT, DRIVER } type;
-        char name[32];
+        char name[RESIDENT_EVENT_NAME_MAX + 1];
         char data[RESIDENT_EVENT_JSON_MAX];
         char from[64];
         uint32_t ts_ms;
