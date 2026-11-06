@@ -1013,6 +1013,22 @@ h:set_theme { screen = { bg_color = "#0b0b10" } }
 
 **`lvgl.bind(name)` is also the ownership claim** ([bind is the claim](#bind-is-the-claim-ownership)): it creates the display if needed, takes the target from whoever held it, and invalidates the whole active screen so the takeover repaints every pixel the other library left behind. While this module does NOT own the target, the flush callback returns without touching the panel and the display's refresh timer is paused — that is how a wiped, unowned tree can no longer race a blank frame onto the glass behind the incoming app. `onAppReset` releases the claim, uninstalls the theme Lua set, and replaces each display's active screen with a fresh one, deleting the old tree (luavgl invalidates Lua handles on C-side deletion). It then calls `luavgl_app_reset`, which deletes the app's timers and running anims (without their `done_cb`), its objects on the display layers and on screens it never loaded, and releases its theme styles and Styles: nothing of the outgoing app runs under the next one. A handle the app kept to a timer raises "timer is null". This needs a luavgl with `luavgl_app_reset`. Handle-level caching (one handle per display) stays luavgl's business. Themes are Lua's business: the module bakes none, and apps install their own via `h:set_theme{...}`.
 
+### `Shader` and `Lgfx` widgets (optional)
+
+Two lvgl widgets whose pixels the app's own Lua function makes, installed through `addWidget` like any board widget. Each is opt-in and header-only, and compiles to nothing without LVGL and luavgl.
+
+```cpp
+#include <ResidentShaderWidget.h>
+#include <ResidentLgfxWidget.h>
+lvglModule.addWidget(Resident::shader::installWidget);                  // parent:Shader{...}
+lvglModule.addWidget(Resident::lgfxw::installWidget<lgfx::LGFX_Sprite>);   // parent:Lgfx{...}
+```
+
+- **`Shader`** calls `fn(x, y, t, u, v)` once per cell and paints each cell one colour: one number back goes through `palette` (`ember`, `ocean`, `aurora`, `sunset`, `rainbow`, `mono`, or 2..8 colours), three are r, g, b, each 0..1. Cells are auto-sized to about 1,600 and coarsened when a frame's Lua runs past 25 ms, unless `cell` sets the edge in pixels. Its installer also sets the global `shader`, a Shadertoy kit in C: `fract mix clamp step smoothstep mod length hash noise fbm hsv circle box segment smin rot`. A rounded `Shader` (`radius`) draws RGB565A8 and cuts its own corners, because LVGL's software renderer ignores an image's `clip_radius`.
+- **`Lgfx`** calls `fn(g, t)` with a pen over a LovyanGFX sprite the widget's size, which keeps its pixels between frames. The board names the sprite type (`lgfx::LGFX_Sprite`, or `M5Canvas` with M5GFX), as it names `LgfxModule`'s display type. `transparent = colour` keys that colour out (RGB565A8). The pen draws only while `fn` runs.
+
+Both share a base (`ResidentFrameWidget.h`): `fps` (15 by default, at most 30; 0 = only when a key is set, for e-paper), the `fn` reference (held on the state's main thread, so `fn` may be set from a coroutine), and errors. An `fn` that raises is reported through `log.error` and stopped until it is given a new one. A frame is made in `LV_EVENT_DRAW_MAIN`, never in the timer, so a widget LVGL does not redraw costs nothing. **A frame is made at most once per owed frame** (the fps timer, or a key set): `LvglModule` renders in partial mode, so LVGL draws a widget once per buffer-high strip it crosses, and every strip after the first redraws the same pixels. One refresh shows one moment, whatever the widget's size. `fn` runs outside the sandbox's execution deadline, as luavgl's own callbacks do. Destroying the widget, including at app reset, stops its timer and releases `fn`.
+
 ### `store` module
 
 An app-scoped **persistent** KV slot of scalars — state here survives `loadApp` (same identity) and reboot. RAM-backed with debounced write-through to the persistent store (NVS on device): at most one write per ~2 s of mutation quiet, plus a flush at least every 30 s while dirty (so an app that mutates on every tick still persists), on app unload, and at capture start.

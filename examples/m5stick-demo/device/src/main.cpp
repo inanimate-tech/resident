@@ -8,6 +8,8 @@
 #include "PushButtonsDriver.h"
 #ifdef HAS_LVGL
 #include <ResidentLvglModule.h>
+#include <ResidentShaderWidget.h>
+#include <ResidentLgfxWidget.h>
 #endif
 
 // Default endpoint: the canonical Resident relay. Devs can self-host by
@@ -64,6 +66,10 @@ Resident::SandboxConfig makeConfig() {
     lvglMain.dpi = 240;          // 240x135 on 25x13mm of glass
     lvglMain.bufferRows = 14;    // ~1/10 screen: 240 * 14 * 2B = 6.7KB
     lvglModule.addDisplay("main", lvglMain);
+    // Widgets whose pixels the app's own Lua function makes:
+    // parent:Shader{...} and parent:Lgfx{...}, drawing into an M5Canvas.
+    lvglModule.addWidget(Resident::shader::installWidget);
+    lvglModule.addWidget(Resident::lgfxw::installWidget<M5Canvas>);
 #endif
     cfg.extensions    = {&displayDriver, &imuDriver, &buzzerDriver,
                          &buttonDriver, &lgfxModule,
