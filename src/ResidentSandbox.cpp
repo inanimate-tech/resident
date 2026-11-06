@@ -2047,19 +2047,13 @@ void Sandbox::enterIdleScreen()
   // Called when the device is ready to present its idle UI. With a persisted
   // app: show the identity screen + 20s countdown (then load), or restore
   // immediately when there's no display to count down on. With no persisted
-  // app: rest on the identity screen. No-op once an app is loaded or counting
-  // down (so a reconnect doesn't re-arm or repaint over a running app).
+  // app: rest on the identity screen. A quarantined app is never pending
+  // (bootAppHealth drops it), so it rests on the "App paused" screen with no
+  // countdown. No-op once an app is loaded or counting down (so a reconnect
+  // doesn't re-arm or repaint over a running app).
   if (_runState != RunState::Ready) return;
 
   if (_pendingPersistedSource.isEmpty()) {
-    showReadyScreen();
-    return;
-  }
-  // A paused app counts down only where a person can act on it (a display
-  // to read and a button to tap or hold); elsewhere it just stays paused.
-  if (_pendingIsQuarantined && !(systemDisplay() && _config.systemButton)) {
-    _pendingPersistedSource = "";
-    _pendingIsQuarantined = false;
     showReadyScreen();
     return;
   }
@@ -2381,7 +2375,7 @@ void Sandbox::loadApp(const char* luaCode)
 bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
 {
   // A quarantined app is refused before anything is torn down: whatever the
-  // device shows (the idle screen, a paused countdown) stays as it is.
+  // device shows (the "App paused" idle screen, a running app) stays as it is.
   const uint32_t appHash = app_health::sourceHash(luaCode, strlen(luaCode));
   if (appHash == _quarantinedHash) {
     _nextGenerationId = "";
@@ -2399,7 +2393,6 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   if (_runState == RunState::Pending) {
     _runState = RunState::Ready;
     _pendingPersistedSource = "";
-    _pendingIsQuarantined = false;
   }
 
   // Stop any currently-loaded app (Running or Suspended) before loading the
@@ -2587,10 +2580,8 @@ bool Sandbox::handleCountdownButton()
       _longPressFired = true;
       _buttonWasDown = false;
       _pendingPersistedSource = "";
-      _pendingIsQuarantined = false;
       if (_store) _store->clear();
       _runState = RunState::Ready;
-      clearAppQuarantine();
       showReadyScreen();           // settle on the device-identity screen
       return true;
     }
@@ -2601,12 +2592,6 @@ bool Sandbox::handleCountdownButton()
     // Release edge.
     _buttonWasDown = false;
     if (!_longPressFired) {
-      // A tap on a paused app is a person choosing to run it again: it gets a
-      // fresh crash count.
-      if (_pendingIsQuarantined) {
-        _pendingIsQuarantined = false;
-        clearAppQuarantine();
-      }
       finishBootCountdown();       // tap → load the saved app now
       return true;
     }
@@ -2831,13 +2816,6 @@ void Sandbox::finishBootCountdown()
   String src = _pendingPersistedSource;
   _pendingPersistedSource = "";
   _runState = RunState::Ready;
-  if (_pendingIsQuarantined) {
-    // A paused countdown ends on the idle screen ("App paused"); the source
-    // stays persisted for a person to run or forget.
-    _pendingIsQuarantined = false;
-    showReadyScreen();
-    return;
-  }
   if (src.isEmpty()) return;
 
   // Restore through the normal load path, but never re-persist a restore.
@@ -2870,16 +2848,6 @@ void Sandbox::finishBootCountdown()
 void Sandbox::clearPersistedApp()
 {
   if (_store) _store->clear();
-  // A paused (quarantined) countdown must not turn into a restore once the
-  // quarantine below is gone: forgetting it ends it.
-  if (_pendingIsQuarantined) {
-    _pendingPersistedSource = "";
-    _pendingIsQuarantined = false;
-    if (_runState == RunState::Pending) {
-      _runState = RunState::Ready;
-      showReadyScreen();
-    }
-  }
   clearAppQuarantine();
 }
 
@@ -2908,11 +2876,13 @@ void Sandbox::bootAppHealth()
     }
   }
 
-  // The persisted source is kept but not restored: the countdown pauses it.
+  // The persisted source stays saved but is not restored, and gets no boot
+  // countdown: nothing on the device can start it. The idle screen reads
+  // "App paused" until forget or a different app clears the quarantine.
   if (isAppQuarantined() && !_pendingPersistedSource.isEmpty() &&
       app_health::sourceHash(_pendingPersistedSource.c_str(),
                              _pendingPersistedSource.length()) == _quarantinedHash) {
-    _pendingIsQuarantined = true;
+    _pendingPersistedSource = "";
   }
 }
 

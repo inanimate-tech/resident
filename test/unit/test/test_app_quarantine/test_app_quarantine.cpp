@@ -284,41 +284,95 @@ void test_failed_load_disarms(void) {
   TEST_ASSERT_EQUAL_UINT32(0, s_appHealthRecord.armed);
 }
 
-void test_paused_countdown_long_press_forgets(void) {
+constexpr const char* PAUSED_SCREEN =
+    "App paused\nDevice ID: a4cf1200\nType: native-test";
+
+// A quarantined app gets no boot countdown, even where a display and a
+// button could run one: the device rests on "App paused" at once.
+void test_quarantined_app_gets_no_countdown(void) {
   Opts o; o.withButton = true;
-  crashLimitTimes(o);
-  sandbox->loop();                     // paused countdown
-  TEST_ASSERT_NOT_EQUAL(std::string::npos, display->last().find("App paused"));
-  button->down = true;  sandbox->loop();
-  testMillis() += 1000; sandbox->loop();
-  button->down = false; sandbox->loop();
+  boot(ResetKind::PowerOn, o);
+  runThenCrash(o);
+  runThenCrash(o);
+  sandbox->loadApp(APP);
+  display->texts.clear();              // only the tripping boot's frames
+  boot(ResetKind::Abnormal, o);        // crash 3: quarantined
+  TEST_ASSERT_TRUE(sandbox->isAppQuarantined());
+  TEST_ASSERT_EQUAL_STRING(PAUSED_SCREEN, display->last().c_str());
+  for (int i = 0; i < 25; i++) {       // through where a countdown would run
+    sandbox->loop();
+    testMillis() += 1000;
+  }
+  sandbox->loop();
+  for (auto& t : display->texts) {
+    TEST_ASSERT_EQUAL_STRING(PAUSED_SCREEN, t.c_str());   // no "20s" frame
+  }
   TEST_ASSERT_FALSE(sandbox->isAppRunning());
-  TEST_ASSERT_FALSE(sandbox->isAppQuarantined());
-  TEST_ASSERT_FALSE(store->hasValue);
+  TEST_ASSERT_TRUE(sandbox->isAppQuarantined());
+  TEST_ASSERT_TRUE(store->hasValue);   // the source is kept
 }
 
-void test_paused_countdown_tap_runs_it_anyway(void) {
+// The button cannot start a quarantined app: a tap does not run it.
+void test_tap_does_not_run_a_quarantined_app(void) {
   Opts o; o.withButton = true;
   crashLimitTimes(o);
   sandbox->loop();
   button->down = true;  sandbox->loop();
+  testMillis() += 100;  sandbox->loop();
   button->down = false; sandbox->loop();   // tap
-  TEST_ASSERT_TRUE(sandbox->isAppRunning());
-  TEST_ASSERT_FALSE(sandbox->isAppQuarantined());
-  TEST_ASSERT_EQUAL_UINT32(0, s_appHealthRecord.count);   // a fresh count
+  testMillis() += 30000; sandbox->loop();
+  TEST_ASSERT_FALSE(sandbox->isAppRunning());
+  TEST_ASSERT_TRUE(sandbox->isAppQuarantined());
+  TEST_ASSERT_EQUAL_INT(0, telemetryCount("app_restored"));
+  TEST_ASSERT_EQUAL_STRING(PAUSED_SCREEN, display->last().c_str());
 }
 
-void test_paused_countdown_ends_on_the_idle_screen(void) {
+// Nor does a long press run it, or forget it: only `forget` clears it.
+void test_long_press_neither_runs_nor_forgets_a_quarantined_app(void) {
   Opts o; o.withButton = true;
   crashLimitTimes(o);
+  sandbox->loop();
+  button->down = true;  sandbox->loop();
+  testMillis() += 1500; sandbox->loop();
+  button->down = false; sandbox->loop();
+  TEST_ASSERT_FALSE(sandbox->isAppRunning());
+  TEST_ASSERT_TRUE(sandbox->isAppQuarantined());
+  TEST_ASSERT_TRUE(store->hasQuarantine);
+  TEST_ASSERT_TRUE(store->hasValue);
+  TEST_ASSERT_EQUAL_STRING(PAUSED_SCREEN, display->last().c_str());
+}
+
+// forget clears it from the paused screen, and the next boot has nothing to
+// restore or pause.
+void test_forget_from_the_paused_screen(void) {
+  Opts o; o.withButton = true;
+  crashLimitTimes(o);
+  sandbox->loop();
+  sandbox->clearPersistedApp();
+  TEST_ASSERT_FALSE(sandbox->isAppQuarantined());
+  TEST_ASSERT_EQUAL_STRING("Device ID: a4cf1200\nType: native-test",
+                           display->last().c_str());
+  boot(ResetKind::PowerOn, o);
+  sandbox->loop();
+  TEST_ASSERT_FALSE(sandbox->isAppQuarantined());
+  TEST_ASSERT_FALSE(sandbox->isAppRunning());
+}
+
+// A push of a different app clears it from the paused screen, and is what
+// the next boot restores, through the ordinary countdown.
+void test_different_push_from_the_paused_screen(void) {
+  Opts o; o.withButton = true;
+  crashLimitTimes(o);
+  sandbox->loop();
+  sandbox->loadApp(OTHER_APP);
+  TEST_ASSERT_TRUE(sandbox->isAppRunning());
+  TEST_ASSERT_FALSE(sandbox->isAppQuarantined());
+  boot(ResetKind::PowerOn, o);
   sandbox->loop();
   testMillis() += 20000;
   sandbox->loop();
-  TEST_ASSERT_FALSE(sandbox->isAppRunning());
-  TEST_ASSERT_TRUE(sandbox->isAppQuarantined());
-  TEST_ASSERT_TRUE(store->hasValue);
-  TEST_ASSERT_EQUAL_STRING("App paused\nDevice ID: a4cf1200\nType: native-test",
-                           display->last().c_str());
+  TEST_ASSERT_TRUE(sandbox->isAppRunning());
+  TEST_ASSERT_EQUAL_INT(1, telemetryCount("app_restored"));
 }
 
 void test_headless_quarantined_app_is_not_restored(void) {
@@ -344,9 +398,11 @@ int main(int, char**) {
   RUN_TEST(test_clean_running_clears_the_count);
   RUN_TEST(test_armed_before_init_runs);
   RUN_TEST(test_failed_load_disarms);
-  RUN_TEST(test_paused_countdown_long_press_forgets);
-  RUN_TEST(test_paused_countdown_tap_runs_it_anyway);
-  RUN_TEST(test_paused_countdown_ends_on_the_idle_screen);
+  RUN_TEST(test_quarantined_app_gets_no_countdown);
+  RUN_TEST(test_tap_does_not_run_a_quarantined_app);
+  RUN_TEST(test_long_press_neither_runs_nor_forgets_a_quarantined_app);
+  RUN_TEST(test_forget_from_the_paused_screen);
+  RUN_TEST(test_different_push_from_the_paused_screen);
   RUN_TEST(test_headless_quarantined_app_is_not_restored);
   UNITY_END();
   return 0;

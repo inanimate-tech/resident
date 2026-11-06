@@ -120,12 +120,12 @@ public:
 
     // App quarantine (see ResidentAppHealth.h and SandboxConfig::appCrashLimit).
     // True while an app that kept crashing the device is held back: it is not
-    // restored at boot, a load of the same source is refused (telemetry
-    // `app_quarantined`), the hello's `app` carries `quarantined:{crashes}`
-    // and the idle screen says "App paused". clearAppQuarantine() lets it run
-    // again, with a fresh crash count; the quarantined source stays persisted.
+    // restored at boot and gets no boot countdown, a load of the same source
+    // is refused (telemetry `app_quarantined`), the hello's `app` carries
+    // `quarantined:{crashes}` and the idle screen says "App paused". Only
+    // clearPersistedApp() (`forget`) or a successful load of a different app
+    // clears it.
     bool isAppQuarantined() const { return _quarantinedHash != 0; }
-    void clearAppQuarantine();
 
     // State queries
     bool isAppRunning() const;
@@ -652,9 +652,6 @@ private:
     // the device ID for BOOT_COUNTDOWN_MS before auto-loading the persisted
     // app. Hard-coded duration.
     String _pendingPersistedSource;
-    // The pending source is the quarantined app: the countdown is a pause,
-    // not a restore — it ends on the idle screen unless a tap runs it.
-    bool _pendingIsQuarantined = false;
     unsigned long _countdownStartMs = 0;
     int _lastCountdownSecondShown = -1;
     static constexpr unsigned long BOOT_COUNTDOWN_MS = 20000;
@@ -675,6 +672,7 @@ private:
     void armAppHealth(uint32_t hash);   // an app is about to run
     void disarmAppHealth();             // no app is running
     void updateAppHealth();             // loop(): credit the clean period
+    void clearAppQuarantine();          // forget, or a different app ran
 
     // SystemButton gesture tracking during the countdown (Pending): a tap
     // loads the saved app, a long press forgets it. pressed() is a level read,

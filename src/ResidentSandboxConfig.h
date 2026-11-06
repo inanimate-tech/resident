@@ -88,9 +88,9 @@ struct SandboxConfig {
   // abnormally (panic, watchdog, brownout) counts a crash; deliberate
   // restarts (esp_restart, OTA, the reset pin) and power cycles do not.
   // After appCrashLimit consecutive crashes the app is quarantined: it is
-  // not restored at boot and a load of the same source is refused, until a
-  // `forget`, the countdown long press, a tap to run it anyway, or a load of
-  // a different app clears it. An app that runs for appCleanMs without a
+  // not restored at boot (no boot countdown either: the device rests on
+  // "App paused") and a load of the same source is refused, until a `forget`
+  // or a load of a different app clears it. An app that runs for appCleanMs without a
   // crash has its count cleared. The count lives in RTC memory, so only
   // ESP32 builds count; elsewhere nothing survives a reset to count with.
   // appCrashLimit 0 disables the quarantine.

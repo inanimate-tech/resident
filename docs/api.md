@@ -295,7 +295,6 @@ sandbox.generationId();                // const String& — ID of the last loade
 sandbox.setTelemetryCallback(cb);      // wire telemetry JSON to your transport
 sandbox.clearPersistedApp();           // wipe the saved app from the persistent store (and any quarantine)
 sandbox.isAppQuarantined();            // true while a crashing app is held back
-sandbox.clearAppQuarantine();          // let it run again, with a fresh crash count
 ```
 
 `loadApp` stops any running app, calls `onAppReset()` on all extensions, generates a new `generationId`, and compiles the new app. An app must define at least one of `init`, `on_tick`, or `on_event` — compilation is rejected otherwise.
@@ -1229,8 +1228,8 @@ Device ID: <deviceId>
 Type: <deviceType>
 ```
 
-  On a board with both a status display and a `SystemButton`, the boot countdown still runs, as a pause rather than a restore: a **tap** runs the app anyway (a person choosing to retry; it gets a fresh count), a **long press** forgets it, and when the countdown ends the device rests on the screen above. Without a display or a button there is nothing to act on, so the device goes straight to that screen.
-- **Clearing it.** `forget`, the countdown long press, a tap on the paused countdown, a successful load of a different app, or `clearAppQuarantine()`.
+  There is no boot countdown for a quarantined app, on any board: the device goes straight to the screen above and stays there. The app cannot be started from the device: the system button neither runs it (a tap) nor forgets it (a long press).
+- **Clearing it.** Only `forget` (`clearPersistedApp()`), which clears the saved app and the quarantine, or a successful load of a different app. A load of the same source stays refused.
 
 A custom `PersistentStore` keeps quarantines across reboots by overriding `saveQuarantine`/`loadQuarantine`/`clearQuarantine`; without them a quarantine holds only for the boot it tripped in.
 
