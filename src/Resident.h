@@ -3,6 +3,7 @@
 #define RESIDENT_H
 
 #include "ResidentSandbox.h"
+#include "ResidentAppEnv.h"
 #include "ResidentSandboxConfig.h"
 #include "ResidentDriver.h"
 #include "ResidentDisplayDriver.h"

@@ -45,8 +45,8 @@ void loop()  { sandbox.loop(); }
 | `network` | `std::optional<Courier::Config>` | unset | Networking opt-in. Set ⇒ Sandbox constructs an internal `Courier::Client`, drives WiFi / transports, fires connection callbacks. Unset ⇒ standalone runtime, no WiFi pulled in. |
 | `persistApps` | `bool` | `true` | Save the last successfully-loaded app to flash and restore it on boot. Set to `false` to disable for a build. |
 | `gateTickOnConnection` | `bool` | `false` | Pause `on_tick` and event dispatch while disconnected. The default is offline-first: the app keeps running; only network sends wait. |
-| `openUnsafeLibs` | `bool` | `false` | Give the app environment the full Lua stdlib. The default removes `os`/`io`/`package`/`require`/`load`/`dofile`/`loadstring`/`loadfile`/`debug`. Either way, `setmetatable`, `getmetatable` and `collectgarbage` are the narrowed versions in `src/ResidentAppBaseLib.h`: no `__gc` metatables, no userdata metatables, no lasting collector changes. |
-| `freshAppEnvironment` | `bool` | `true` | Reset app globals to the runtime baseline on every `loadApp` — nothing from the previous app survives except the store slot. Set `false` for builds whose apps need globals to persist across loads. |
+| `openUnsafeLibs` | `bool` | `false` | Give the app environment the full Lua stdlib. The default removes `os`/`io`/`package`/`require`/`load`/`dofile`/`loadstring`/`loadfile`/`debug`. Either way, `setmetatable`, `getmetatable` and `collectgarbage` are the narrowed versions in `src/ResidentAppBaseLib.h`: no `__gc` metatables, no userdata metatables, no lasting collector changes. With the unsafe libraries open the app can reach the global table itself (`debug`, `load`'s default environment, `package.loaded`), so the [app environment](#the-app-environment) is no boundary. |
+| `freshAppEnvironment` | `bool` | `true` | Give every `loadApp` a fresh [app environment](#the-app-environment) built from the pristine globals — nothing from the previous app survives except the store slot. Set `false` for builds whose apps need globals to persist across loads: the previous app's environment then carries over. |
 | `executionDeadlineMs` | `uint32_t` | `1000` | Per-dispatch **wall-clock** hard deadline, in milliseconds (init / one tick / one event / one chunk / each framework hook). No Lua hook is installed at dispatch start; a one-shot timer installs a stopping hook once the deadline passes. Over-deadline aborts the dispatch with a `runtime_error` (`execution deadline exceeded (N ms)`); the app survives. Available on every platform; `0` = no hard guard. |
 | `executionSoftDeadlineMs` | `uint32_t` | `0` | Per-dispatch **wall-clock** soft deadline, in milliseconds. A dispatch that outlives it is reported — a rate-limited serial line plus a `slow_dispatch` telemetry event — and allowed to finish. Measured at disarm, so it also covers time spent inside a blocking C binding, where no Lua hook fires. Independent of `executionDeadlineMs` and available on every platform; `0` = no reporting. |
 | `framework` | `std::optional<FrameworkConfig>` | unset | Embed a framework module: `{name, version, source}` — privileged Lua the sandbox hosts outside the app (see [Framework modules](#framework-modules)). |
@@ -858,6 +858,26 @@ Core ships the overlay *mechanism* and no concrete overlays; the running app is 
 
 Apps run inside the sandbox Lua state. The sandbox provides built-in globals and modules; drivers add their own globals via `registerModule`.
 
+### The app environment
+
+One Lua state serves every app and the framework, but each app runs in an environment of its own: the `_ENV` of its chunk, of every chunk sent to it, and of every function they define. `loadApp` builds it from the global table as setup left it (the *pristine* globals): every baseline global, a copy of each library and module table (and of the plain tables inside a module, its constants), and `_G`, which is the environment itself. So:
+
+- An app's changes are its own. `pairs = f`, `string.format = f` or `mymodule.fn = f` reach neither the next app nor the framework, and `function string.trim(s) ... end` works with `s:trim()` in the app that defines it: the string metatable's `__index` is the running app's `string`.
+- The shared metatables are locked: `getmetatable("")` and `getmetatable(mymodule)` answer `false`, and `setmetatable` refuses to replace them. A module's copy keeps the original's metatable, so a fallthrough still works.
+- Nothing in the global table changes after setup. The framework environment, the `datetime` module and a module written in Lua read it, so an app cannot steer them through a global.
+
+A copy is shallow beyond a module's plain tables: a table inside a module that has a metatable, and anything a module function returns, is the module's own and shared between apps.
+
+**A global a driver gives the app** goes in the running app's environment, from `#include <ResidentAppEnv.h>`:
+
+| Function | Does |
+|----------|------|
+| `Resident::setAppGlobal(L, name)` | `env[name] =` the value on top of the stack (popped either way); `false` before the first app load |
+| `Resident::getAppGlobal(L, name)` | Pushes `env[name]`, or nil; returns its type |
+| `Resident::pushAppEnv(L)` | Pushes the environment, or nil |
+
+They work from any `lua_State` of the sandbox and read and write raw, so a metatable the app gives its environment is never called. `lua_setglobal` writes the pristine globals, which no app reads. Every app gets a fresh environment, so a driver puts its global back for each app, from a hook that runs for each one (a widget installer on bind, a sensor's `update()`).
+
 ### App callbacks
 
 At least one of these globals must be defined in the loaded Lua source. If none are found, the app is rejected.
@@ -1292,13 +1312,13 @@ fw.source = MYFW_LUA;      // the built-in copy (cold-start default)
 cfg.framework = fw;
 ```
 
-**The environment boundary.** The framework chunk runs in a private environment whose `__index` is `_G`: it reads every baseline global, but its own assignments stay local — app code cannot reach them. Writing through `_G` is the explicit app-facing act: `_G.api = {...}` installs API for apps. The environment also holds the one capability apps never get: `runtime.send(name, data, opts?)` — the control-plane mirror of `events.send` (same queue, same three-state return), publishing on `channel:"runtime"`. Hosts can therefore trust runtime-channel traffic: no app-level code can forge it.
+**The environment boundary.** The framework chunk runs in a private environment whose `__index` is `_G`: it reads every baseline global, but its own assignments stay local — app code cannot reach them. `_G` here is the pristine global table, which no app can write (each app runs in an [app environment](#the-app-environment) of its own), so an app cannot steer the framework by replacing `pairs` or `string.format`. Installing API for apps is the explicit act of `framework_install(env)`: `env.api = {...}` puts it in the environment of the app about to load. (A framework that writes `_G.api` instead puts it where no app sees it.) The one route an app still shares with the framework is the string metatable, whose `__index` is the running app's `string`: framework code should call `string.*` functions it captured at load (`local s_sub = string.sub`), never `s:sub()`. The environment also holds the one capability apps never get: `runtime.send(name, data, opts?)` — the control-plane mirror of `events.send` (same queue, same three-state return), publishing on `channel:"runtime"`. Hosts can therefore trust runtime-channel traffic: no app-level code can forge it.
 
 **Lifecycle hooks** (all optional; looked up in the framework env after its chunk runs):
 
 | Hook | When | Contract |
 |------|------|----------|
-| `framework_install()` | Before each app chunk runs (after the fresh-environment reset) | (Re)install the framework's app-facing API into `_G` |
+| `framework_install(env)` | Before each app chunk runs (after the app's environment is built) | (Re)install the framework's app-facing API into `env`, the app's environment |
 | `framework_tick(ctx, dt_ms)` | Every tick, before the app's `on_tick` | Same ctx shape as app callbacks |
 | `framework_event(ctx, e)` | Every event, before the app's `on_event` | Return `true` to consume — the app never sees it |
 | `framework_app_loaded()` | After an app loads successfully | — |

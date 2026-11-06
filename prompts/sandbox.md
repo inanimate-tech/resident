@@ -32,6 +32,11 @@ such as a widget, and `collectgarbage` takes only `"collect"`, `"count"`,
 `"step"` and `"isrunning"`. Each callback runs under a wall-clock
 deadline — an unbounded loop aborts that dispatch, not the device.
 
+Each app starts with its own globals and its own copy of every library and
+module table: adding `string.trim` (and calling `s:trim()`) or replacing a
+module function changes this app only, and the next app starts clean.
+`getmetatable("")` and `getmetatable(module)` return `false`.
+
 Numbers are 32-bit: integers wrap past ±2,147,483,647 and floats carry about
 7 significant digits. Math is `math.*` only — there are no bare `floor`,
 `sin`, `min` etc. globals (write `math.floor`, `math.sin`, `math.min`).

@@ -125,9 +125,11 @@ public:
   // table and the base metatable do not exist), so it must be idempotent —
   // luavgl_obj_newmetatable returns an existing metatable, and setting a
   // table field again costs nothing. Every bind rather than once per state
-  // because the sandbox clears every global made after boot when the next
-  // app loads, so a global an installer sets (a helper module) has to be
-  // put back for each app. Up to MAX_WIDGETS; set before the sandbox runs.
+  // because each app gets a fresh environment, so a global an installer
+  // sets (a helper module) has to be put back for each app — with
+  // Resident::setAppGlobal (ResidentAppEnv.h), not lua_setglobal, which
+  // writes the pristine globals no app reads. Up to MAX_WIDGETS; set before
+  // the sandbox runs.
   // An installer leaves the Lua stack as it found it.
   static constexpr int MAX_WIDGETS = 8;
   using WidgetInstaller = void (*)(lua_State* L);

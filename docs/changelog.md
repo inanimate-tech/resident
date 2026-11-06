@@ -10,6 +10,13 @@
 
 The three wrappers live in one place, `src/ResidentAppBaseLib.h`, and replace the stock functions in `_G` at setup, before the baseline snapshot. A framework module and the `datetime` module see the same functions an app does. `openUnsafeLibs` does not restore the stock versions.
 
+- **Each app runs in an environment of its own, and the global table stays as setup left it.** The fresh-environment reset recorded only the names of the baseline globals, so it removed what an app added and never restored what it replaced: `pairs = f`, `string.format = f` or a module function an app replaced survived into every app after it. The framework environment reads `_G` too, so the running app could also steer the framework, for instance with a `pairs` that forged keys in a table the framework sends on the runtime channel. `loadApp` now builds the app a fresh `_ENV` from the pristine globals: every baseline global, a copy of each library and module table (and of the plain tables in a module), and `_G` set to the environment itself. The string metatable and every module metatable are locked (`getmetatable` answers `false`), and the string metatable's `__index` is the running app's `string`, so an app that adds `string.trim` can still call `s:trim()`. See [The app environment](api.md#the-app-environment).
+  - **A framework installs its API with `framework_install(env)`**, writing `env.api = ...`. Writing `_G.api` puts it where no app sees it. Framework code that calls a method on a string (`s:sub()`) goes through the running app's `string`; call a captured `string.sub` instead.
+  - **A driver that gives the app a global** uses `Resident::setAppGlobal(L, name)` (new, `src/ResidentAppEnv.h`, with `getAppGlobal` and `pushAppEnv`). `lua_setglobal` writes the pristine globals, which no app reads.
+  - An app that extends a library table extends its own copy; the next app does not see it.
+  - With `freshAppEnvironment = false` the previous app's environment carries over, as its globals did.
+  - The sandbox reads an app's `init`, `on_tick` and `on_event` raw, so a metatable the app gives its environment never runs outside the execution guard.
+
 ---
 
 ## v0.12.0
