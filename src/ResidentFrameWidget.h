@@ -22,7 +22,7 @@
 // fn's lua_State is the state's main thread, never the caller's: a key can be
 // set from a coroutine, which the collector frees once it is done with, and
 // the main thread shares the registry and lives as long as the state. fn runs
-// outside the sandbox's execution deadline, as luavgl's own callbacks do.
+// inside the LVGL pump, which runs under the sandbox's execution deadline.
 //
 // On a build without LVGL/luavgl this header compiles to nothing, as
 // ResidentLvglModule.h does.
