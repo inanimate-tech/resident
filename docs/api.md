@@ -1199,6 +1199,8 @@ Type: <deviceType>
 
 This "ready" screen appears once the device is reachable (connected, or immediately in standalone mode); while connecting, the usual connection-status text shows instead, and while an app runs the app owns the screen.
 
+On a partition too full to hold two copies of the app, NVS cannot replace it atomically, so the old copy is erased before the new one is written. A power cut inside that brief window leaves no app saved: the next boot rests on the ready screen until an app is sent again. An app too big to fit even in the old copy's place is not saved (`persist_too_big`), and the old copy is kept.
+
 If a saved app fails to load — for example after the firmware was reflashed with a changed runtime surface — it is discarded and the device falls back to the ready screen (telemetry `persist_load_failed`).
 
 Config fields related to persistence:

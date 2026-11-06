@@ -27,24 +27,66 @@ public:
     return err == ESP_OK;
   }
 
+  // nvs_set_blob replaces a blob atomically: it writes the new copy, then
+  // erases the old one, so a power cut mid-write leaves the old app in place.
+  // That needs space for both copies. On a small partition with a large app
+  // there is space for one, and every replacement after the first failed with
+  // ESP_ERR_NVS_NOT_ENOUGH_SPACE (#60).
+  //
+  // No order of writes keeps the old copy without space for two, and the
+  // missing space is not stale entries: NVS's garbage collector reclaims
+  // erased entries before it reports no space. So on that error, and only
+  // then, the old copy is erased and the write retried, provided the new app
+  // could fit in the old copy's place (replaceCouldFit). An app too big even
+  // for that is refused with the old copy kept, as before.
+  //
+  // The cost is a window, from the erase until the new copy's index entry is
+  // written (one blob write, longer if NVS must garbage-collect a page first),
+  // in which no app is persisted. A power cut or failed write inside it means
+  // the next boot restores no app, and the device rests at the ready screen
+  // until an app is sent again; the old app cannot come back. With space for
+  // both copies NVS's atomic replace runs as before, and there is no window.
   bool save(const char* source, size_t len) override {
     nvs_handle_t h;
     if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) return false;
     esp_err_t err = nvs_set_blob(h, KEY, source, len);
-    if (err == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
-      // NVS writes the new blob before erasing the old one, so replacing an
-      // app needs room for both — on a small partition, every replacement
-      // after the first failed. Drop the old copy and try once more. If that
-      // fails too, no app is persisted, rather than a stale one a reboot
-      // would resurrect.
-      nvs_erase_key(h, KEY);
-      err = nvs_set_blob(h, KEY, source, len);
+    bool erased = false;
+    if (err == ESP_ERR_NVS_NOT_ENOUGH_SPACE && replaceCouldFit(h, KEY, len)) {
+      erased = nvs_erase_key(h, KEY) == ESP_OK;
+      if (erased) err = nvs_set_blob(h, KEY, source, len);
     }
-    if (err == ESP_OK) err = nvs_commit(h);
+    // Commit after an erase even if the retry failed, so what is on flash is
+    // what save() reports: no app, not the old one.
+    if (err == ESP_OK || erased) {
+      esp_err_t c = nvs_commit(h);
+      if (err == ESP_OK) err = c;
+    }
     nvs_close(h);
     return err == ESP_OK;
   }
 
+private:
+  // After nvs_set_blob ran out of space: could a `len`-byte blob fit once the
+  // copy already under `key` is erased? It errs towards yes, so it only ever
+  // refuses a replacement that is certain to fail. ESP-IDF's layout: a page
+  // holds 126 32-byte entries; a blob is one index entry plus, on each page it
+  // spans, a chunk header and its data; one page is always held back for
+  // garbage collection; nvs_get_stats counts erased entries as free. With no
+  // copy under `key` there is nothing to erase. Without stats it says yes.
+  static bool replaceCouldFit(nvs_handle_t h, const char* key, size_t len) {
+    size_t oldLen = 0;
+    if (nvs_get_blob(h, key, nullptr, &oldLen) != ESP_OK) return false;
+    nvs_stats_t st;
+    if (nvs_get_stats(nullptr, &st) != ESP_OK) return true;
+    const size_t kEntry = 32, kPerPage = 126;
+    const size_t pages = st.total_entries / kPerPage;
+    const size_t usable = st.free_entries > kPerPage ? st.free_entries - kPerPage : 0;
+    const size_t freedAtMost = 1 + pages + (oldLen + kEntry - 1) / kEntry;
+    const size_t neededAtLeast = 2 + (len + kEntry - 1) / kEntry;
+    return neededAtLeast <= usable + freedAtMost;
+  }
+
+public:
   String load() override {
     nvs_handle_t h;
     if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return String();

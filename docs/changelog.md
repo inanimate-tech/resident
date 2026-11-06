@@ -4,7 +4,7 @@
 
 ### Fixes
 
-- **A persisted app is replaced even when NVS can't hold two copies of it.** `nvs_set_blob` writes the new blob before it erases the old one, so replacing a persisted app needs room for both. On a 20 KB `nvs` partition with a ~5.8 KB app, the first save succeeded and every replacement after it failed with `persist_too_big`; on reboot, the device restored no app. `NvsStore::save` now erases the old copy and retries once when NVS reports `ESP_ERR_NVS_NOT_ENOUGH_SPACE`. If the retry fails too, no app is persisted, rather than an old one.
+- **A persisted app is replaced even when NVS can't hold two copies of it.** `nvs_set_blob` writes the new blob before it erases the old one, so replacing a persisted app needs space for both. On a 20 KB `nvs` partition with a ~5.8 KB app, the first save succeeded and every replacement after it failed with `persist_too_big`; on reboot, the device restored no app. `NvsPersistentStore::save` now erases the old copy and retries once when NVS reports `ESP_ERR_NVS_NOT_ENOUGH_SPACE` and the new app could fit in the old copy's place (judged from `nvs_get_stats`, erring towards trying). An app too big even for that is refused before anything is erased, and the old app stays persisted, as it always did. With space for both copies, NVS's own atomic replace runs as before. The erase-then-write path has a window: a power cut or failed write between the erase and the new copy landing leaves no app persisted, so the next boot rests at the ready screen until an app is sent again. It never brings back the old app. Native tests cover the full partition, the replace and its failures (`test_nvs_store`, with NVS stubs under `test/unit/include/`).
 
 ---
 
