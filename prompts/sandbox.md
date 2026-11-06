@@ -78,6 +78,8 @@ events.send("must_arrive", { id = 7 }, { keep = true })
   are QUEUED and go later, in order — treat `"queued"` as success.
   `"dropped"` means it will never go (oversize payload, or the queue was
   full). `keep = true` protects a message from queue-overflow eviction.
+- `name` is 1-31 bytes with no control characters (`:` is fine). Any other
+  name is `"dropped"`, with the reason on `log.warn`'s line.
 - Rate limit: 5 events/s sustained, burst of 10.
 - `data` values: strings, numbers, booleans, tables to depth 3. Serialized
   size cap 1024 bytes; oversize is dropped, never truncated.
@@ -214,6 +216,7 @@ screens.set("main", { brightness = 0.4 })
 | event ring | 8 slots, oldest dropped |
 | event data (both directions) | 1024 bytes serialized, drop not truncate |
 | events.send rate | 5/s sustained, burst 10 |
+| event name | 1-31 bytes, no control characters |
 | store budget | 2048 bytes total, rejected whole |
 | work per callback | 2,000,000 Lua instructions, then the dispatch is aborted |
 | repeated on_tick errors | 3, then one per 5 s |

@@ -7,6 +7,7 @@ namespace {
 Resident::Sandbox* sandbox = nullptr;
 std::string captured;
 int sinkCalls = 0;
+std::vector<std::string>* sent = nullptr;   // every frame, when recording
 
 constexpr const char* APP_SENDS_ON_INIT =
     "function init(ctx) ok = events.send('ping', {n = 1, tag = 'x'}) end\n"
@@ -109,7 +110,10 @@ constexpr const char* COUNTING_APP =
 }  // namespace
 
 void setUp(void) { testMillis() = 0; }
-void tearDown(void) { delete sandbox; sandbox = nullptr; }
+void tearDown(void) {
+  delete sandbox; sandbox = nullptr;
+  delete sent; sent = nullptr;
+}
 
 void test_events_send_builds_app_channel_envelope(void) {
   build();
@@ -209,6 +213,89 @@ void test_publish_event_without_sink_or_network_queues(void) {
   TEST_ASSERT_NOT_NULL(strstr(captured.c_str(), "\"type\":\"x\""));
 }
 
+// ── Every frame is valid JSON (RFC 8259: no raw byte below 0x20 in a string)
+
+bool hasRawControlByte(const std::string& s) {
+  for (unsigned char c : s) {
+    if (c < 0x20) return true;
+  }
+  return false;
+}
+
+void buildRecordingEverySend() {
+  build();
+  sent = new std::vector<std::string>();
+  sandbox->setEventSink([](JsonDocument& doc) {
+    std::string out;
+    serializeJson(doc, out);   // as a transport serialises the frame
+    sent->push_back(out);
+    return true;
+  });
+}
+
+void test_event_names_are_1_to_31_bytes_without_control_characters(void) {
+  buildRecordingEverySend();
+  testSerialLog().clear();
+  loadApp(
+      "function init(ctx)\n"
+      "  ctl = events.send('\\1bad', { ok = true }) == 'dropped'\n"
+      "  del = events.send('bad\\127', { ok = true }) == 'dropped'\n"
+      "  long = events.send(string.rep('x', 40)) == 'dropped'\n"
+      "  just = events.send(string.rep('y', 31)) == 'sent'\n"
+      "  view = events.send('lvgl:view') == 'sent'\n"
+      "  act = events.send('action:door bell') == 'sent'\n"
+      "end\n"
+      "function on_tick(ctx, dt) end\n");
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("ctl"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("del"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("long"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("just"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("view"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("act"));
+  TEST_ASSERT_EQUAL_INT(3, (int)sent->size());
+  for (auto& f : *sent) TEST_ASSERT_FALSE(hasRawControlByte(f));
+  TEST_ASSERT_TRUE((*sent)[0].find("\"type\":\"" + std::string(31, 'y') + "\"") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE((*sent)[1].find("\"type\":\"lvgl:view\"") != std::string::npos);
+  // Each drop is the author's to fix, so it says why on log.warn's line.
+  const std::string& log = testSerialLog();
+  TEST_ASSERT_TRUE(log.find("[WARN] event dropped: its name holds a control "
+                            "character") != std::string::npos);
+  TEST_ASSERT_TRUE(log.find("[WARN] event dropped: its name is longer than 31 "
+                            "bytes") != std::string::npos);
+}
+
+void test_events_send_control_bytes_in_data_never_go_raw(void) {
+  buildRecordingEverySend();
+  loadApp(
+      "function init(ctx)\n"
+      "  r = events.send('ping', { s = 'a\\1b', t = { ['k\\2'] = 'v\\31' },\n"
+      "                            ok = 'tab\\there' })\n"
+      "end\n"
+      "function on_tick(ctx, dt) end\n");
+  TEST_ASSERT_EQUAL_INT(1, (int)sent->size());
+  const std::string& f = (*sent)[0];
+  TEST_ASSERT_FALSE(hasRawControlByte(f));
+  TEST_ASSERT_TRUE(f.find("\"s\":\"a\xEF\xBF\xBD" "b\"") != std::string::npos);
+  TEST_ASSERT_TRUE(f.find("\"k\xEF\xBF\xBD\":\"v\xEF\xBF\xBD\"") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(f.find("\"ok\":\"tab\\there\"") != std::string::npos);
+}
+
+void test_publish_event_escaped_control_bytes_never_go_raw(void) {
+  // A C++ caller's dataJson may spell a control byte as \u00XX: the parse
+  // turns it back into the raw byte, and it must still not reach the wire.
+  buildRecordingEverySend();
+  TEST_ASSERT_TRUE(sandbox->publishEvent("score", "{\"s\":\"a\\u0001b\"}"));
+  TEST_ASSERT_EQUAL_INT(1, (int)sent->size());
+  TEST_ASSERT_FALSE(hasRawControlByte((*sent)[0]));
+  TEST_ASSERT_TRUE((*sent)[0].find("\"s\":\"a\xEF\xBF\xBD" "b\"") !=
+                   std::string::npos);
+  TEST_ASSERT_FALSE(sandbox->publishEvent("", "{}"));
+  TEST_ASSERT_FALSE(sandbox->publishEvent("bad\n", "{}"));
+  TEST_ASSERT_EQUAL_INT(1, (int)sent->size());
+}
+
 // ── serializeLuaTableToJson: byte-exact unit tests ─────────────────────────
 // Single-key tables where byte-exactness matters (lua_next order is
 // unspecified across multiple keys); strstr assertions for multi-key tables.
@@ -230,8 +317,15 @@ void test_serializer_escapes_quotes_backslashes_controls(void) {
                            serialize("{p = 'a\\\\b'}").c_str());  // Lua a\b
   TEST_ASSERT_EQUAL_STRING("{\"nl\":\"l1\\nl2\\t.\\r\"}",
                            serialize("{nl = 'l1\\nl2\\t.\\r'}").c_str());
-  TEST_ASSERT_EQUAL_STRING("{\"c\":\"a\\u0001b\"}",
+  TEST_ASSERT_EQUAL_STRING("{\"bf\":\"\\b\\f\"}",
+                           serialize("{bf = '\\b\\f'}").c_str());
+  // A control byte JSON has no short escape for goes out as U+FFFD: a
+  // \u00XX escape would be parsed back to the raw byte before the event is
+  // queued, and ArduinoJson writes that raw.
+  TEST_ASSERT_EQUAL_STRING("{\"c\":\"a\xEF\xBF\xBD" "b\"}",
                            serialize("{c = 'a\\1b'}").c_str());
+  TEST_ASSERT_EQUAL_STRING("{\"c\":\"\xEF\xBF\xBD\"}",
+                           serialize("{c = '\\31'}").c_str());
 }
 
 void test_serializer_escapes_keys(void) {
@@ -362,7 +456,7 @@ void test_parser_arrays(void) {
 void test_serializer_parser_round_trip(void) {
   TEST_ASSERT_TRUE(roundTrips("{n = 1, f = 1.5, neg = -7, tag = 'x'}"));
   TEST_ASSERT_TRUE(roundTrips(
-      "{m = 'say \"hi\"', p = 'a\\\\b', nl = 'l1\\nl2\\t.\\r', c = 'a\\1b'}"));
+      "{m = 'say \"hi\"', p = 'a\\\\b', nl = 'l1\\nl2\\t.\\r', bf = '\\b\\f'}"));
   TEST_ASSERT_TRUE(roundTrips("{ok = true, off = false}"));
   TEST_ASSERT_TRUE(roundTrips("{a = {b = {c = 1}}, xs = {1, 'a', true}}"));
   TEST_ASSERT_TRUE(roundTrips("{}"));
@@ -555,6 +649,9 @@ int main(int, char**) {
   RUN_TEST(test_nonces_are_unique_and_deviceid_prefixed);
   RUN_TEST(test_overridden_device_id_names_from_and_nonce);
   RUN_TEST(test_publish_event_without_sink_or_network_queues);
+  RUN_TEST(test_event_names_are_1_to_31_bytes_without_control_characters);
+  RUN_TEST(test_events_send_control_bytes_in_data_never_go_raw);
+  RUN_TEST(test_publish_event_escaped_control_bytes_never_go_raw);
   RUN_TEST(test_serializer_flat_payloads_unchanged);
   RUN_TEST(test_serializer_escapes_quotes_backslashes_controls);
   RUN_TEST(test_serializer_escapes_keys);
