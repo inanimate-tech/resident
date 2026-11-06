@@ -47,8 +47,8 @@ void loop()  { sandbox.loop(); }
 | `gateTickOnConnection` | `bool` | `false` | Pause `on_tick` and event dispatch while disconnected. The default is offline-first: the app keeps running; only network sends wait. |
 | `openUnsafeLibs` | `bool` | `false` | Give the app environment the full Lua stdlib. The default removes `os`/`io`/`package`/`require`/`load`/`dofile`/`loadstring`/`loadfile`/`debug`. |
 | `freshAppEnvironment` | `bool` | `true` | Reset app globals to the runtime baseline on every `loadApp` — nothing from the previous app survives except the store slot. Set `false` for builds whose apps need globals to persist across loads. |
-| `executionDeadlineMs` | `uint32_t` | `1000` | Per-dispatch **wall-clock** hard deadline, in milliseconds (init / one tick / one event / one chunk / each framework hook). No Lua hook is installed at dispatch start; a one-shot timer installs a stopping hook once the deadline passes. Over-deadline aborts the dispatch with a `runtime_error` (`execution deadline exceeded (N ms)`); the app survives. Available on every platform; `0` = no hard guard. |
-| `executionSoftDeadlineMs` | `uint32_t` | `0` | Per-dispatch **wall-clock** soft deadline, in milliseconds. A dispatch that outlives it is reported — a rate-limited serial line plus a `slow_dispatch` telemetry event — and allowed to finish. Measured at disarm, so it also covers time spent inside a blocking C binding, where no Lua hook fires. Independent of `executionDeadlineMs` and available on every platform; `0` = no reporting. |
+| `executionDeadlineMs` | `uint32_t` | `1000` | Per-dispatch **wall-clock** hard deadline, in milliseconds (init / one tick / one event / one chunk / each framework hook). No Lua hook is installed at dispatch start; a one-shot timer installs a stopping hook once the deadline passes. Over-deadline aborts the dispatch with a `runtime_error` (`execution deadline exceeded (N ms)`); the app survives, and the hook keeps raising until the dispatch returns, in every coroutine. The third abort inside 30 s suspends the app (`app_throttled`). Available on every platform; `0` = no hard guard. |
+| `executionSoftDeadlineMs` | `uint32_t` | `0` | Per-dispatch **wall-clock** soft deadline, in milliseconds. A dispatch that outlives it is reported — a rate-limited `[WARN]` line (`log.warn`'s) plus a `slow_dispatch` telemetry event — and allowed to finish. Measured at disarm, so it also covers time spent inside a blocking C binding, where no Lua hook fires. Independent of `executionDeadlineMs` and available on every platform; `0` = no reporting. |
 | `framework` | `std::optional<FrameworkConfig>` | unset | Embed a framework module: `{name, version, source}` — privileged Lua the sandbox hosts outside the app (see [Framework modules](#framework-modules)). |
 | `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
 | `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). On M5 boards use the shipped `Resident::M5Mic` (`#include <ResidentM5Mic.h>`); otherwise implement `Resident::SystemMic`. Not a `Driver` — the pump owns its `begin()`/`end()`. |
@@ -1242,6 +1242,8 @@ Every telemetry emission goes out TWO ways:
 | `compile_error` | Compilation or execution failed; `data.error` contains the message |
 | `runtime_error` | A Lua callback threw an error. `on_tick` errors are rate-limited (see [Limits](#limits)); `init` and `on_event` errors are emitted immediately. |
 | `log_error` | App called `log.error(msg)` |
+| `slow_dispatch` | A dispatch outlived `executionSoftDeadlineMs`; `data.error` says how long it took. Rate-limited (see [Limits](#limits)) |
+| `app_throttled` | The app ran into the hard deadline three times inside 30 s and was suspended (see [The execution guard](#the-execution-guard)) |
 | `app_restored` | A persisted app was successfully restored on boot |
 | `persist_load_failed` | A persisted app failed to load on boot and was discarded |
 | `persist_too_big` | An app was too large to save to the persistent store |
@@ -1319,7 +1321,16 @@ It defaults on because lazy arming makes it free until it fires, and because the
 
 The abort rides a Lua hook, so it always lands on a VM instruction. The hook is installed by the one-shot timer once the deadline has passed, so the abort lands at or after it, never before; the message is `execution deadline exceeded (N ms)`.
 
-`executionSoftDeadlineMs` is independent of it and available on every platform. Elapsed time is compared against it at disarm: a dispatch that outlives it is reported — a rate-limited serial line plus a `slow_dispatch` telemetry event, `SLOW_DISPATCH_MAX_BURST` then one per `SLOW_DISPATCH_COOLDOWN` — and allowed to finish. Nothing is aborted.
+Once installed, the hook raises on every instruction until the dispatch returns, so app code cannot catch its way past the deadline:
+
+- A `pcall` or `xpcall` that catches the abort gets only as far as its next instruction, which raises again.
+- Lua that runs while the abort unwinds stops at its first instruction. That covers `__close` handlers and `__gc` finalizers.
+- A Lua `xpcall` message handler is not called once the deadline has passed. The error passes through as it is. Otherwise each handler would raise inside the raise that called it, nesting C frames until Lua's C-stack limit. A C handler such as `debug.traceback` is still called.
+- Coroutines are covered too. A Lua hook belongs to one thread, so the sandbox wraps `coroutine.resume`, `coroutine.wrap` and `coroutine.close` to track which thread is running. The timer hooks that thread, and a coroutine resumed after the deadline is hooked before it runs. This holds wherever the coroutine was created: before the dispatch, during it, or inside another coroutine.
+
+**Throttling.** An app that keeps running into the deadline costs the loop a whole deadline every time. The third hard abort inside 30 seconds (`HARD_ABORT_LIMIT` inside `HARD_ABORT_WINDOW_MS`) suspends the app with `suspendApp()`. It emits an `app_throttled` telemetry event and a `[WARN]` line. The app stays suspended until the next app load or a `resumeApp()`; overlay churn does not resume it. Each app load clears the count.
+
+`executionSoftDeadlineMs` is independent of it and available on every platform. Elapsed time is compared against it at disarm. A dispatch that outlives it is allowed to finish, and is reported in two ways: on the `[WARN]` line `log.warn` writes to, and as a `slow_dispatch` telemetry event. Reports are rate-limited to `SLOW_DISPATCH_MAX_BURST`, then one per `SLOW_DISPATCH_COOLDOWN`. Nothing is aborted.
 
 **What the guard does not bound.** The hard deadline cannot interrupt a dispatch blocked inside a C binding — no Lua instruction executes, so no hook fires. Only the soft deadline sees that time, and only once the binding has returned. Both limits measure elapsed wall-clock time rather than CPU time, so a dispatch held off by a higher-priority task overshoots by however long it was descheduled and aborts when the Lua task next runs. Nothing bounds the total across one `loop()` iteration: each protected call arms its own guard, so a single iteration can spend several deadlines.
 
@@ -1513,6 +1524,8 @@ ESP-IDF CMake component graph.
 | `SandboxConfig::executionSoftDeadlineMs` | `0` | Wall-clock milliseconds per dispatch before reporting (`0` = no reporting) |
 | `SLOW_DISPATCH_COOLDOWN` | `5000 ms` | Minimum interval between `slow_dispatch` reports after the initial burst |
 | `SLOW_DISPATCH_MAX_BURST` | `3` | `slow_dispatch` reports allowed before the cooldown applies |
+| `HARD_ABORT_LIMIT` | `3` | Hard aborts inside `HARD_ABORT_WINDOW_MS` that suspend the app (`app_throttled`) |
+| `HARD_ABORT_WINDOW_MS` | `30000 ms` | Window the hard aborts are counted over |
 | Event rate limit | `5/s`, burst `10` | Token bucket shared by `events.send`, `runtime.send` and `publishEvent` |
 | `RUNTIME_ERROR_COOLDOWN` | `5000 ms` | Minimum interval between `runtime_error` telemetry emissions from `on_tick` |
 | `RUNTIME_ERROR_MAX_BURST` | `3` | Number of `runtime_error` telemetry events allowed before rate-limiting kicks in |

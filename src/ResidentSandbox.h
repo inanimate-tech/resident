@@ -496,18 +496,35 @@ private:
     // destructor, never from the arm path.
     void createExecutionDeadlineTimer();
     void destroyExecutionDeadlineTimer();
-    // Starts/stops the one-shot that will fire at _dispatchDeadlineUs.
+    // Starts/stops the one-shot that fires executionDeadlineMs after the
+    // outermost arm. Stop returns whether the deadline passed: the dispatch
+    // was aborted.
     void startDeadlineTimer();
-    void stopDeadlineTimer();
+    bool stopDeadlineTimer();
     // Rate-limited report of a dispatch that outlived executionSoftDeadlineMs.
     void reportSlowDispatch(uint32_t elapsedUs);
+    // Records a hard abort; the HARD_ABORT_LIMIT-th inside
+    // HARD_ABORT_WINDOW_MS suspends the app (`app_throttled`).
+    void noteHardAbort();
+
+    // A hook set with lua_sethook covers one thread, so the guard follows the
+    // thread that is running. coroutine.resume/wrap/close are wrapped to
+    // report each switch here; once the deadline has passed, the thread
+    // switched to is hooked before it runs. Takes the platform lock.
+    void setRunningThread(struct lua_State* co);
+    // Replaces coroutine.resume/wrap/close and xpcall with the guard-aware
+    // versions below. Called once, from setupLuaEnvironment().
+    void installExecutionGuardWrappers();
+    static int luaTrackedThreadCall(struct lua_State* L);
+    static int luaTrackedWrap(struct lua_State* L);
+    static int luaGuardedXpcall(struct lua_State* L);
+    static int luaGuardedMessageHandler(struct lua_State* L);
 
     // Nesting depth of armExecutionGuard/disarmExecutionGuard pairs.
     uint8_t _dispatchDepth = 0;
-    // Microsecond clock at the outermost arm, and the absolute microsecond
-    // deadline derived from it. Both wrap-safe: only differences are compared.
+    // Microsecond clock at the outermost arm, for the soft deadline.
+    // Wrap-safe: only differences are compared.
     uint32_t _dispatchStartUs = 0;
-    uint32_t _dispatchDeadlineUs = 0;
     unsigned long _lastSlowDispatchMs = 0;
     uint32_t _slowDispatchBurst = 0;
     static constexpr unsigned long SLOW_DISPATCH_COOLDOWN = 5000;
@@ -519,6 +536,20 @@ private:
     // the platform lock so the timer never installs a hook for a dispatch
     // that has already returned.
     volatile bool _deadlineArmed = false;
+    // True from the moment the deadline passes until disarm: the hook raises
+    // on every instruction while it is set, and stands down once it is not.
+    // Set and cleared under the platform lock.
+    volatile bool _deadlineExpired = false;
+    // The thread running Lua for the current dispatch: _lua, or the
+    // coroutine it (transitively) resumed. Written under the platform lock,
+    // so the timer never hooks a thread that has since been switched away
+    // from and collected.
+    struct lua_State* _runningThread = nullptr;
+    // Times of the latest hard aborts (a ring), cleared at each app load.
+    static constexpr uint8_t HARD_ABORT_LIMIT = 3;
+    static constexpr unsigned long HARD_ABORT_WINDOW_MS = 30000;
+    unsigned long _hardAbortMs[HARD_ABORT_LIMIT] = {};
+    uint8_t _hardAbortCount = 0;
 #ifdef ESP_PLATFORM
     portMUX_TYPE _deadlineMux = portMUX_INITIALIZER_UNLOCKED;
 #else
