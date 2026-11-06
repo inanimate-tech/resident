@@ -26,7 +26,10 @@ dispatch dies (and is reported), the app survives.
 
 The environment is a sandbox: there is no `os`, `io`, `require`, `load`,
 `dofile`, or `debug`. The pure libraries (`string`, `table`, `math`,
-`coroutine`, `utf8`) are all present. Each callback runs under a wall-clock
+`coroutine`, `utf8`) are all present. `setmetatable` refuses a metatable with
+`__gc` (apps get no finalizers), `getmetatable` returns nil for a userdata
+such as a widget, and `collectgarbage` takes only `"collect"`, `"count"`,
+`"step"` and `"isrunning"`. Each callback runs under a wall-clock
 deadline — an unbounded loop aborts that dispatch, not the device.
 
 Numbers are 32-bit: integers wrap past ±2,147,483,647 and floats carry about

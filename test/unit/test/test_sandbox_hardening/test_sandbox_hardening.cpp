@@ -1,7 +1,10 @@
 // Sandbox hardening (0.8): offline-first ticking, the closed stdlib,
 // store budget feedback, drop accounting, and the hello-gated closure of
-// the legacy message paths.
+// the legacy message paths. Also the app's narrowed base functions
+// (ResidentAppBaseLib.h): no __gc, no userdata metatables, no lasting
+// collector changes.
 #include <unity.h>
+#include <unistd.h>
 #include <string>
 #include <vector>
 
@@ -10,12 +13,40 @@
 namespace {
 
 Resident::Sandbox* sandbox = nullptr;
+
+// A binding-style userdata: a shared metatable with a native __gc, like a
+// graphics library's object handles. probe.make() returns one.
+int probeFinalized = 0;
+
+int probeGc(lua_State*) {
+  probeFinalized++;
+  return 0;
+}
+
+int probeMake(lua_State* L) {
+  lua_newuserdatauv(L, 1, 0);
+  if (luaL_newmetatable(L, "native_test_probe")) {
+    lua_pushcfunction(L, probeGc);
+    lua_setfield(L, -2, "__gc");
+  }
+  lua_setmetatable(L, -2);
+  return 1;
+}
+
+class Probe : public Resident::Extension {
+ public:
+  const char* name() const override { return "probe"; }
+  void registerModule(Resident::LuaModule& m) override { m.staticMethod("make", probeMake); }
+};
+
+Probe probe;
 std::vector<std::string>* frames = nullptr;
 std::vector<std::string>* telemetry = nullptr;
 
 void build(bool networked = false, bool gateTick = false, bool openLibs = false) {
   Resident::SandboxConfig cfg;
   cfg.deviceType = "native-test";
+  cfg.extensions = {&probe};
   cfg.persistApps = false;
   cfg.gateTickOnConnection = gateTick;
   cfg.openUnsafeLibs = openLibs;
@@ -80,6 +111,7 @@ void pump() { testMillis() += 200; sandbox->loop(); }
 
 void setUp(void) {
   testMillis() = 0;
+  probeFinalized = 0;
   frames = new std::vector<std::string>();
   telemetry = new std::vector<std::string>();
   sandbox = nullptr;
@@ -234,6 +266,96 @@ void test_chunks_keep_the_running_environment(void) {
   TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("fresh"));
 }
 
+void test_setmetatable_refuses_a_gc_metatable(void) {
+  build();
+  loadApp(
+      "local ok, err = pcall(setmetatable, {}, { __gc = function() end })\n"
+      "refused = (not ok) and (string.find(err, '__gc', 1, true) ~= nil)\n"
+      "refused_false = not pcall(setmetatable, {}, { __gc = false })\n"
+      "plain = getmetatable(setmetatable({}, { k = 1 })).k == 1\n"
+      "cleared = getmetatable(setmetatable(setmetatable({}, {}), nil)) == nil\n"
+      "local locked = setmetatable({}, { __metatable = 'locked' })\n"
+      "protected = (getmetatable(locked) == 'locked')\n"
+      "  and not pcall(setmetatable, locked, {})\n"
+      // __gc added after the metatable is attached never registers a
+      // finalizer: Lua checks for it only at setmetatable.
+      "local mt = {}\n"
+      "local t = setmetatable({}, mt)\n"
+      "mt.__gc = function() late_ran = true end\n"
+      "t = nil\n"
+      "collectgarbage(); collectgarbage()\n"
+      "late = (late_ran == nil)\n"
+      "function on_tick(ctx, dt) end\n");
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("refused"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("refused_false"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("plain"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("cleared"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("protected"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("late"));
+}
+
+void test_getmetatable_returns_nil_for_userdata(void) {
+  build();
+  loadApp(
+      "u = probe.make()\n"
+      "hidden = (type(u) == 'userdata') and (getmetatable(u) == nil)\n"
+      "tables = getmetatable(setmetatable({}, { k = 1 })).k == 1\n"
+      "function on_tick(ctx, dt) end\n");
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("hidden"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("tables"));
+  // The native finalizer is the binding's own, and still runs: the next
+  // app's reset collects the userdata.
+  loadApp("function on_tick(ctx, dt) end\n");
+  TEST_ASSERT_EQUAL_INT(1, probeFinalized);
+}
+
+void test_collectgarbage_keeps_the_collector_as_it_was(void) {
+  build();
+  loadApp(
+      "count_ok = type(collectgarbage('count')) == 'number'\n"
+      "step_ok = type(collectgarbage('step')) == 'boolean'\n"
+      "running = collectgarbage('isrunning')\n"
+      "collect_ok = (collectgarbage() == 0) and (collectgarbage('collect') == 0)\n"
+      "local refused = 0\n"
+      "for _, o in ipairs({ 'stop', 'restart', 'setpause', 'setstepmul',\n"
+      "                     'incremental', 'generational', 'bogus' }) do\n"
+      "  local ok, err = pcall(collectgarbage, o, 1)\n"
+      "  if not ok and string.find(err, o, 1, true) then refused = refused + 1 end\n"
+      "end\n"
+      "refused_all = (refused == 7)\n"
+      "function on_tick(ctx, dt) end\n");
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("count_ok"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("step_ok"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("running"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("collect_ok"));
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("refused_all"));
+  loadApp("still_running = collectgarbage('isrunning')\nfunction on_tick(ctx, dt) end\n");
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("still_running"));
+}
+
+void test_hostile_finalizer_app_then_next_app_completes(void) {
+  // A finalizer runs with hooks off, out of the deadline's reach: had any
+  // of these routes registered one, the next load's reset GC would spin
+  // for ever. SIGALRM's default action ends the run, failing the suite.
+  alarm(10);
+  build();
+  loadApp(
+      "local spin = function() while true do end end\n"
+      "pcall(setmetatable, {}, { __gc = spin })\n"
+      "local mt = {}\n"
+      "keep = setmetatable({}, mt)\n"
+      "mt.__gc = spin\n"
+      "pcall(function() getmetatable(probe.make()).__gc = spin end)\n"
+      "pcall(collectgarbage, 'stop')\n"
+      "function on_tick(ctx, dt) end\n");
+  pump();
+  loadApp("next_ok = collectgarbage('isrunning')\nfunction on_tick(ctx, dt) end\n");
+  pump();
+  alarm(0);
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("next_ok"));
+  TEST_ASSERT_EQUAL_INT(1, probeFinalized);  // its own native __gc, untouched
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_disconnected_device_still_ticks_and_dispatches);
@@ -246,5 +368,9 @@ int main(int, char**) {
   RUN_TEST(test_fresh_environment_clears_app_globals);
   RUN_TEST(test_fresh_environment_flag_off_keeps_leakage);
   RUN_TEST(test_chunks_keep_the_running_environment);
+  RUN_TEST(test_setmetatable_refuses_a_gc_metatable);
+  RUN_TEST(test_getmetatable_returns_nil_for_userdata);
+  RUN_TEST(test_collectgarbage_keeps_the_collector_as_it_was);
+  RUN_TEST(test_hostile_finalizer_app_then_next_app_completes);
   return UNITY_END();
 }
