@@ -16,8 +16,61 @@ jobs:
           python-version: "3.11"
       - name: Install uv
         run: pip install uv
+      # RETIRE WHEN: ubuntu-latest's apt cppcheck is >= 2.21 (fix for cppcheck #14640, FP uninitvar on an
+      #   address in a brace init list; 2.19.0 on ubuntu-26.04 flags timecore::format). Then go back to
+      #   a plain apt-get install.
       - name: Install cppcheck
-        run: sudo apt-get update && sudo apt-get install -y cppcheck
+        id: cppcheck
+        env:
+          CPPCHECK_MIN: "2.21.0"
+        run: |
+          sudo apt-get update && sudo apt-get install -y cppcheck
+          have=$(cppcheck --version | awk '{print $2}')
+          echo "apt cppcheck: $have (minimum $CPPCHECK_MIN)"
+          if [ "$(printf '%s\n%s\n' "$CPPCHECK_MIN" "$have" | sort -V | head -1)" = "$CPPCHECK_MIN" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            tag=$(git ls-remote --tags --refs https://github.com/cppcheck-opensource/cppcheck \
+              | sed 's#.*refs/tags/##' | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -1)
+            [ -n "$tag" ] || { echo "no upstream cppcheck release tag found"; exit 1; }
+            echo "apt cppcheck is too old; using upstream $tag"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Restore cppcheck build
+        id: cppcheck-cache
+        if: steps.cppcheck.outputs.build == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /opt/cppcheck
+          key: cppcheck-${{ steps.cppcheck.outputs.tag }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Build cppcheck
+        if: steps.cppcheck.outputs.build == 'true' && steps.cppcheck-cache.outputs.cache-hit != 'true'
+        env:
+          TAG: ${{ steps.cppcheck.outputs.tag }}
+        run: |
+          git clone --depth 1 --branch "$TAG" https://github.com/cppcheck-opensource/cppcheck "$RUNNER_TEMP/cppcheck-src"
+          cmake -S "$RUNNER_TEMP/cppcheck-src" -B "$RUNNER_TEMP/cppcheck-build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/opt/cppcheck \
+            -DFILESDIR=/opt/cppcheck/share/cppcheck \
+            -DUSE_BUNDLED_TINYXML2=ON \
+            -DBUILD_GUI=OFF -DBUILD_TESTING=OFF
+          cmake --build "$RUNNER_TEMP/cppcheck-build" -j "$(nproc)"
+          sudo cmake --install "$RUNNER_TEMP/cppcheck-build"
+      - name: Save cppcheck build
+        if: steps.cppcheck.outputs.build == 'true' && steps.cppcheck-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /opt/cppcheck
+          key: cppcheck-${{ steps.cppcheck.outputs.tag }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Use upstream cppcheck
+        if: steps.cppcheck.outputs.build == 'true'
+        run: echo /opt/cppcheck/bin >> "$GITHUB_PATH"
+      - name: Show cppcheck
+        run: |
+          command -v cppcheck
+          cppcheck --version
       - name: Run static analysis
         run: ./tools/run-tests.py static-analysis
 
