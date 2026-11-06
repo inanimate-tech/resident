@@ -35,6 +35,8 @@ using TelemetryCallback = std::function<void(const char* json)>;
 // executionSoftDeadlineMs, so a board that also builds against an older
 // published SDK can guard its use of them on the fields' presence.
 #define RESIDENT_HAS_EXECUTION_DEADLINE 1
+// Feature test for SandboxConfig::steadyDeadlineMs (the per-pass budget).
+#define RESIDENT_HAS_STEADY_DEADLINE 1
 
 struct SandboxConfig {
   // Identifies the physical board (used for AP name and protocol path
@@ -107,17 +109,27 @@ struct SandboxConfig {
   bool freshAppEnvironment = true;
 
   // Per-dispatch WALL-CLOCK hard deadline, in milliseconds (0.8): init, one
-  // tick, one event, one chunk, or one framework hook may run for at most this
-  // long before the dispatch is aborted with a runtime_error — the app
-  // survives. Raise it for a board whose apps legitimately run longer.
-  // Available on every platform; 0 = no hard guard.
+  // chunk, a framework load, or the first loop pass that ticks after an app
+  // load may run for at most this long before it is aborted with a
+  // runtime_error — the app survives, and the third abort inside 30 s
+  // suspends it (`app_throttled`). Raise it for a board whose apps
+  // legitimately run longer. Available on every platform; 0 = no hard guard.
   uint32_t executionDeadlineMs = 1000;
 
-  // Per-dispatch WALL-CLOCK soft deadline, in milliseconds. A dispatch that
-  // outlives it is reported — a rate-limited serial line plus a
-  // `slow_dispatch` telemetry event — and allowed to finish. Independent of
-  // executionDeadlineMs and of the platform; 0 = no reporting.
-  uint32_t executionSoftDeadlineMs = 0;
+  // Per-loop-pass WALL-CLOCK hard deadline, in milliseconds: framework_tick,
+  // on_tick and one event in one pass of loop() share it, so a pass spends
+  // one deadline at most rather than one per dispatch. It only tightens:
+  // above executionDeadlineMs, or 0, a pass gets executionDeadlineMs.
+  uint32_t steadyDeadlineMs = 250;
+
+  // WALL-CLOCK soft deadline, in milliseconds, per loop pass (and per
+  // dispatch outside the loop). A pass that outlives it is reported — a
+  // rate-limited [WARN] line, log.warn's, plus a `slow_dispatch` telemetry
+  // event — and allowed to finish, and it sheds load: its event waits for
+  // the next pass, the next tick moves later by the overrun, and a framework
+  // wake before that tick is dropped. Independent of executionDeadlineMs and
+  // of the platform; 0 = neither reporting nor shedding.
+  uint32_t executionSoftDeadlineMs = 50;
 
   // Framework module (0.8): privileged runtime code the sandbox hosts
   // OUTSIDE the app — its own environment, the runtime-channel sender,
