@@ -490,8 +490,17 @@ private:
     void resetAppGlobals();
 
     // ── Execution guard (R8): per-dispatch wall-clock deadline ──
-    void armExecutionGuard();
+    // `deadlineMs` 0 is executionDeadlineMs. Only the outermost arm's counts:
+    // nested dispatches share it.
+    void armExecutionGuard(uint32_t deadlineMs = 0);
     void disarmExecutionGuard();
+    // The hard deadline for the next loop pass: steadyDeadlineMs, or
+    // executionDeadlineMs for the first pass that ticks after a load.
+    uint32_t passDeadlineMs() const;
+    // True until a loop pass has ticked since the last load.
+    bool _firstPassAfterLoad = true;
+    // The outermost arm's deadline, for the abort message.
+    uint32_t _armedDeadlineMs = 0;
     // Installed by the deadline timer, never at dispatch start.
     static void executionDeadlineHook(struct lua_State* L, struct lua_Debug* ar);
     // Installs executionDeadlineHook when the dispatch it was armed for is
@@ -510,10 +519,9 @@ private:
     // destructor, never from the arm path.
     void createExecutionDeadlineTimer();
     void destroyExecutionDeadlineTimer();
-    // Starts/stops the one-shot that fires executionDeadlineMs after the
-    // outermost arm. Stop returns whether the deadline passed: the dispatch
-    // was aborted.
-    void startDeadlineTimer();
+    // Starts/stops the one-shot that fires `ms` after the outermost arm.
+    // Stop returns whether the deadline passed: the dispatch was aborted.
+    void startDeadlineTimer(uint32_t ms);
     bool stopDeadlineTimer();
     // Rate-limited report of a dispatch that outlived executionSoftDeadlineMs.
     void reportSlowDispatch(uint32_t elapsedUs);
@@ -762,6 +770,7 @@ private:
     }
     void resetTickSchedule();
     void scheduleFrameworkWake(unsigned long now, int32_t afterMs);
+    void shedAfterSlowPass(unsigned long overrunMs);
     static constexpr unsigned long FRAMEWORK_WAKE_MIN_MS = 4;
     unsigned long _lastTickTime = 0;
     unsigned long _nextTickDue = 0;

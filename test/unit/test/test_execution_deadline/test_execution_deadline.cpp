@@ -47,6 +47,7 @@ void build(uint32_t softMs = 0) {
   cfg.deviceType = "native-test";
   cfg.persistApps = false;
   cfg.executionDeadlineMs = kDeadlineMs;
+  cfg.steadyDeadlineMs = kDeadlineMs;
   cfg.executionSoftDeadlineMs = softMs;
   cfg.extensions = {&clockExtension};
   sandbox = new Resident::Sandbox(cfg);

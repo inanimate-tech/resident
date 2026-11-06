@@ -1106,7 +1106,7 @@ void Sandbox::executionDeadlineHook(lua_State* L, lua_Debug* ar)
   // Stays installed: it raises again at the next instruction, wherever the
   // error was caught, until disarm removes it.
   luaL_error(L, "execution deadline exceeded (%d ms)",
-             (int)self->_config.executionDeadlineMs);
+             (int)self->_armedDeadlineMs);
 }
 
 // The dispatch may have finished between the timer firing and this call;
@@ -1158,7 +1158,7 @@ void Sandbox::destroyExecutionDeadlineTimer()
   _deadlineTimer = nullptr;
 }
 
-void Sandbox::startDeadlineTimer()
+void Sandbox::startDeadlineTimer(uint32_t ms)
 {
   portENTER_CRITICAL(&_deadlineMux);
   _deadlineArmed = true;
@@ -1166,7 +1166,7 @@ void Sandbox::startDeadlineTimer()
   _runningThread = _lua;
   portEXIT_CRITICAL(&_deadlineMux);
   esp_timer_start_once((esp_timer_handle_t)_deadlineTimer,
-                       (uint64_t)_config.executionDeadlineMs * 1000ULL);
+                       (uint64_t)ms * 1000ULL);
 }
 
 bool Sandbox::stopDeadlineTimer()
@@ -1258,7 +1258,7 @@ void Sandbox::destroyExecutionDeadlineTimer()
   _deadlineTimer = nullptr;
 }
 
-void Sandbox::startDeadlineTimer()
+void Sandbox::startDeadlineTimer(uint32_t ms)
 {
   HostDeadlineTimer* t = static_cast<HostDeadlineTimer*>(_deadlineTimer);
   {
@@ -1269,7 +1269,7 @@ void Sandbox::startDeadlineTimer()
     t->pending = true;
     t->generation++;
     t->deadline = std::chrono::steady_clock::now() +
-                  std::chrono::milliseconds(_config.executionDeadlineMs);
+                  std::chrono::milliseconds(ms);
   }
   t->cv.notify_all();
 }
@@ -1315,7 +1315,7 @@ void Sandbox::setExecutionDeadlineMs(uint32_t ms)
 }
 #endif
 
-void Sandbox::armExecutionGuard()
+void Sandbox::armExecutionGuard(uint32_t deadlineMs)
 {
   if (!_lua) return;
   // Nested protected calls share the outermost dispatch's guard: re-arming
@@ -1324,10 +1324,21 @@ void Sandbox::armExecutionGuard()
   if (_dispatchDepth++ > 0) return;
 
   _dispatchStartUs = dispatchClockUs();
+  _armedDeadlineMs = deadlineMs ? deadlineMs : _config.executionDeadlineMs;
 
   // No Lua hook here — the whole point. The timer installs one only if the
   // deadline passes with the dispatch still running.
-  if (_deadlineTimer) startDeadlineTimer();
+  if (_deadlineTimer) startDeadlineTimer(_armedDeadlineMs);
+}
+
+// The steady budget only ever tightens executionDeadlineMs.
+uint32_t Sandbox::passDeadlineMs() const
+{
+  const uint32_t steady = _config.steadyDeadlineMs;
+  if (_firstPassAfterLoad || steady == 0 || steady > _config.executionDeadlineMs) {
+    return _config.executionDeadlineMs;
+  }
+  return steady;
 }
 
 void Sandbox::disarmExecutionGuard()
@@ -1732,6 +1743,7 @@ void Sandbox::resetTickSchedule()
   _nextTickDue = now + tickInterval();
   _lastFrameworkTickTime = now;
   _frameworkWake = false;
+  _firstPassAfterLoad = true;
 }
 
 // ── Capture brackets (R11/R15): one dialect for media capture ────────────
@@ -2304,6 +2316,15 @@ void Sandbox::loopOnce() {
   const unsigned long now = millis();
   const bool tickDue = (long)(now - _nextTickDue) >= 0;
   const bool wakeDue = _frameworkWake && (long)(now - _frameworkWakeAt) >= 0;
+  const bool eventWaiting =
+      _eventHead != _eventTail &&
+      (_onEventFuncRef != LUA_NOREF || (frameworkActive() && _fwEventRef != LUA_NOREF));
+  if (!tickDue && !wakeDue && !eventWaiting) return;
+
+  // The pass's Lua (framework_tick, on_tick and one event) shares one guard:
+  // each dispatch nests under it, so a pass spends one deadline at most, not
+  // one per dispatch. Once the deadline has passed, nothing more is started.
+  armExecutionGuard(passDeadlineMs());
   if (tickDue || wakeDue) {
 #if RESIDENT_TICK_DIAGS
     uint32_t diagT0 = micros();
@@ -2315,12 +2336,12 @@ void Sandbox::loopOnce() {
 #endif
     if (tickDue) {
       const unsigned long elapsed = now - _lastTickTime;
-      // A framework tick that was throttled has suspended the app.
-      if (_runState == RunState::Running) callOnTick(elapsed);
+      if (_runState == RunState::Running && !_deadlineExpired) callOnTick(elapsed);
 #if RESIDENT_TICK_DIAGS
       noteTickTiming(elapsed, diagT1 - diagT0, micros() - diagT1);
 #endif
       _lastTickTime = now;
+      _firstPassAfterLoad = false;
       // A tick missed outright is skipped, never made up in a burst.
       _nextTickDue += tickInterval();
       if ((long)(now - _nextTickDue) >= 0) _nextTickDue = now + tickInterval();
@@ -2333,8 +2354,29 @@ void Sandbox::loopOnce() {
   }
   RESIDENT_LOOP_MARK(LOOP_TICK);
 
-  if (_runState == RunState::Running) processNextEvent();
+  // A pass already over its soft deadline leaves the event in the ring for
+  // the next pass, rather than spending more of this one.
+  const uint32_t softUs = _config.executionSoftDeadlineMs * 1000UL;
+  const bool overSoft =
+      softUs != 0 && dispatchClockUs() - _dispatchStartUs >= softUs;
+  if (_runState == RunState::Running && !_deadlineExpired && !overSoft) {
+    processNextEvent();
+  }
+  const uint32_t passUs = dispatchClockUs() - _dispatchStartUs;
+  disarmExecutionGuard();
+  if (softUs != 0 && passUs > softUs) shedAfterSlowPass((passUs - softUs) / 1000UL);
   RESIDENT_LOOP_MARK(LOOP_EVENTS);
+}
+
+// A pass that overran its soft deadline gives the time back: the next tick
+// moves later by the overrun, and a framework wake due before it is dropped
+// (framework_tick runs with that tick instead).
+void Sandbox::shedAfterSlowPass(unsigned long overrunMs)
+{
+  _nextTickDue += overrunMs;
+  if (_frameworkWake && (long)(_frameworkWakeAt - _nextTickDue) < 0) {
+    _frameworkWake = false;
+  }
 }
 
 #if RESIDENT_TICK_DIAGS
