@@ -601,8 +601,10 @@ void Sandbox::onCourierMessage(const char* transportName,
     if (strcmp(channel, "app") == 0)    { handleAppMessage(transportName, type, doc); return; }
     // Runtime channel (framework events: heard, errors, agent status) rides
     // the same queue as app frames — delivered to on_event with
-    // e.channel == "runtime". Reserved names will ride it later.
-    if (strcmp(channel, "runtime") == 0) { handleAppMessage(transportName, type, doc); return; }
+    // e.channel == "runtime". Reserved names will ride it later. Courier's
+    // default transport is the sandbox's own host connection, so this is a
+    // trusted ingress and may deliver the runtime plane.
+    if (strcmp(channel, "runtime") == 0) { handleRuntimeMessage(transportName, type, doc); return; }
     if (strcmp(channel, "system") == 0) { handleSystemMessage(transportName, type, doc); return; }
     MessageCallback* cb = lookupChannelSlot(channel);
     if (cb && *cb) { (*cb)(transportName, type, doc); return; }
@@ -639,10 +641,27 @@ void Sandbox::onCourierMessage(const char* transportName,
   dispatchMessage(transportName, type, doc);
 }
 
+// The plane an incoming event lands on is decided by which of these two the
+// ingress calls, never by the frame's own `channel` field: a frame that any
+// peer can send (a multicast group, a shared broadcast topic) must not be able
+// to claim the runtime plane by stamping it.
 void Sandbox::handleAppMessage(const char* transportName, const char* type,
                                JsonDocument& doc)
 {
   (void)transportName;
+  deliverWireEvent(type, doc, "app");
+}
+
+void Sandbox::handleRuntimeMessage(const char* transportName, const char* type,
+                                   JsonDocument& doc)
+{
+  (void)transportName;
+  deliverWireEvent(type, doc, "runtime");
+}
+
+void Sandbox::deliverWireEvent(const char* type, JsonDocument& doc,
+                               const char* channel)
+{
   const char* name = type;
   if (strcmp(type, "app_event") == 0) {
     // Legacy envelope on the data plane — closed once the host speaks
@@ -677,9 +696,9 @@ void Sandbox::handleAppMessage(const char* transportName, const char* type,
     }
     serializeJson(doc["data"], dataJson, sizeof(dataJson));
   }
-  // Envelope fields carried through to Lua: channel ("app" or "runtime" —
-  // both route here), and src/seq only when the frame stamped them.
-  const char* channel = doc["channel"] | "app";
+  // Envelope fields carried through to Lua: the channel the ingress chose
+  // (doc["channel"] is not read), and src/seq only when the frame stamped
+  // them.
   const char* src = doc["src"] | "";
   bool hasSeq = doc["seq"].is<uint32_t>();
   uint32_t seq = doc["seq"] | 0U;

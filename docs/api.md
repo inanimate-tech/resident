@@ -229,14 +229,18 @@ Incoming messages carry an envelope `channel` field that steers them onto one of
 | `channel` value | Routes to | Notes |
 |-----------------|-----------|-------|
 | `"app"` | `handleAppMessage` → Lua `on_event(ctx, event)` with `event.name = type` | Data plane. No reserved types here — `type:"forget"` on this channel is just an event, not a persistence op. Self-echo (`from == getDeviceId()`) and duplicate `nonce` (16-entry ring, exact match) are dropped before delivery. Gated like `sendAppEvent`: dropped when no app is loaded or the app defines no `on_event`. The legacy `app_event` envelope (`{"type":"app_event","name":...,"data":...}`) is still accepted here for one release, logging `[deprecated] app_event wrapper; send channel:"app" with type=<event name>` — until a [host hello](#hello) arrives, after which it is dropped and counted. |
+| `"runtime"` | `handleRuntimeMessage` → the same queue as `"app"`, with `event.channel == "runtime"` | The framework plane: the device's own host talking to a [framework module](#framework-modules), which trusts it as such. Same checks as `"app"` (self-echo, the shared nonce ring, the size cap, the gate). Courier's default transport is the sandbox's own host connection, so a frame there that states `channel:"runtime"` is routed here. |
 | `"system"` | `handleSystemMessage` | Control plane. Reserved types are handled internally: `app` (with `deferAppLoads` and the `description` display below), [`chunk`](#sandbox-controls), `forget`, [`framework`](#framework-modules), [`hello`](#hello), `goodbye`. Any other type falls through to the single `"system"` slot registered via `onMessageWithChannel("system", cb)`. |
 | anything else | the matching slot registered via `onMessageWithChannel(name, cb)` | Single slot per channel name (exact string match), last registration wins. An unregistered channel is logged (`Resident::Sandbox: no handler for channel '<channel>' (type '<type>'); dropped`) and the message is dropped. Up to 8 slots (`onMessageWithChannel` does not include `"app"` — the data plane belongs to the Lua app, not a C++ slot). |
 | *(absent)* | the legacy un-channelled path | Logs `[deprecated] un-channelled '<type>' message; sender should stamp channel`, then `onMessageFilter` → deferral → reserved-type routing → `onMessage`. Closed once a [host hello](#hello) arrives: dropped and counted instead. |
 
+**The plane comes from the ingress, not the frame.** `handleAppMessage` always delivers `event.channel == "app"` and never reads the frame's own `channel` field; `handleRuntimeMessage` always delivers `"runtime"`. A wrapper with its own receive path decides the plane by which one it calls: an ingress any peer can write (a LAN multicast group, a broadcast topic every device publishes to) calls `handleAppMessage`, so a frame that stamps `channel:"runtime"` or `"driver"` there is delivered as an ordinary `app` event; only an ingress that only the device's own host can write calls `handleRuntimeMessage`.
+
 ```cpp
 // Public entry points, callable directly by wrappers with their own receive
 // path (e.g. per-transport/topic hooks) — no loopback through Courier needed.
-sandbox.handleAppMessage(transportName, type, doc);
+sandbox.handleAppMessage(transportName, type, doc);      // peers: always "app"
+sandbox.handleRuntimeMessage(transportName, type, doc);  // own host only: "runtime"
 sandbox.handleSystemMessage(transportName, type, doc);
 
 // Register a "system" (or custom) channel slot.
@@ -895,7 +899,7 @@ The table is IDENTICAL in every callback. The wall clock is not on `ctx`: read i
 | `name` | string | Event name (e.g. `"button"`, `"my_event"`) |
 | `from` | string | Source identifier — empty string for driver events |
 | `ts_ms` | integer | Timestamp in milliseconds (`millis()`) when the event was queued |
-| `channel` | string | Source discriminator, always present: `"app"` or `"runtime"` for wire-borne frames (both delivered here), `"driver"` for hardware/driver events and host-firmware `sendAppEvent` injections (unless the caller passed a channel) |
+| `channel` | string | Source discriminator, always present: `"app"` or `"runtime"` for wire-borne frames, as decided by the entry point the frame arrived through (`handleAppMessage` or `handleRuntimeMessage`), never by the frame's own `channel` field; `"driver"` for hardware/driver events and host-firmware `sendAppEvent` injections (unless the caller passed a channel) |
 | `src` | string? | The frame's `src` envelope field (e.g. `"server"`), only when present on the frame; `nil` for internal events |
 | `seq` | integer? | The frame's per-sender monotonic `seq`, only when present on the frame; `nil` for internal events |
 | `data` | table | The payload, for EVERY event — driver and wire alike, one shape. Parsed by one set of rules: strings (unescaped), integers, floats, booleans, and nested objects/arrays to 3 container levels (deeper containers are skipped with their key; JSON `null` leaves a hole at its array index). Unparseable or oversized (> `RESIDENT_EVENT_JSON_MAX`) data drops the whole event rather than delivering it garbled |
@@ -1311,7 +1315,7 @@ fw.source = MYFW_LUA;      // the built-in copy (cold-start default)
 cfg.framework = fw;
 ```
 
-**The environment boundary.** The framework chunk runs in a private environment whose `__index` is `_G`: it reads every baseline global, but its own assignments stay local — app code cannot reach them. Writing through `_G` is the explicit app-facing act: `_G.api = {...}` installs API for apps. The environment also holds the one capability apps never get: `runtime.send(name, data, opts?)` — the control-plane mirror of `events.send` (same queue, same three-state return), publishing on `channel:"runtime"`. Hosts can therefore trust runtime-channel traffic: no app-level code can forge it.
+**The environment boundary.** The framework chunk runs in a private environment whose `__index` is `_G`: it reads every baseline global, but its own assignments stay local — app code cannot reach them. Writing through `_G` is the explicit app-facing act: `_G.api = {...}` installs API for apps. The environment also holds the one capability apps never get: `runtime.send(name, data, opts?)` — the control-plane mirror of `events.send` (same queue, same three-state return), publishing on `channel:"runtime"`. Hosts can therefore trust runtime-channel traffic: no app-level code can forge it. In the other direction, an incoming frame reaches the runtime plane only through `handleRuntimeMessage`, never by stamping `channel:"runtime"` on a frame handed to `handleAppMessage` (see [Channel routing](#channel-routing)).
 
 **Lifecycle hooks** (all optional; looked up in the framework env after its chunk runs):
 
