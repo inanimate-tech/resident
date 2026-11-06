@@ -427,6 +427,10 @@ void Sandbox::setupLuaEnvironment()
   lua_setfield(_lua, -2, "error");
   lua_setglobal(_lua, "log");
 
+  // The execution guard follows coroutines, and skips xpcall handlers once
+  // a dispatch is out of time.
+  installExecutionGuardWrappers();
+
   // Sandbox hardening (0.8): the app environment does not get the unsafe
   // stdlib unless the board opts in — it is a sandbox. collectgarbage and
   // the pure libraries (string/table/math/coroutine/utf8) stay.
@@ -1044,10 +1048,28 @@ void Sandbox::drainOutboundEvents()
 // thread on host, behind one arm/disarm pair, so the same guard runs
 // everywhere and the native suite covers it.
 //
+// Once the deadline has passed the hook stays installed and raises on every
+// instruction until disarm, so a pcall that catches the abort gets only as
+// far as its next instruction, and Lua run while the abort unwinds (a
+// __close handler) stops at its first. A hook covers one thread, so the timer
+// hooks the thread that is running, which the coroutine wrappers keep track
+// of, and a coroutine switched to after the deadline is hooked before it
+// runs. A Lua xpcall message handler is not called after the deadline: the
+// error passes through unhandled, rather than every handler raising inside
+// the raise that called it, which nests C frames up to LUAI_MAXCCALLS deep.
+//
+// A dispatch that was aborted counts against the app: the HARD_ABORT_LIMIT-th
+// abort inside HARD_ABORT_WINDOW_MS suspends it (`app_throttled`), so an app
+// that runs into the deadline every tick stops costing the loop a whole
+// deadline per tick.
+//
 // A second, passive check sits alongside it: executionSoftDeadlineMs is
 // compared against the elapsed time at disarm and only reports. Because it
 // measures after the fact it also sees time spent inside a blocking C
 // binding, where no Lua instruction executes and therefore no hook can fire.
+
+// log.warn's line; defined with the log module below.
+static void writeWarn(const char* msg);
 
 // Wall-clock microseconds for the soft deadline. Only ever differenced, so
 // 32-bit wrap is safe.
@@ -1062,20 +1084,6 @@ static inline uint32_t dispatchClockUs()
 #endif
 }
 
-// Monotonic microseconds for the hard deadline. Distinct from
-// dispatchClockUs() because the timer and the hook must agree on real elapsed
-// time, where the soft deadline rides the host harness's faked millis().
-static inline uint32_t deadlineClockUs()
-{
-#ifdef ESP_PLATFORM
-  return (uint32_t)esp_timer_get_time();
-#else
-  return (uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-#endif
-}
-
 static Sandbox* sandboxFromState(lua_State* L)
 {
   lua_getfield(L, LUA_REGISTRYINDEX, REGISTRY_KEY);
@@ -1087,16 +1095,18 @@ static Sandbox* sandboxFromState(lua_State* L)
 void Sandbox::executionDeadlineHook(lua_State* L, lua_Debug* ar)
 {
   (void)ar;
-  lua_sethook(L, nullptr, 0, 0);   // one shot — disarm before raising
-
   Sandbox* self = sandboxFromState(L);
-  // A hook the timer installed just as its dispatch returned lands on
-  // whatever runs next. Re-checking the deadline makes that harmless: an
-  // in-time dispatch simply loses the one fire above.
-  if (self && (int32_t)(deadlineClockUs() - self->_dispatchDeadlineUs) < 0) return;
-
-  const uint32_t ms = self ? self->_config.executionDeadlineMs : 0;
-  luaL_error(L, "execution deadline exceeded (%d ms)", (int)ms);
+  // A hook left on a thread after its dispatch was disarmed (a coroutine the
+  // timer hooked just as the dispatch returned) is stale: it removes itself,
+  // and the in-time dispatch it landed on loses one instruction's time.
+  if (!self || !self->_deadlineExpired) {
+    lua_sethook(L, nullptr, 0, 0);
+    return;
+  }
+  // Stays installed: it raises again at the next instruction, wherever the
+  // error was caught, until disarm removes it.
+  luaL_error(L, "execution deadline exceeded (%d ms)",
+             (int)self->_config.executionDeadlineMs);
 }
 
 // The dispatch may have finished between the timer firing and this call;
@@ -1104,8 +1114,11 @@ void Sandbox::executionDeadlineHook(lua_State* L, lua_Debug* ar)
 // check is honest.
 void Sandbox::installDeadlineHook()
 {
-  if (_deadlineArmed && _lua) {
-    lua_sethook(_lua, executionDeadlineHook, LUA_MASKCOUNT, 1);
+  if (!_deadlineArmed || !_lua) return;
+  _deadlineExpired = true;
+  lua_sethook(_lua, executionDeadlineHook, LUA_MASKCOUNT, 1);
+  if (_runningThread && _runningThread != _lua) {
+    lua_sethook(_runningThread, executionDeadlineHook, LUA_MASKCOUNT, 1);
   }
 }
 
@@ -1149,19 +1162,34 @@ void Sandbox::startDeadlineTimer()
 {
   portENTER_CRITICAL(&_deadlineMux);
   _deadlineArmed = true;
+  _deadlineExpired = false;
+  _runningThread = _lua;
   portEXIT_CRITICAL(&_deadlineMux);
   esp_timer_start_once((esp_timer_handle_t)_deadlineTimer,
                        (uint64_t)_config.executionDeadlineMs * 1000ULL);
 }
 
-void Sandbox::stopDeadlineTimer()
+bool Sandbox::stopDeadlineTimer()
 {
   // Stop first, then clear under the lock: a callback already running blocks
   // here until it has installed its hook, which the clear below then undoes.
   esp_timer_stop((esp_timer_handle_t)_deadlineTimer);
   portENTER_CRITICAL(&_deadlineMux);
+  const bool expired = _deadlineExpired;
   _deadlineArmed = false;
+  _deadlineExpired = false;
+  _runningThread = _lua;
   if (_lua) lua_sethook(_lua, nullptr, 0, 0);
+  portEXIT_CRITICAL(&_deadlineMux);
+  return expired;
+}
+
+void Sandbox::setRunningThread(lua_State* co)
+{
+  if (!_deadlineTimer) return;
+  portENTER_CRITICAL(&_deadlineMux);
+  _runningThread = co;
+  if (_deadlineExpired) lua_sethook(co, executionDeadlineHook, LUA_MASKCOUNT, 1);
   portEXIT_CRITICAL(&_deadlineMux);
 }
 
@@ -1236,6 +1264,8 @@ void Sandbox::startDeadlineTimer()
   {
     std::lock_guard<std::mutex> lock(t->mu);
     _deadlineArmed = true;
+    _deadlineExpired = false;
+    _runningThread = _lua;
     t->pending = true;
     t->generation++;
     t->deadline = std::chrono::steady_clock::now() +
@@ -1244,20 +1274,34 @@ void Sandbox::startDeadlineTimer()
   t->cv.notify_all();
 }
 
-void Sandbox::stopDeadlineTimer()
+bool Sandbox::stopDeadlineTimer()
 {
   HostDeadlineTimer* t = static_cast<HostDeadlineTimer*>(_deadlineTimer);
+  bool expired;
   {
     // The lock also serialises against a worker mid-install: it holds the
     // same lock while installing, so the clear below either precedes it (and
     // installDeadlineHook stands down) or undoes it.
     std::lock_guard<std::mutex> lock(t->mu);
+    expired = _deadlineExpired;
     _deadlineArmed = false;
+    _deadlineExpired = false;
+    _runningThread = _lua;
     t->pending = false;
     t->generation++;
     if (_lua) lua_sethook(_lua, nullptr, 0, 0);
   }
   t->cv.notify_all();
+  return expired;
+}
+
+void Sandbox::setRunningThread(lua_State* co)
+{
+  if (!_deadlineTimer) return;
+  HostDeadlineTimer* t = static_cast<HostDeadlineTimer*>(_deadlineTimer);
+  std::lock_guard<std::mutex> lock(t->mu);
+  _runningThread = co;
+  if (_deadlineExpired) lua_sethook(co, executionDeadlineHook, LUA_MASKCOUNT, 1);
 }
 
 #endif
@@ -1283,11 +1327,7 @@ void Sandbox::armExecutionGuard()
 
   // No Lua hook here — the whole point. The timer installs one only if the
   // deadline passes with the dispatch still running.
-  if (_deadlineTimer) {
-    _dispatchDeadlineUs =
-        deadlineClockUs() + _config.executionDeadlineMs * 1000UL;
-    startDeadlineTimer();
-  }
+  if (_deadlineTimer) startDeadlineTimer();
 }
 
 void Sandbox::disarmExecutionGuard()
@@ -1295,12 +1335,152 @@ void Sandbox::disarmExecutionGuard()
   if (_dispatchDepth == 0) return;
   if (--_dispatchDepth > 0) return;
 
-  if (_deadlineTimer) stopDeadlineTimer();
+  const bool aborted = _deadlineTimer && stopDeadlineTimer();
 
-  if (_config.executionSoftDeadlineMs == 0) return;
-  const uint32_t elapsedUs = dispatchClockUs() - _dispatchStartUs;
-  if (elapsedUs >= _config.executionSoftDeadlineMs * 1000UL) {
-    reportSlowDispatch(elapsedUs);
+  if (_config.executionSoftDeadlineMs != 0) {
+    const uint32_t elapsedUs = dispatchClockUs() - _dispatchStartUs;
+    if (elapsedUs >= _config.executionSoftDeadlineMs * 1000UL) {
+      reportSlowDispatch(elapsedUs);
+    }
+  }
+
+  if (aborted) noteHardAbort();
+}
+
+void Sandbox::noteHardAbort()
+{
+  const unsigned long now = millis();
+  _hardAbortMs[_hardAbortCount % HARD_ABORT_LIMIT] = now;
+  _hardAbortCount++;
+  if (_hardAbortCount < HARD_ABORT_LIMIT) return;
+  // The slot written next holds the abort HARD_ABORT_LIMIT - 1 before this.
+  const unsigned long oldest = _hardAbortMs[_hardAbortCount % HARD_ABORT_LIMIT];
+  if (now - oldest > HARD_ABORT_WINDOW_MS) return;
+
+  _hardAbortCount = 0;
+  if (_runState != RunState::Running) return;
+  suspendApp();
+  char detail[64];
+  snprintf(detail, sizeof(detail), "%u hard aborts in %lu s; app suspended",
+           (unsigned)HARD_ABORT_LIMIT, HARD_ABORT_WINDOW_MS / 1000UL);
+  writeWarn(detail);
+  emitTelemetry("app_throttled", detail);
+}
+
+// coroutine.resume and coroutine.close, and the function coroutine.wrap
+// returns. Upvalues: the stdlib function, the Sandbox, and for wrap the
+// coroutine (otherwise it is argument 1).
+int Sandbox::luaTrackedThreadCall(lua_State* L)
+{
+  Sandbox* self = static_cast<Sandbox*>(lua_touserdata(L, lua_upvalueindex(2)));
+  const bool wrapped = lua_isthread(L, lua_upvalueindex(3));
+  lua_State* co = wrapped ? lua_tothread(L, lua_upvalueindex(3))
+                          : lua_tothread(L, 1);
+  // Not a thread: the stdlib function raises its own argument error.
+  if (co) self->setRunningThread(co);
+  lua_pushvalue(L, lua_upvalueindex(1));
+  lua_insert(L, 1);
+  // Protected, so the running thread is handed back to L however the call
+  // ends. The stdlib functions report a coroutine's error as a result; only
+  // wrap's propagates, and an argument error, and both are re-raised.
+  const int status = lua_pcall(L, lua_gettop(L) - 1, LUA_MULTRET, 0);
+  if (co) self->setRunningThread(L);
+  if (status == LUA_OK) return lua_gettop(L);
+  // The stdlib's wrap prefixes the position of its caller, which is this
+  // C function and has none; prefix the Lua caller's, as it would have.
+  if (wrapped && status != LUA_ERRMEM && lua_type(L, -1) == LUA_TSTRING) {
+    luaL_where(L, 1);
+    lua_insert(L, -2);
+    lua_concat(L, 2);
+  }
+  return lua_error(L);
+}
+
+// coroutine.wrap: the stdlib's, with the function it returns wrapped.
+// Upvalues: the stdlib wrap and the Sandbox.
+int Sandbox::luaTrackedWrap(lua_State* L)
+{
+  lua_settop(L, 1);
+  lua_pushvalue(L, lua_upvalueindex(1));
+  lua_insert(L, 1);
+  lua_call(L, 1, 1);                         // the stdlib's function
+  // Its one upvalue is the coroutine (C closures name upvalues "").
+  if (!lua_getupvalue(L, 1, 1)) return 1;
+  if (!lua_isthread(L, -1)) {
+    lua_pop(L, 1);
+    return 1;
+  }
+  lua_pushvalue(L, lua_upvalueindex(2));     // [fn, co, self]
+  lua_insert(L, -2);                         // [fn, self, co]
+  lua_pushcclosure(L, luaTrackedThreadCall, 3);
+  return 1;
+}
+
+static int xpcallFinish(lua_State* L, int status, lua_KContext extra)
+{
+  if (status != LUA_OK && status != LUA_YIELD) {
+    lua_pushboolean(L, 0);
+    lua_pushvalue(L, -2);
+    return 2;                                // false, error
+  }
+  return lua_gettop(L) - (int)extra;         // true, results
+}
+
+// xpcall: the stdlib's, with a Lua message handler wrapped so it is not
+// called once the deadline has passed. A C handler (debug.traceback) runs no
+// Lua and is passed through untouched.
+int Sandbox::luaGuardedXpcall(lua_State* L)
+{
+  const int n = lua_gettop(L);
+  luaL_checktype(L, 2, LUA_TFUNCTION);
+  if (!lua_iscfunction(L, 2)) {
+    lua_pushvalue(L, 2);
+    lua_pushlightuserdata(L, sandboxFromState(L));
+    lua_pushcclosure(L, luaGuardedMessageHandler, 2);
+    lua_replace(L, 2);
+  }
+  lua_pushboolean(L, 1);                     // first result
+  lua_pushvalue(L, 1);                       // function
+  lua_rotate(L, 3, 2);                       // below the function's arguments
+  const int status = lua_pcallk(L, n - 2, LUA_MULTRET, 2, 2, xpcallFinish);
+  return xpcallFinish(L, status, 2);
+}
+
+// Upvalues: the app's handler and the Sandbox.
+int Sandbox::luaGuardedMessageHandler(lua_State* L)
+{
+  Sandbox* self = static_cast<Sandbox*>(lua_touserdata(L, lua_upvalueindex(2)));
+  if (self && self->_deadlineExpired) return 1;   // the error, unhandled
+  lua_pushvalue(L, lua_upvalueindex(1));
+  lua_insert(L, 1);
+  lua_call(L, lua_gettop(L) - 1, 1);
+  return 1;
+}
+
+void Sandbox::installExecutionGuardWrappers()
+{
+  lua_getglobal(_lua, "coroutine");
+  if (lua_istable(_lua, -1)) {
+    for (const char* name : {"resume", "close", "wrap"}) {
+      lua_getfield(_lua, -1, name);
+      if (!lua_isfunction(_lua, -1)) {
+        lua_pop(_lua, 1);
+        continue;
+      }
+      lua_pushlightuserdata(_lua, this);
+      const bool isWrap = strcmp(name, "wrap") == 0;
+      lua_pushcclosure(_lua, isWrap ? luaTrackedWrap : luaTrackedThreadCall, 2);
+      lua_setfield(_lua, -2, name);
+    }
+  }
+  lua_pop(_lua, 1);
+
+  lua_getglobal(_lua, "xpcall");
+  const bool hasXpcall = lua_isfunction(_lua, -1);
+  lua_pop(_lua, 1);
+  if (hasXpcall) {
+    lua_pushcfunction(_lua, luaGuardedXpcall);
+    lua_setglobal(_lua, "xpcall");
   }
 }
 
@@ -1321,7 +1501,7 @@ void Sandbox::reportSlowDispatch(uint32_t elapsedUs)
            (unsigned long)(elapsedUs / 1000UL),
            (unsigned long)((elapsedUs % 1000UL) / 100UL),
            (unsigned long)_config.executionSoftDeadlineMs);
-  Serial.printf("Resident::Sandbox: %s\n", detail);
+  writeWarn(detail);
   emitTelemetry("slow_dispatch", detail);
 }
 
@@ -2135,7 +2315,8 @@ void Sandbox::loopOnce() {
 #endif
     if (tickDue) {
       const unsigned long elapsed = now - _lastTickTime;
-      callOnTick(elapsed);
+      // A framework tick that was throttled has suspended the app.
+      if (_runState == RunState::Running) callOnTick(elapsed);
 #if RESIDENT_TICK_DIAGS
       noteTickTiming(elapsed, diagT1 - diagT0, micros() - diagT1);
 #endif
@@ -2152,7 +2333,7 @@ void Sandbox::loopOnce() {
   }
   RESIDENT_LOOP_MARK(LOOP_TICK);
 
-  processNextEvent();
+  if (_runState == RunState::Running) processNextEvent();
   RESIDENT_LOOP_MARK(LOOP_EVENTS);
 }
 
@@ -3233,6 +3414,7 @@ bool Sandbox::compileApp(const char* code)
   _runtimeErrorCount = 0;
   _lastRuntimeErrorMillis = 0;
   _lastInitOk = false;
+  _hardAbortCount = 0;   // a new app starts with no aborts against it
 
   // Fresh app environment (R5): nothing from the previous app survives —
   // every non-baseline global goes, not just the three lifecycle names.

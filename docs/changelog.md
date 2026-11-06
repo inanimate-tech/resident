@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **The execution deadline can no longer be caught or outrun.** The hook that aborts a dispatch removed itself before it raised, and the timer fires once, so `while true do pcall(spin) end` caught the one abort and then ran unguarded. A Lua hook also belongs to one thread, and only the main thread was hooked, so a loop inside a coroutine was never stopped. Either kept the loop for as long as the app liked. Once the deadline has passed, the hook now stays installed and raises on every instruction until the dispatch returns. `coroutine.resume`, `coroutine.wrap` and `coroutine.close` are wrapped to track the running thread: the timer hooks that thread, and a coroutine resumed after the deadline is hooked before it runs. Lua that runs while the abort unwinds, such as a `__close` handler, stops at its first instruction. A Lua `xpcall` message handler is not called after the deadline, and the error passes through as it is.
+- **An app that keeps hitting the deadline is suspended.** The third hard abort inside 30 seconds calls `suspendApp()` and emits `app_throttled` telemetry with a `[WARN]` line. The count is cleared at each app load.
+- **The soft deadline's report goes to the `[WARN]` line** that `log.warn` writes to, beside its `slow_dispatch` telemetry, so an app's author sees it where they see the app's own warnings.
+
+---
+
 ## v0.13.0
 
 ### Features
