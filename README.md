@@ -133,6 +133,9 @@ For Lua-only extensions that don't expose hardware or emit events, extend `Resid
   `method<>`, `staticMethod`, and `constant` overloads.
 - `onAppReset()` — called when a new app is loaded (before compilation).
 - `onAppRunning(bool)` — called when an app starts or stops running.
+- `afterTick()` — called right after each tick, in the same loop pass.
+  A retained-mode graphics module renders here, so a frame shows what the
+  tick just set.
 
 ## Message Protocol
 

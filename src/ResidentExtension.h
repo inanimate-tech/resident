@@ -24,6 +24,13 @@ public:
   // suspended — a suppressed surface swallows its flushes while the library
   // marks those pixels drawn — and repaint the whole surface when it resumes.
   virtual void onAppRunning(bool running) { (void)running; }
+
+  // Right after each tick, once the app's on_tick and the framework's tick
+  // have run and before the loop pass ends. Not called after a framework's
+  // early run (see framework_tick's return value). A retained-mode graphics
+  // module renders here, so a frame shows the state that tick just set
+  // instead of waiting for its own refresh period to come round.
+  virtual void afterTick() {}
   virtual ~Extension() = default;
 
   // RTTI-free downcast: returns non-null only for Driver subclasses.

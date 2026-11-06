@@ -574,9 +574,11 @@ private:
     void handleFrameworkMessage(JsonDocument& doc);
     void refreshFrameworkHooks();
     bool callFrameworkNoArg(int ref, const char* what);
-    // Returns the ms until the framework next wants to run, when its hook
-    // returns a number; -1 when it returns none.
-    int32_t callFrameworkTick(unsigned long dt_ms);
+    // `isFrame` is true for a tick (the app's on_tick follows) and false for
+    // an early run the framework asked for. Returns the ms until the
+    // framework next wants to run, when its hook returns a number; -1 when
+    // it returns none.
+    int32_t callFrameworkTick(unsigned long dt_ms, bool isFrame);
     static int luaRuntimeSend(struct lua_State* L);
 
     // Description-on-load display (setShowDescriptions).

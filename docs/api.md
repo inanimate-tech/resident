@@ -124,7 +124,7 @@ sandbox.loop();    // call from Arduino loop()
    1. `Courier::Client::loop()` drives the network state machine and reads transports.
    2. **Driver heartbeat:** the de-duplicated lifecycle list is walked once and `update()` is called on each object. Role peripherals (`systemDisplay`, `systemLED`, `systemButton`) update every loop regardless of app state or connectivity. All other extensions update only while an app is loaded (running or suspended). Connectivity does not gate either cadence.
    3. If a persisted app is waiting to load, the boot countdown runs (and the function returns early).
-   4. The Lua `on_tick(ctx, dt_ms)` callback fires every `SandboxConfig::tickIntervalMs` (100 ms, 10 Hz, by default) while an app is Running. A tick is due one interval after the last one was due, so the rate holds when a pass runs late; a tick missed outright is skipped, not made up. Connectivity does not gate it unless `SandboxConfig::gateTickOnConnection` is set.
+   4. The Lua `on_tick(ctx, dt_ms)` callback fires every `SandboxConfig::tickIntervalMs` (100 ms, 10 Hz, by default) while an app is Running. A tick is due one interval after the last one was due, so the rate holds when a pass runs late; a tick missed outright is skipped, not made up. Connectivity does not gate it unless `SandboxConfig::gateTickOnConnection` is set. After each tick, every extension's `afterTick()` runs, in the same pass (`LvglModule` renders there).
    5. Up to one pending event is delivered to `on_event(ctx, event)`.
 
 ### Setup-phase callbacks (register before `setup()`)
@@ -378,6 +378,7 @@ Include with:
 | `update()` | no-op | Per-loop tick at full main-loop rate (not Lua's tick) |
 | `onAppReset()` | no-op | Called before each new app is compiled |
 | `onAppRunning(bool running)` | no-op | Called when an app starts or resumes (`true`), and when it stops or is suspended (`false`) |
+| `afterTick()` | no-op | Called right after each tick (the framework's tick and the app's `on_tick`), in the same loop pass; not after a framework's early run. A retained-mode graphics module renders here, so the frame shows what that tick set |
 
 ### Idempotent early init
 
@@ -1014,6 +1015,8 @@ h:set_theme { screen = { bg_color = "#0b0b10" } }
 
 **`lvgl.bind(name)` is also the ownership claim** ([bind is the claim](#bind-is-the-claim-ownership)): it creates the display if needed, takes the target from whoever held it, and invalidates the whole active screen so the takeover repaints every pixel the other library left behind. While this module does NOT own the target, the flush callback returns without touching the panel and the display's refresh timer is paused — that is how a wiped, unowned tree can no longer race a blank frame onto the glass behind the incoming app. `onAppReset` releases the claim, uninstalls the theme Lua set, and replaces each display's active screen with a fresh one, deleting the old tree (luavgl invalidates Lua handles on C-side deletion). It then calls `luavgl_app_reset`, which deletes the app's timers and running anims (without their `done_cb`), its objects on the display layers and on screens it never loaded, and releases its theme styles and Styles: nothing of the outgoing app runs under the next one. A handle the app kept to a timer raises "timer is null". This needs a luavgl with `luavgl_app_reset`. Handle-level caching (one handle per display) stays luavgl's business. Themes are Lua's business: the module bakes none, and apps install their own via `h:set_theme{...}`.
 
+**Frames follow the tick.** `update()` pumps LVGL every 5 ms at most, earlier in the loop pass than the tick. So after each tick, `afterTick()` marks the refresh timer of every display the module owns ready and pumps LVGL once: what `on_tick` (or a framework's tick) changed reaches the glass before the pass ends, instead of after the display's next refresh period, and the refresh period restarts from that frame.
+
 ### `store` module
 
 An app-scoped **persistent** KV slot of scalars — state here survives `loadApp` (same identity) and reboot. RAM-backed with debounced write-through to the persistent store (NVS on device): at most one write per ~2 s of mutation quiet, plus a flush at least every 30 s while dirty (so an app that mutates on every tick still persists), on app unload, and at capture start.
@@ -1300,7 +1303,7 @@ cfg.framework = fw;
 | Hook | When | Contract |
 |------|------|----------|
 | `framework_install()` | Before each app chunk runs (after the fresh-environment reset) | (Re)install the framework's app-facing API into `_G` |
-| `framework_tick(ctx, dt_ms)` | Every tick, before the app's `on_tick`; and again before the next tick when it returned a number, that many ms later (4 ms at the least) | Same ctx shape as app callbacks; `dt_ms` is the time since its own last call. Return the ms until it next needs to run (its next timer, say), or nothing |
+| `framework_tick(ctx, dt_ms, is_frame)` | Every tick, before the app's `on_tick`; and again before the next tick when it returned a number, that many ms later (4 ms at the least) | Same ctx shape as app callbacks; `dt_ms` is the time since its own last call. `is_frame` is `true` on a tick and `false` on an early run, so per-frame work (anything that draws) can skip the early runs. Return the ms until it next needs to run (its next timer, say), or nothing |
 | `framework_event(ctx, e)` | Every event, before the app's `on_event` | Return `true` to consume — the app never sees it |
 | `framework_app_loaded()` | After an app loads successfully | — |
 
