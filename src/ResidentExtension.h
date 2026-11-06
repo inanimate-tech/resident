@@ -6,6 +6,7 @@ struct lua_State;
 
 namespace Resident {
 
+class DispatchGuard;
 class LuaModule;
 class Sandbox;
 
@@ -24,6 +25,13 @@ public:
   // suspended — a suppressed surface swallows its flushes while the library
   // marks those pixels drawn — and repaint the whole surface when it resumes.
   virtual void onAppRunning(bool running) { (void)running; }
+
+  // The sandbox's execution guard, handed over before begin(). An extension
+  // that runs app Lua from its own C code (a library's callbacks, run from
+  // update()) keeps it and holds a GuardedDispatch around that code, so the
+  // Lua runs under the same deadline as a tick
+  // (ResidentGuardedDispatch.h). Default: not needed.
+  virtual void setDispatchGuard(DispatchGuard* guard) { (void)guard; }
   virtual ~Extension() = default;
 
   // RTTI-free downcast: returns non-null only for Driver subclasses.

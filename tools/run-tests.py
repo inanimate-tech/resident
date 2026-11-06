@@ -60,9 +60,11 @@ def unit_tests() -> None:
     """Run unit tests on native platform."""
     click.echo(click.style("Unit Tests", fg="white", bold=True))
     test_dir = ROOT / "test" / "unit"
-    if not run_cmd(["pio", "test", "-e", "native"], cwd=test_dir, label="pio test -e native"):
-        click.echo(click.style("✗ Unit tests failed", fg="red"))
-        sys.exit(1)
+    # native-lvgl: the suites that need real LVGL and luavgl (test_lvgl_*).
+    for env in ("native", "native-lvgl"):
+        if not run_cmd(["pio", "test", "-e", env], cwd=test_dir, label=f"pio test -e {env}"):
+            click.echo(click.style("✗ Unit tests failed", fg="red"))
+            sys.exit(1)
     click.echo(click.style("✓ Unit tests passed", fg="green"))
 
 
