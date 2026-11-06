@@ -83,6 +83,13 @@ public:
   // screens.refresh(name): an e-paper panel's "update now". false when the
   // screen has no such thing.
   virtual bool refresh(int i) { (void)i; return false; }
+
+  // Repaint what this driver shows when nothing else owns its glass (the
+  // boot and idle text, a last frame): called when something drawn over it
+  // goes away — the overlay arbiter's last claim releasing on a SystemDisplay,
+  // or LvglModule's system layer emptying over a screen no app has bound.
+  // Default no-op.
+  virtual void restoreContent() {}
 };
 
 } // namespace Resident

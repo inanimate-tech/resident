@@ -2017,10 +2017,11 @@ void Sandbox::loop() {
 
   // Driver heartbeat — single de-duped walk, connectivity-independent.
   // Peripherals (role-assigned) update every loop; other extensions only
-  // while an app is loaded (Running or Suspended).
+  // while an app is loaded (Running or Suspended), unless they have work of
+  // their own without one (Extension::runsWithoutApp).
   for (uint8_t i = 0; i < _lifecycleCount; i++) {
     Extension* e = _lifecycle[i];
-    if (isSystemExtension(e) || isAppRunning()) {
+    if (isSystemExtension(e) || isAppRunning() || e->runsWithoutApp()) {
       e->update();
     }
   }

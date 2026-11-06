@@ -24,6 +24,12 @@ public:
   // suspended — a suppressed surface swallows its flushes while the library
   // marks those pixels drawn — and repaint the whole surface when it resumes.
   virtual void onAppRunning(bool running) { (void)running; }
+
+  // update() runs every loop for the system roles (display, LED, button) and,
+  // for every other extension, only while an app is loaded. An extension that
+  // has work of the firmware's own to do with no app — LvglModule once a
+  // system layer is in use — answers true, and is updated every loop too.
+  virtual bool runsWithoutApp() const { return false; }
   virtual ~Extension() = default;
 
   // RTTI-free downcast: returns non-null only for Driver subclasses.

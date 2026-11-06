@@ -37,6 +37,15 @@
 // unowned tree can no longer race a blank frame onto the glass behind the
 // incoming app.
 //
+// THE SYSTEM LAYER. Firmware draws above whatever app is running through
+// systemLayer(name): the display's lv_layer_sys, composed into the app's own
+// frames, kept across app swaps (app reset deletes only what Lua made), and
+// hidden from Lua. A display whose layer is in use is created then, not at an
+// app's first bind, and the module keeps pumping LVGL with no app loaded.
+// addSystemDisplay(name, panel) declares a display only the firmware draws on,
+// which no app can bind or find. When the layer may render and flush is
+// SystemLayerGate's decision (ResidentSystemLayer.h).
+//
 // Doctrine: everything LVGL — creation, mutation, timer pump, flush —
 // happens on the loop task (the same task that runs all sandbox Lua), so no
 // lv_lock is needed anywhere.
@@ -53,6 +62,8 @@
 #include "ResidentExtension.h"
 #include "ResidentLuaModule.h"
 #include "ResidentRenderTargets.h"
+#include "ResidentDisplayDriver.h"
+#include "ResidentSystemLayer.h"
 
 // Lua headers carry C linkage but no C++ guards — wrap them. luavgl.h then
 // re-includes them as no-ops (guards set) and provides its own extern "C"
@@ -110,6 +121,61 @@ public:
     return true;
   }
 
+  // A display only the firmware draws on: a status glass no app may reach.
+  // It is NOT registered in RenderTargets — `screens` does not list it,
+  // `lvgl.bind` refuses its name, luavgl's display list skips it, and it is
+  // never LVGL's default display. Its system layer is all it shows. Call from
+  // setup() (the panel is measured when the display is created, at the first
+  // systemLayer() call).
+  bool addSystemDisplay(const char* displayName, PanelTarget* panel) {
+    return addSystemDisplay(displayName, panel, DisplayOptions());
+  }
+  bool addSystemDisplay(const char* displayName, PanelTarget* panel,
+                        const DisplayOptions& opts) {
+    if (_count >= MAX_DISPLAYS || !displayName || !panel) return false;
+    Slot& s = _slots[_count++];
+    s.name = displayName;
+    s.opts = opts;
+    s.panel = panel;   // held here: a system-only display is not in RenderTargets
+    s.systemOnly = true;
+    return true;
+  }
+
+  // The system layer of a display, for firmware to draw on: lv_layer_sys of
+  // that display, above every screen an app makes. Creates the display if no
+  // app has bound it yet. Null when the name is unknown or has no panel.
+  // Firmware objects made under it survive every app reset (luavgl_app_reset
+  // deletes only objects Lua created). Loop task only, like all of LVGL.
+  lv_obj_t* systemLayer(const char* displayName) {
+    Slot* s = displayName ? slotFor(displayName) : nullptr;
+    if (!s) return nullptr;
+    if (!s->disp && !createDisplay(*s)) return nullptr;
+    if (!s->system) {
+      s->system = true;
+      _systemLayers++;
+    }
+    return lv_display_get_layer_sys(s->disp);
+  }
+
+  // The board's own driver has just drawn on a glass the system layer is
+  // drawn over — status text with no app, which reaches the glass without
+  // LVGL — and so covered the layer. Ask for the layer's visible objects
+  // again, so the next frame puts them back on top. A board calls this from
+  // its driver after it draws; a no-op unless the layer is showing over a
+  // glass nobody owns.
+  void repaintSystemLayer(const char* displayName) {
+    for (int i = 0; i < _count; i++) {
+      Slot& s = _slots[i];
+      if (!s.disp || !s.system || !s.drewOverDriver || strcmp(s.name, displayName) != 0) continue;
+      invalidateLayer(s);
+    }
+  }
+
+  // The module keeps LVGL running with no app loaded once any system layer is
+  // in use: the layer must be able to draw at boot, between apps, and on a
+  // system-only display that never has an app at all.
+  bool runsWithoutApp() const override { return _systemLayers > 0; }
+
   // Fonts beyond LVGL's built-ins. Return nullptr for a family you don't
   // carry: luavgl then tries the next name in a comma list
   // (lvgl.Font("myface, montserrat", 24)). Set before the sandbox runs.
@@ -149,6 +215,9 @@ public:
   // from grinding LVGL's timer list continuously.
   void update() override {
     if (_displays == 0) return;
+    for (int i = 0; i < _count; i++) {
+      if (_slots[i].disp && _slots[i].system) gateSystemLayer(_slots[i]);
+    }
     lv_timer_handler_run_in_period(5);
   }
 
@@ -167,8 +236,9 @@ public:
   // Only for targets this module still owns: before an app's first bind there
   // is nothing to repaint, and a target lgfx claimed is not ours to touch.
   void onAppRunning(bool running) override {
+    _suspended = !running;
     for (int i = 0; i < _count; i++) {
-      if (!_slots[i].disp) continue;
+      if (!_slots[i].disp || _slots[i].systemOnly) continue;
       if (!running) standDown(_slots[i]);
       else if (RenderTargets::isOwner(_slots[i].name, RenderTargets::MODULE_LVGL))
         standUp(_slots[i]);
@@ -206,8 +276,9 @@ public:
   // object.
   void onAppReset() override {
     RenderTargets::release(RenderTargets::MODULE_LVGL);
+    _suspended = false;
     for (int i = 0; i < _count; i++) {
-      if (!_slots[i].disp) continue;
+      if (!_slots[i].disp || _slots[i].systemOnly) continue;
       standDown(_slots[i]);
       uninstallLuaTheme(_slots[i].disp);
       replaceScreen(_slots[i].disp);
@@ -252,13 +323,14 @@ public:
   int bind(lua_State* L) {
     const char* name = luaL_checkstring(L, 1);
     Slot* s = slotFor(name);
-    if (!s) return luaL_error(L, "lvgl.bind: no display named '%s'", name);
+    if (!s || s->systemOnly) return luaL_error(L, "lvgl.bind: no display named '%s'", name);
     if (!s->disp && !createDisplay(*s)) {
       return luaL_error(L, "lvgl.bind: '%s' has no panel to draw on", name);
     }
     RenderTargets::claim(name, RenderTargets::MODULE_LVGL);
     standUp(*s);
     const int n = luavgl_bind_display(L, s->disp);
+    hideSystemFromLua(L);
     for (int i = 0; i < _widgetCount; i++) _widgets[i](L);
     return n;
   }
@@ -291,10 +363,17 @@ private:
     lv_display_t* disp = nullptr;
     PanelTarget* panel = nullptr;
     DisplayOptions opts = {};
+    bool systemOnly = false;
+    bool system = false;              // systemLayer() has been asked for
+    bool drewOverDriver = false;      // SystemLayerGate's memory
+    bool flush = false;               // the gate's flush decision for the layer
   };
   Slot _slots[MAX_DISPLAYS] = {};
   int _count = 0;
   int _displays = 0;
+  int _systemLayers = 0;
+  bool _suspended = false;
+  bool _luaGuarded = false;
   lua_State* _lua = nullptr;   // the sandbox's one Lua state (registerModule)
   FontResolver _fontResolver = nullptr;
   WidgetInstaller _widgets[MAX_WIDGETS] = {};
@@ -338,7 +417,7 @@ private:
   // Create the lv_display_t over the board's panel: draw buffer, flush
   // callback, dpi. Returns false when no panel is registered for the name.
   bool createDisplay(Slot& s) {
-    PanelTarget* p = RenderTargets::panel(s.name);
+    PanelTarget* p = s.systemOnly ? s.panel : RenderTargets::panel(s.name);
     if (!p) return false;
     int32_t w = p->width();
     int32_t h = p->height();
@@ -357,7 +436,11 @@ private:
     if (!buf || bytes < (size_t)w * 2u) return false;
 
     s.panel = p;
+    // A system-only display must never become LVGL's default: luavgl's
+    // unbound constructors and lvgl.disp.get_default() resolve through it.
+    lv_display_t* prevDefault = lv_display_get_default();
     s.disp = lv_display_create(w, h);
+    if (s.systemOnly) lv_display_set_default(prevDefault);
     if (!s.disp) return false;
     lv_display_set_user_data(s.disp, &s);
     lv_display_set_buffers(s.disp, buf, nullptr, bytes,
@@ -365,7 +448,7 @@ private:
     lv_display_set_flush_cb(s.disp, flush_cb);
     if (s.opts.dpi > 0) lv_display_set_dpi(s.disp, s.opts.dpi);
     _displays++;
-    RenderTargets::add(s.name, w, h, nullptr, RenderTargets::MODULE_LVGL);
+    if (!s.systemOnly) RenderTargets::add(s.name, w, h, nullptr, RenderTargets::MODULE_LVGL);
     return true;
   }
 
@@ -433,12 +516,166 @@ private:
     if (screen) lv_obj_invalidate(screen);
   }
 
+  // The layer starts drawing over a glass nobody owns. Whatever LVGL has
+  // pending — its own empty screen at creation or after an app reset, the
+  // areas objects passed through while the layer was hidden — is not on the
+  // glass and must not reach it: render it now and drop it at the gate, then
+  // ask for the layer's visible objects alone. From here, while nobody owns
+  // the glass, nothing but the layer changes, so nothing else is redrawn.
+  static void settleOverDriver(Slot& s) {
+    s.flush = false;
+    lv_refr_now(s.disp);
+    invalidateLayer(s);
+  }
+
+  // Ask LVGL to redraw the system layer's visible objects.
+  static void invalidateLayer(Slot& s) {
+    lv_obj_t* layer = lv_display_get_layer_sys(s.disp);
+    const uint32_t n = layer ? lv_obj_get_child_count(layer) : 0;
+    for (uint32_t i = 0; i < n; i++) {
+      lv_obj_t* c = lv_obj_get_child(layer, (int32_t)i);
+      if (!lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) lv_obj_invalidate(c);
+    }
+  }
+
+  // Whether anything on a display's system layer is showing.
+  static bool layerVisible(lv_display_t* disp) {
+    lv_obj_t* layer = lv_display_get_layer_sys(disp);
+    const uint32_t n = layer ? lv_obj_get_child_count(layer) : 0;
+    for (uint32_t i = 0; i < n; i++) {
+      lv_obj_t* c = lv_obj_get_child(layer, (int32_t)i);
+      if (!lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN) &&
+          lv_obj_get_style_opa(c, LV_PART_MAIN) > LV_OPA_TRANSP) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Apply SystemLayerGate to one display, once per update(): the refresh
+  // timer, the flush decision, and the board's repaint when the layer empties
+  // over a target nobody owns.
+  void gateSystemLayer(Slot& s) {
+    SystemLayerGate::Inputs in;
+    const uint8_t owner = RenderTargets::owner(s.name);
+    in.owner = owner == 0 ? SystemLayerGate::Owner::None
+             : owner == RenderTargets::MODULE_LVGL ? SystemLayerGate::Owner::Lvgl
+             : SystemLayerGate::Owner::Other;
+    in.systemOnly = s.systemOnly;
+    in.visible = layerVisible(s.disp);
+    in.suspended = _suspended;
+    const bool wasOverDriver = s.drewOverDriver;
+    const SystemLayerGate::Decision d = SystemLayerGate::decide(in, s.drewOverDriver);
+    if (!wasOverDriver && s.drewOverDriver) settleOverDriver(s);
+    s.flush = d.flush;
+    // While an app owns the target its own stand-down/stand-up (bind, reset,
+    // suspension) runs the refresh timer; the gate drives it otherwise. Set
+    // every pass, not on change: app reset pauses it behind the gate's back.
+    if (in.owner != SystemLayerGate::Owner::Lvgl) {
+      lv_timer_t* t = lv_display_get_refr_timer(s.disp);
+      if (t) {
+        if (d.render) lv_timer_resume(t);
+        else lv_timer_pause(t);
+      }
+    }
+    if (d.restore) {
+      const int i = RenderTargets::indexOf(s.name);
+      DisplayDriver* drv = i < 0 ? nullptr : RenderTargets::entry(i).driver;
+      if (drv) drv->restoreContent();
+    }
+  }
+
+  // Keep the system layer and system-only displays out of Lua's reach, once
+  // per Lua state (the first bind loads luavgl). luavgl's display handles
+  // carry get_layer_sys, and its display list (lvgl.disp.get_next, a handle's
+  // get_next) would hand an app a system-only display. Both are filtered here
+  // in Resident rather than in the luavgl fork.
+  void hideSystemFromLua(lua_State* L) {
+    if (_luaGuarded) return;
+    _luaGuarded = true;
+    const int top = lua_gettop(L);
+    // Handles: wrap the metatable's __index (luavgl's read-only method table).
+    if (luaL_getmetatable(L, "lv_disp") == LUA_TTABLE) {
+      lua_getfield(L, -1, "__index");
+      lua_pushlightuserdata(L, this);
+      lua_pushcclosure(L, &LvglModule::l_dispIndex, 2);
+      lua_setfield(L, -2, "__index");
+    }
+    lua_settop(L, top);
+    // The library table: lvgl.disp becomes an empty table that reads luavgl's
+    // through the same filter, so whatever luavgl adds there stays reachable.
+    lua_getfield(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
+    lua_getfield(L, -1, "lvgl");
+    if (lua_istable(L, -1)) {
+      lua_newtable(L);                       // the proxy
+      lua_newtable(L);                       // its metatable
+      lua_getfield(L, -3, "disp");
+      lua_pushlightuserdata(L, this);
+      lua_pushcclosure(L, &LvglModule::l_dispIndex, 2);
+      lua_setfield(L, -2, "__index");
+      lua_setmetatable(L, -2);
+      lua_setfield(L, -2, "disp");
+    }
+    lua_settop(L, top);
+  }
+
+  bool isSystemOnly(const lv_display_t* d) const {
+    for (int i = 0; i < _count; i++) {
+      if (_slots[i].disp == d) return _slots[i].systemOnly;
+    }
+    return false;
+  }
+
+  // luavgl's lv_disp userdata holds the display pointer as its first field.
+  static lv_display_t* dispOf(lua_State* L, int idx) {
+    void* ud = luaL_testudata(L, idx, "lv_disp");
+    return ud ? *static_cast<lv_display_t**>(ud) : nullptr;
+  }
+
+  // get_next(prev) with system-only displays skipped. Upvalues: luavgl's own
+  // get_next, this module.
+  static int l_dispGetNext(lua_State* L) {
+    auto* self = static_cast<LvglModule*>(lua_touserdata(L, lua_upvalueindex(2)));
+    lua_settop(L, 1);
+    for (int guard = 0; guard <= MAX_DISPLAYS + 1; guard++) {
+      lua_pushvalue(L, lua_upvalueindex(1));
+      lua_pushvalue(L, -2);
+      lua_call(L, 1, 1);
+      lv_display_t* d = dispOf(L, -1);
+      if (!d || !self->isSystemOnly(d)) return 1;
+      lua_replace(L, -2);   // skip it: ask for the one after
+    }
+    lua_pushnil(L);
+    return 1;
+  }
+
+  // __index for lv_disp handles and for the lvgl.disp library: luavgl's own,
+  // minus get_layer_sys, with get_next filtered. Upvalues: luavgl's table,
+  // this module.
+  static int l_dispIndex(lua_State* L) {
+    const char* key = lua_tostring(L, 2);
+    if (key && strcmp(key, "get_layer_sys") == 0) {
+      lua_pushnil(L);
+      return 1;
+    }
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_pushvalue(L, 2);
+    lua_gettable(L, -2);
+    if (key && strcmp(key, "get_next") == 0 && lua_isfunction(L, -1)) {
+      lua_pushvalue(L, lua_upvalueindex(2));
+      lua_pushcclosure(L, &LvglModule::l_dispGetNext, 2);
+    }
+    return 1;
+  }
+
   // The one flush: gate on ownership, byte-swap, blit through the panel.
   static void flush_cb(lv_display_t* disp, const lv_area_t* area,
                        uint8_t* px_map) {
     Slot* s = (Slot*)lv_display_get_user_data(disp);
-    if (!s || !s->panel ||
-        !RenderTargets::isOwner(s->name, RenderTargets::MODULE_LVGL)) {
+    const bool ours = s && (s->system
+        ? s->flush
+        : RenderTargets::isOwner(s->name, RenderTargets::MODULE_LVGL));
+    if (!s || !s->panel || !ours) {
       lv_display_flush_ready(disp);   // stand down: LVGL is satisfied, the
       return;                         // glass is untouched
     }
