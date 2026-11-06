@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- **`g:pushImage(x, y, w, h, data)`** in the `lgfx` module: a block of pixels from a Lua string of `w * h * 2` bytes, RGB565 big-endian, row by row (anything else raises). An app that keeps its own picture sends what changed as one call instead of a `fillRect` a run. The LovyanGFX adapter hands rows to LovyanGFX's `pushImage`; any other target falls back to `drawPixel`, and a target with a framebuffer of its own should override `LgfxTarget::pushImage` to copy rows straight in.
+- **`g:pushImage(x, y, w, h, data, palette[, transparent])` and `g:setClipRect(x, y, w, h)` / `g:clearClipRect()`** in the `lgfx` module, as LovyanGFX has them. With a palette (a string of 1 to 256 colours, RGB565 big-endian), `data` is `w * h` bytes of indices into it, and an index equal to `transparent` or past the palette's end isn't drawn: sprites laid over a backdrop, each a string. The clip keeps drawing inside a rectangle until cleared, and app reset clears it. Together they let an app redraw a region from layers without composing pixels in Lua: an app that draws isometric scenes composes a changed 16 px cell as the backdrop and the sprites over it, clipped to the cell. `LgfxTarget` gains `pushIndexed`, `setClipRect` and `clearClipRect`; the base class clips its own `pushImage` and `pushIndexed`, the LovyanGFX adapter passes the clip to LovyanGFX, and a target with a frame buffer of its own should clip everything it draws.
+
+---
+
 ## v0.12.0
 
 ### Breaking changes

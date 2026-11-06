@@ -33,8 +33,17 @@ struct FakeGfx {
     va_end(ap);
     calls.push_back(buf);
   }
+  int32_t clipX0 = 0, clipY0 = 0, clipX1 = W, clipY1 = H;   // LovyanGFX clips everything it draws
   void set(int32_t x, int32_t y, uint32_t c) {
-    if (x >= 0 && x < W && y >= 0 && y < H) px[y][x] = c;
+    if (x >= clipX0 && x < clipX1 && y >= clipY0 && y < clipY1 && x >= 0 && x < W && y >= 0 && y < H) px[y][x] = c;
+  }
+  void setClipRect(int32_t x, int32_t y, int32_t w, int32_t h) {
+    clipX0 = x; clipY0 = y; clipX1 = x + w; clipY1 = y + h;
+    log("setClipRect(%d,%d,%d,%d)", (int)x, (int)y, (int)w, (int)h);
+  }
+  void clearClipRect() {
+    clipX0 = 0; clipY0 = 0; clipX1 = W; clipY1 = H;
+    log("clearClipRect");
   }
 
   // LovyanGFX-shaped surface (what the adapter forwards to):
@@ -52,6 +61,15 @@ struct FakeGfx {
   }
   void drawRect(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t c) {
     log("drawRect(%d,%d,%d,%d,%06x)", (int)x, (int)y, (int)w, (int)h, (unsigned)c);
+  }
+  void pushImage(int32_t x, int32_t y, int32_t w, int32_t h, const uint16_t* data) {
+    for (int32_t r = 0; r < h; r++)
+      for (int32_t c = 0; c < w; c++) {
+        uint16_t v = data[r * w + c];
+        uint32_t r5 = (v >> 11) & 0x1F, g6 = (v >> 5) & 0x3F, b5 = v & 0x1F;
+        set(x + c, y + r, ((r5 << 3 | r5 >> 2) << 16) | ((g6 << 2 | g6 >> 4) << 8) | (b5 << 3 | b5 >> 2));
+      }
+    log("pushImage(%d,%d,%d,%d,%04x)", (int)x, (int)y, (int)w, (int)h, (unsigned)data[0]);
   }
   void fillRect(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t c) {
     for (int32_t yy = y; yy < y + h; yy++)
@@ -232,6 +250,108 @@ void test_all_primitives_forwarded_with_args(void) {
   TEST_ASSERT_TRUE(logged(gfxMain, "fillTriangle(1,1,6,1,3,5,222222)"));
 }
 
+void test_push_image_from_a_string(void) {
+  build();
+  // Two rows of two: red, green / blue, white, big-endian RGB565.
+  TEST_ASSERT_TRUE(sandbox->loadChunk(
+      "local g = lgfx.bind('main')\n"
+      "g:fillScreen(0x000000)\n"
+      "g:pushImage(3, 4, 2, 2, '\\248\\0\\7\\224\\0\\31\\255\\255')\n"
+      "ok = pcall(g.pushImage, g, 0, 0, 2, 2, 'short') and 1 or 0\n"));
+  TEST_ASSERT_TRUE(logged(gfxMain, "pushImage(3,4,2,2,f800)"));
+  TEST_ASSERT_EQUAL_UINT32(0xFF0000u, gfxMain->px[4][3]);
+  TEST_ASSERT_EQUAL_UINT32(0x00FF00u, gfxMain->px[4][4]);
+  TEST_ASSERT_EQUAL_UINT32(0x0000FFu, gfxMain->px[5][3]);
+  TEST_ASSERT_EQUAL_UINT32(0xFFFFFFu, gfxMain->px[5][4]);
+  TEST_ASSERT_EQUAL_UINT32(0x000000u, gfxMain->px[6][3]);
+  TEST_ASSERT_EQUAL_INT(0, sandbox->luaGlobalIntForTest("ok"));   // a short string raises
+}
+
+void test_push_image_through_a_palette(void) {
+  build();
+  // A 2x2 block of indices into red, green, blue: 0 1 / 2 3. Index 1 is transparent and 3 is past
+  // the palette's end, so neither is drawn.
+  TEST_ASSERT_TRUE(sandbox->loadChunk(
+      "local g = lgfx.bind('main')\n"
+      "g:fillScreen(0x000000)\n"
+      "g:pushImage(1, 1, 2, 2, '\\0\\1\\2\\3', '\\248\\0\\7\\224\\0\\31', 1)\n"
+      "short = pcall(g.pushImage, g, 0, 0, 2, 2, 'abc', '\\0\\0') and 1 or 0\n"
+      "odd = pcall(g.pushImage, g, 0, 0, 1, 1, 'a', '\\0') and 1 or 0\n"));
+  TEST_ASSERT_EQUAL_UINT32(0xFF0000u, gfxMain->px[1][1]);
+  TEST_ASSERT_EQUAL_UINT32(0x000000u, gfxMain->px[1][2]);   // transparent
+  TEST_ASSERT_EQUAL_UINT32(0x0000FFu, gfxMain->px[2][1]);
+  TEST_ASSERT_EQUAL_UINT32(0x000000u, gfxMain->px[2][2]);   // past the palette
+  TEST_ASSERT_EQUAL_INT(0, sandbox->luaGlobalIntForTest("short"));   // w * h bytes or it raises
+  TEST_ASSERT_EQUAL_INT(0, sandbox->luaGlobalIntForTest("odd"));     // whole colours or it raises
+}
+
+void test_clip_rect_limits_what_is_drawn(void) {
+  build();
+  TEST_ASSERT_TRUE(sandbox->loadChunk(
+      "local g = lgfx.bind('main')\n"
+      "g:fillScreen(0x000000)\n"
+      "g:setClipRect(2, 2, 2, 2)\n"
+      "g:pushImage(0, 0, 6, 1, string.rep('\\0', 6), '\\255\\255')\n"
+      "g:pushImage(0, 2, 6, 1, string.rep('\\0', 6), '\\255\\255')\n"
+      "g:fillRect(0, 3, 6, 1, 0xFF0000)\n"
+      "g:clearClipRect()\n"
+      "g:pushImage(0, 5, 1, 1, '\\0', '\\255\\255')\n"));
+  TEST_ASSERT_EQUAL_UINT32(0x000000u, gfxMain->px[0][2]);   // a row outside the clip
+  TEST_ASSERT_EQUAL_UINT32(0x000000u, gfxMain->px[2][1]);
+  TEST_ASSERT_EQUAL_UINT32(0xFFFFFFu, gfxMain->px[2][2]);
+  TEST_ASSERT_EQUAL_UINT32(0xFFFFFFu, gfxMain->px[2][3]);
+  TEST_ASSERT_EQUAL_UINT32(0x000000u, gfxMain->px[2][4]);
+  TEST_ASSERT_EQUAL_UINT32(0xFF0000u, gfxMain->px[3][3]);   // LovyanGFX clips the rest too
+  TEST_ASSERT_EQUAL_UINT32(0x000000u, gfxMain->px[3][4]);
+  TEST_ASSERT_EQUAL_UINT32(0xFFFFFFu, gfxMain->px[5][0]);   // cleared: drawn anywhere
+}
+
+// A target with only the base class's pushImage, pushIndexed and clip: they clip themselves.
+struct PlainTarget : Resident::LgfxLovyanTarget<FakeGfx> {
+  using Resident::LgfxLovyanTarget<FakeGfx>::LgfxLovyanTarget;
+  void pushImage(int32_t x, int32_t y, int32_t w, int32_t h, const uint8_t* be) override {
+    Resident::LgfxTarget::pushImage(x, y, w, h, be);
+  }
+  void pushIndexed(int32_t x, int32_t y, int32_t w, int32_t h, const uint8_t* idx,
+                   const uint8_t* palette, int32_t n, int32_t transparent) override {
+    Resident::LgfxTarget::pushIndexed(x, y, w, h, idx, palette, n, transparent);
+  }
+  void setClipRect(int32_t x, int32_t y, int32_t w, int32_t h) override {
+    Resident::LgfxTarget::setClipRect(x, y, w, h);
+  }
+  void clearClipRect() override { Resident::LgfxTarget::clearClipRect(); }
+};
+
+void test_the_base_target_clips_its_own_blocks(void) {
+  FakeGfx gfx;
+  PlainTarget t(&gfx);
+  const uint8_t idx[9] = {0, 0, 0, 0, 1, 0, 0, 0, 0};
+  const uint8_t pal[4] = {0xF8, 0x00, 0x00, 0x1F};   // red, blue
+  t.setClipRect(1, 1, 2, 2);
+  t.pushIndexed(0, 0, 3, 3, idx, pal, 2, 1);           // index 1 transparent
+  TEST_ASSERT_EQUAL_UINT32(0x000000u, gfx.px[0][0]);
+  TEST_ASSERT_EQUAL_UINT32(0x000000u, gfx.px[1][1]);    // transparent
+  TEST_ASSERT_EQUAL_UINT32(0xFF0000u, gfx.px[1][2]);
+  TEST_ASSERT_EQUAL_UINT32(0xFF0000u, gfx.px[2][2]);
+  const uint8_t white[18] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                             0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  t.pushImage(0, 0, 3, 3, white);
+  TEST_ASSERT_EQUAL_UINT32(0x000000u, gfx.px[0][2]);
+  TEST_ASSERT_EQUAL_UINT32(0xFFFFFFu, gfx.px[1][1]);
+  t.clearClipRect();
+  t.pushImage(0, 0, 3, 3, white);
+  TEST_ASSERT_EQUAL_UINT32(0xFFFFFFu, gfx.px[0][0]);
+}
+
+void test_app_reset_clears_the_clip(void) {
+  build();
+  TEST_ASSERT_TRUE(sandbox->loadChunk("local g = lgfx.bind('main')\ng:setClipRect(0, 0, 1, 1)\n"));
+  lgfxModule->onAppReset();
+  TEST_ASSERT_TRUE(logged(gfxMain, "clearClipRect"));
+  TEST_ASSERT_TRUE(sandbox->loadChunk("local g = lgfx.bind('main')\ng:fillRect(4, 4, 1, 1, 0x00FF00)\n"));
+  TEST_ASSERT_EQUAL_UINT32(0x00FF00u, gfxMain->px[4][4]);
+}
+
 void test_text_calls_and_datum_constants(void) {
   build();
   TEST_ASSERT_TRUE(sandbox->loadChunk(
@@ -337,6 +457,11 @@ int main(int, char**) {
   RUN_TEST(test_bind_dimensions_pixels_and_flip);
   RUN_TEST(test_fillrect_pixels_inside_and_outside);
   RUN_TEST(test_all_primitives_forwarded_with_args);
+  RUN_TEST(test_push_image_from_a_string);
+  RUN_TEST(test_push_image_through_a_palette);
+  RUN_TEST(test_clip_rect_limits_what_is_drawn);
+  RUN_TEST(test_the_base_target_clips_its_own_blocks);
+  RUN_TEST(test_app_reset_clears_the_clip);
   RUN_TEST(test_text_calls_and_datum_constants);
   RUN_TEST(test_two_displays_bind_independently);
   RUN_TEST(test_bind_unknown_display_raises);
