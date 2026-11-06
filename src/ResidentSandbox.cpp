@@ -3,7 +3,9 @@
 #include <ezTime.h>
 #include <math.h>
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include "chipstring.h"
 #include "ResidentNvsStore.h"   // device-only; no-op on native
 #include "ResidentRenderTargets.h"
@@ -58,6 +60,32 @@ static void* luaHeapRealloc(void* ptr, size_t, size_t newSize, void*) {
 }
 static void luaHeapRelease(void* ptr, size_t, void*) { free(ptr); }
 #endif
+
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#include "esp_system.h"
+#endif
+
+// Why the last Lua panic happened, kept where a software restart leaves it
+// (RTC memory the boot does not initialise), so the next boot can say why
+// the last one ended. `magic` tells a record from power-on noise.
+namespace {
+struct LuaPanicRecord {
+  uint32_t magic;
+  char reason[120];
+};
+constexpr uint32_t kLuaPanicMagic = 0x4c50414eu;   // "LPAN"
+#ifdef ESP_PLATFORM
+RTC_NOINIT_ATTR LuaPanicRecord s_luaPanicRecord;
+#else
+LuaPanicRecord s_luaPanicRecord;
+#endif
+char s_lastLuaPanic[sizeof(LuaPanicRecord::reason)] = "";
+
+// The default app memory ceiling: 1 MB, or a quarter of the backing memory
+// free at the baseline if that is less.
+constexpr size_t kAppMemoryDefaultBytes = 1024 * 1024;
+}  // namespace
 
 namespace Resident {
 
@@ -252,6 +280,76 @@ bool Sandbox::luaHeapSlabs()
 #endif
 }
 
+size_t Sandbox::luaHeapFreeBytes()
+{
+#ifdef ESP_PLATFORM
+  return heap_caps_get_free_size(luaHeapCaps());
+#else
+  return SIZE_MAX;   // a host is not short of memory; the 1 MB default holds
+#endif
+}
+
+size_t Sandbox::appMemoryProbeBytes(void* ctx)
+{
+  return static_cast<Sandbox*>(ctx)->_config.appMemoryProbe();
+}
+
+void Sandbox::fixAppMemoryCeiling()
+{
+  if (!_luaHeap || !_lua) return;
+  lua_gc(_lua, LUA_GCCOLLECT, 0);            // the boot's garbage is not the baseline
+  const size_t baseline = _luaHeap->charged();
+  size_t budget = _config.appMemoryBytes;
+  if (budget == SandboxConfig::kAppMemoryUnlimited) {
+    _appMemoryCeiling = 0;
+    Serial.printf("[resident] app memory: baseline %uK, no ceiling\n",
+                  (unsigned)(baseline / 1024));
+    return;
+  }
+  if (budget == 0) {
+    const size_t quarter = luaHeapFreeBytes() / 4;
+    budget = quarter < kAppMemoryDefaultBytes ? quarter : kAppMemoryDefaultBytes;
+  }
+  _appMemoryCeiling = budget < SIZE_MAX - baseline ? baseline + budget : SIZE_MAX;
+  Serial.printf("[resident] app memory: baseline %uK, ceiling %uK (+%uK)\n",
+                (unsigned)(baseline / 1024), (unsigned)(_appMemoryCeiling / 1024),
+                (unsigned)(budget / 1024));
+}
+
+// An error with no protected call to catch it — the allocator refusing Lua
+// outside a dispatch, say. Lua aborts once this returns, and an abort skips
+// the shutdown handlers a board registers (esp_register_shutdown_handler) to
+// leave its hardware safe; so log, record why for the next boot, and restart
+// cleanly. Allocates nothing: memory may be what ran out.
+int Sandbox::luaPanic(lua_State* L)
+{
+  const char* msg = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : nullptr;
+  if (!msg || !msg[0]) msg = "error object is not a string";
+  Serial.printf("Resident::Sandbox: Lua panic: %s\n", msg);
+  strncpy(s_luaPanicRecord.reason, msg, sizeof(s_luaPanicRecord.reason) - 1);
+  s_luaPanicRecord.reason[sizeof(s_luaPanicRecord.reason) - 1] = '\0';
+  s_luaPanicRecord.magic = kLuaPanicMagic;
+#ifdef ESP_PLATFORM
+  Serial.println("Resident::Sandbox: restarting");
+  Serial.flush();
+  esp_restart();
+#endif
+  return 0;
+}
+
+void Sandbox::consumeLuaPanicRecord()
+{
+  if (s_luaPanicRecord.magic != kLuaPanicMagic) return;
+  s_luaPanicRecord.magic = 0;
+  memcpy(s_lastLuaPanic, s_luaPanicRecord.reason, sizeof(s_lastLuaPanic));
+  s_lastLuaPanic[sizeof(s_lastLuaPanic) - 1] = '\0';
+}
+
+const char* Sandbox::lastLuaPanic()
+{
+  return s_lastLuaPanic[0] ? s_lastLuaPanic : nullptr;
+}
+
 void Sandbox::initialize()
 {
   Serial.println("Initializing Resident::Sandbox");
@@ -263,6 +361,8 @@ void Sandbox::initialize()
     Serial.println("Error: Failed to create Lua state");
     return;
   }
+  lua_atpanic(_lua, luaPanic);
+  if (_config.appMemoryProbe) _luaHeap->setExternal(appMemoryProbeBytes, this);
 
   luaL_openlibs(_lua);
 
@@ -518,6 +618,12 @@ void Sandbox::setup()
   // 4. Sandbox internals (Lua state, extensions + role slots). Always.
   initialize();
 
+  consumeLuaPanicRecord();
+  if (const char* why = lastLuaPanic()) {
+    Serial.printf("Resident::Sandbox: the last boot ended in a Lua panic: %s\n", why);
+    emitTelemetry("lua_panic", why);
+  }
+
   // Explicit override wins; otherwise use the platform default (NVS on
   // device). On native (neither macro defined) _store stays null unless a
   // test injected one.
@@ -537,6 +643,10 @@ void Sandbox::setup()
   // Framework module (R16): the persistent slot wins over the built-in;
   // a bad slot blob is discarded and the built-in runs.
   setupFramework();
+
+  // The app memory baseline is everything up to here: the libraries, the
+  // modules and the framework. An app is charged for what it adds.
+  fixAppMemoryCeiling();
 
   // Load any persisted app source. It is not armed here — the identity screen
   // and its countdown appear only once the device is ready to show them: on
@@ -1279,6 +1389,10 @@ void Sandbox::armExecutionGuard()
   // could evade the guard entirely.
   if (_dispatchDepth++ > 0) return;
 
+  // The app memory ceiling holds for the dispatch, and only for it: inside,
+  // a refusal is a Lua error the dispatch's protected call catches.
+  if (_luaHeap && !_frameworkLoading) _luaHeap->setLimit(_appMemoryCeiling);
+
   _dispatchStartUs = dispatchClockUs();
 
   // No Lua hook here — the whole point. The timer installs one only if the
@@ -1295,6 +1409,7 @@ void Sandbox::disarmExecutionGuard()
   if (_dispatchDepth == 0) return;
   if (--_dispatchDepth > 0) return;
 
+  if (_luaHeap) _luaHeap->setLimit(0);
   if (_deadlineTimer) stopDeadlineTimer();
 
   if (_config.executionSoftDeadlineMs == 0) return;
@@ -1361,9 +1476,13 @@ bool Sandbox::loadFramework(const char* code, const char* name, int version,
   }
   lua_pushvalue(_lua, -2);                   // env
   lua_setupvalue(_lua, -2, 1);               // chunk _ENV = env
+  // The framework's own load is not charged to the app: a replacement that
+  // arrives while an app is near its ceiling still installs.
+  _frameworkLoading = true;
   armExecutionGuard();
   int r = lua_pcall(_lua, 0, 0, 0);
   disarmExecutionGuard();
+  _frameworkLoading = false;
   if (r != 0) {
     const char* errMsg = lua_tostring(_lua, -1);
     Serial.printf("Resident::Sandbox: framework execution failed: %s\n", errMsg);
@@ -2447,6 +2566,10 @@ void Sandbox::reportLoopWindow(unsigned long windowMs)
   Serial.printf("[heapdiag] lua small %uK large %uK; slabs %lu (%uK held)\n",
                 (unsigned)(heap.smallBytes / 1024), (unsigned)(heap.largeBytes / 1024),
                 (unsigned long)heap.slabs, (unsigned)(heap.slabBytes / 1024));
+  Serial.printf("[heapdiag] app memory %uK (lua %uK + probe %uK) of ceiling %uK\n",
+                (unsigned)(_luaHeap->charged() / 1024), (unsigned)(_luaHeap->held() / 1024),
+                (unsigned)((_luaHeap->charged() - _luaHeap->held()) / 1024),
+                (unsigned)(_appMemoryCeiling / 1024));
 }
 
 // ── Heap and collector bench ─────────────────────────────────────────────

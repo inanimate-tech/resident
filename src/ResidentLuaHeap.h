@@ -18,6 +18,9 @@
 // which internal RAM can rarely spare. Constructed without them, every block
 // goes straight to the backing heap.
 //
+// A ceiling, when set, bounds what the heap holds from its backing (see
+// setLimit): a request past it fails, which Lua sees as out of memory.
+//
 // Pure: the backing heap is a set of functions, so the native tests run it
 // over malloc and the device over heap_caps. Not thread-safe; a lua_State is
 // used from one task.
@@ -80,11 +83,18 @@ public:
         return ptr;
       }
     } else if (!isSmall(osize) && !isSmall(nsize)) {
+      if (nsize > osize && !fits(nsize - osize)) return nullptr;
       void* p = _backing.realloc(ptr, osize, nsize, _backing.ctx);
       if (p) _stats.largeBytes = _stats.largeBytes - osize + nsize;
       return p;
     }
+    // A block moving to a smaller size is never refused for the ceiling, even
+    // when its new class needs a slab: Lua shrinks tables and buffers while it
+    // collects, which is when memory is short.
+    const size_t limit = _limit;
+    if (nsize <= osize) _limit = 0;
     void* p = allocate(nsize);
+    _limit = limit;
     if (!p) return nullptr;
     memcpy(p, ptr, osize < nsize ? osize : nsize);
     release(ptr, osize);
@@ -104,6 +114,24 @@ public:
   }
 
   const Stats& stats() const { return _stats; }
+
+  // The ceiling on what the heap holds from its backing heap (slabs and large
+  // blocks) plus what `external` reports, for memory its owner charges to the
+  // same budget. It counts bytes held, not live bytes: live blocks spread one
+  // to a slab would hold far more than they count. Checked only when a request
+  // would take more from the backing heap, so a block from a slab with space
+  // costs nothing. 0 = no ceiling.
+  void setLimit(size_t limit) { _limit = limit; }
+  size_t limit() const { return _limit; }
+  void setExternal(size_t (*bytes)(void* ctx), void* ctx) {
+    _external = bytes;
+    _externalCtx = ctx;
+  }
+
+  // What the heap holds from its backing heap.
+  size_t held() const { return _stats.slabBytes + _stats.largeBytes; }
+  // held() plus the external bytes: what the ceiling is compared against.
+  size_t charged() const { return held() + externalBytes(); }
 
 private:
   struct Slab {
@@ -126,8 +154,14 @@ private:
   }
   uint8_t* blocks(Slab* s) const { return reinterpret_cast<uint8_t*>(s) + kHeader; }
 
+  size_t externalBytes() const { return _external ? _external(_externalCtx) : 0; }
+  bool fits(size_t n) const {
+    return _limit == 0 || (n <= _limit && charged() <= _limit - n);   // no overflow
+  }
+
   void* allocate(size_t n) {
     if (!isSmall(n)) {
+      if (!fits(n)) return nullptr;
       void* p = _backing.alloc(n, _backing.ctx);
       if (p) _stats.largeBytes += n;
       return p;
@@ -172,6 +206,7 @@ private:
   }
 
   Slab* newSlab(size_t c) {
+    if (!fits(kSlabBytes)) return nullptr;
     void* mem = _backing.alignedAlloc(kSlabBytes, kSlabBytes, _backing.ctx);
     if (!mem) return nullptr;
     Slab* s = static_cast<Slab*>(mem);
@@ -214,6 +249,9 @@ private:
   size_t _smallMax;   // 0 without slabs: no block is small
   Slab* _open[kClasses] = {};
   Stats _stats = {};
+  size_t _limit = 0;
+  size_t (*_external)(void* ctx) = nullptr;
+  void* _externalCtx = nullptr;
 };
 
 }  // namespace Resident

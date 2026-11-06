@@ -3,6 +3,7 @@
 #define RESIDENT_SANDBOX_CONFIG_H
 
 #include <Arduino.h>
+#include <cstdint>
 #include <map>
 #include <functional>
 #include <optional>
@@ -35,6 +36,8 @@ using TelemetryCallback = std::function<void(const char* json)>;
 // executionSoftDeadlineMs, so a board that also builds against an older
 // published SDK can guard its use of them on the fields' presence.
 #define RESIDENT_HAS_EXECUTION_DEADLINE 1
+// Feature test for SandboxConfig::appMemoryBytes and appMemoryProbe.
+#define RESIDENT_HAS_APP_MEMORY_LIMIT 1
 
 struct SandboxConfig {
   // Identifies the physical board (used for AP name and protocol path
@@ -113,6 +116,25 @@ struct SandboxConfig {
   // `slow_dispatch` telemetry event — and allowed to finish. Independent of
   // executionDeadlineMs and of the platform; 0 = no reporting.
   uint32_t executionSoftDeadlineMs = 0;
+
+  // The app's memory ceiling: how many bytes an app may hold above the
+  // baseline, which is what the Lua heap holds (plus appMemoryProbe's bytes)
+  // once the framework has loaded at boot. The ceiling is fixed then, and is
+  // not moved by later app loads. It is enforced only while a dispatch runs
+  // (init, a tick, an event, a chunk, a framework hook): a request that would
+  // pass it fails, the app sees "not enough memory" as a runtime_error, and
+  // the device keeps the rest of its RAM for the network and the board.
+  // 0 = the default: 1 MB, or a quarter of the Lua heap's backing memory free
+  // at the baseline if that is less. kAppMemoryUnlimited = no ceiling.
+  static constexpr size_t kAppMemoryUnlimited = SIZE_MAX;
+  size_t appMemoryBytes = 0;
+
+  // Memory the app causes outside the Lua heap, in bytes, charged to the same
+  // ceiling — typically what a drawing library holds for the app's widgets,
+  // counted by the board's allocator hooks. Read when the Lua heap would take
+  // more memory, so it must be cheap. Such memory is never refused here: past
+  // the ceiling, the app's next Lua allocation fails instead.
+  size_t (*appMemoryProbe)() = nullptr;
 
   // Framework module (0.8): privileged runtime code the sandbox hosts
   // OUTSIDE the app — its own environment, the runtime-channel sender,
