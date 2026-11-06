@@ -124,7 +124,7 @@ sandbox.loop();    // call from Arduino loop()
    2. **Driver heartbeat:** the de-duplicated lifecycle list is walked once and `update()` is called on each object. Role peripherals (`systemDisplay`, `systemLED`, `systemButton`) update every loop regardless of app state or connectivity. All other extensions update only while an app is loaded (running or suspended). Connectivity does not gate either cadence.
    3. If a persisted app is waiting to load, the boot countdown runs (and the function returns early).
    4. The Lua `on_tick(ctx, dt_ms)` callback fires at 10 FPS (100 ms interval) while an app is Running. Connectivity does not gate it unless `SandboxConfig::gateTickOnConnection` is set.
-   5. Up to one pending event is delivered to `on_event(ctx, event)`.
+   5. The events queued when the pass began are delivered to `on_event(ctx, event)` in order, until they run out or `RESIDENT_EVENT_DRAIN_BUDGET_MS` (20 ms) has gone; at least one is delivered. An event a handler queues waits for the next pass.
 
 ### Setup-phase callbacks (register before `setup()`)
 
@@ -1504,6 +1504,7 @@ ESP-IDF CMake component graph.
 | `RenderTargets::MAX` | `8` | Maximum registered render targets per board |
 | `Sandbox::TICK_INTERVAL` | `100 ms` | Lua `on_tick` interval (10 FPS) |
 | `RESIDENT_EVENT_RING_SIZE` | `8` | Inbound event ring depth (one slot kept free, so 7 usable); oldest event is dropped when full. Build-flag overridable |
+| `RESIDENT_EVENT_DRAIN_BUDGET_MS` | `20` | Time one `loop()` pass may spend delivering queued inbound events (at least one is always delivered). Build-flag overridable |
 | `RESIDENT_EVENT_QUEUE_SIZE` | `16` | Outbound event queue depth (rate-limited / offline sends wait here). Build-flag overridable |
 | `RESIDENT_EVENT_JSON_MAX` | `1024` | Event `data` buffer — bounds the `events.send` serializer, the incoming app-channel `data`, and each ring slot. Build-flag overridable; the ring grows by 8× any increase |
 | `RESIDENT_STORE_JSON_MAX` | `2048` | Serialized size cap on the whole persisted `store` blob. Build-flag overridable |

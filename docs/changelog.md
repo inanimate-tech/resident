@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **A loop pass delivers every queued event, not one.** An event used to wait one `loop()` pass for each event queued ahead of it, and a button tap alone queues two (`button`, then `tap`), so a pass made long by a heavy `on_tick` delayed input by several passes. Each pass now delivers the events queued when it began, in order, stopping once `RESIDENT_EVENT_DRAIN_BUDGET_MS` (default 20 ms, build-flag overridable) has gone; at least one is always delivered, and an event a handler queues waits for the next pass.
+
+---
+
 ## v0.12.0
 
 ### Breaking changes
