@@ -282,9 +282,9 @@ void test_execution_deadline_kills_the_dispatch_not_the_device(void) {
   TEST_ASSERT_EQUAL_INT(3, sandbox->luaGlobalIntForTest("ticks"));
 }
 
-// The hook the timer installs is one-shot and re-checks the deadline, so a
-// dispatch that keeps to its deadline is never touched — including the one
-// immediately after an abort.
+// The hook the timer installs raises only while its dispatch is out of time,
+// so a dispatch that keeps to its deadline is never touched — including the
+// one immediately after an abort.
 void test_execution_deadline_leaves_an_in_time_dispatch_alone(void) {
   build(FRAMEWORK_V1, /*deadlineMs=*/2000);
   loadApp(
