@@ -251,7 +251,7 @@ sandbox.onMessageWithChannel("system", [](const char* transport, const char* typ
 
 **Control-plane emit** — `sandbox.sendSystem(doc)` stamps `doc["channel"] = "system"` and sends it via the default transport (`courier().send`). For device control messages (voice start/end, etc.). Returns `false` when no network is configured or the send fails; the doc is stamped either way, so a caller inspecting it afterward always sees the envelope.
 
-**Data-plane emit** — `sandbox.publishEvent(name, dataJson)` builds `{channel:"app", type:name, data, from:getDeviceId(), src:"device", seq, nonce, ts_ms}` and hands it to the event sink. `seq` is the device's per-sender monotonic sequence (uint32, per-boot, one counter for all frames sent via this path; the `nonce` suffix reuses the same count). It goes to: the sink set via `setEventSink(EventSink)` if one is registered, otherwise `courier().send` on the default transport. Rate-limited with a token bucket (5 events/s sustained, burst of 10). It never raises: `publishEvent` returns `false` only when the event will never go (no sink/network, send failure, oversize payload); a rate-limited or offline send is queued and returns `true`. `publishEventEx(name, dataJson, keep = false, channel = "app")` returns the underlying `SendResult::{Sent, Queued, Dropped}`. This is the shared implementation behind `events.send` (see [Lua API](#events-module)) and any C++ caller.
+**Data-plane emit** — `sandbox.publishEvent(name, dataJson)` builds `{channel:"app", type:name, data, from:getDeviceId(), src:"device", seq, nonce, ts_ms}` and hands it to the event sink. `seq` is the device's per-sender monotonic sequence (uint32, per-boot, one counter for all frames sent via this path; the `nonce` suffix reuses the same count). It goes to: the sink set via `setEventSink(EventSink)` if one is registered, otherwise `courier().send` on the default transport. Rate-limited with a token bucket (5 events/s sustained, burst of 10). It never raises: `publishEvent` returns `false` only when the event will never go (no sink/network, send failure, oversize payload, or a name that is empty, longer than 31 bytes or holds a control character); a rate-limited or offline send is queued and returns `true`. `publishEventEx(name, dataJson, keep = false, channel = "app")` returns the underlying `SendResult::{Sent, Queued, Dropped}`. This is the shared implementation behind `events.send` (see [Lua API](#events-module)) and any C++ caller.
 
 ```cpp
 using EventSink = std::function<bool(JsonDocument&)>;
@@ -942,6 +942,8 @@ Publishes an event on the app data plane (`channel:"app"`) — the Lua-side entr
 
 Both success states are truthy, so a caller that only needs "will this go?" can treat the result as a boolean.
 
+`name` is 1–31 bytes with no control characters (`RESIDENT_EVENT_NAME_MAX`, announced in the hello as `limits.eventNameBytes`). A receiver holds an event's name in a 32-byte buffer, so a longer name would arrive cut short and match no handler. Any other characters are fine, `:` included (`"view:main"`). A name outside the rule is not sent: the call returns `"dropped"` and the reason goes to `log.warn`'s line.
+
 ```lua
 events.send("turn")
 events.send("color_change", { hue = 180, label = "warm" })
@@ -949,7 +951,7 @@ events.send("state", { on = true, pos = { x = 1, y = 2 }, tags = { "a", "b" } })
 events.send("escalation", { level = 3 }, { keep = true })
 ```
 
-`data` serializes to a JSON object. String keys and values are JSON-escaped (`"`, `\`, and control characters). Values may be strings, numbers, booleans, or tables nested up to 3 table levels (counting `data` itself): a string-keyed table becomes a JSON object; a table with a non-empty array part (`#t > 0`) becomes a JSON array of elements `1..#t` (don't mix array and string keys — string keys of an array-part table are ignored). Top-level integer keys, deeper tables, and other value types (functions, userdata) are silently skipped per-key; unsupported array *elements* serialize as `null` to hold their position.
+`data` serializes to a JSON object. String keys and values are JSON-escaped (`"`, `\`, `\b`, `\f`, `\n`, `\r`, `\t`). Any other control character goes out as U+FFFD, so every frame is valid RFC 8259 JSON however many times it is parsed and serialized on the way. Values may be strings, numbers, booleans, or tables nested up to 3 table levels (counting `data` itself): a string-keyed table becomes a JSON object; a table with a non-empty array part (`#t > 0`) becomes a JSON array of elements `1..#t` (don't mix array and string keys — string keys of an array-part table are ignored). Top-level integer keys, deeper tables, and other value types (functions, userdata) are silently skipped per-key; unsupported array *elements* serialize as `null` to hold their position.
 
 Serialized into a bounded buffer of `RESIDENT_EVENT_JSON_MAX` bytes (default 1024; override with a build flag, e.g. `-DRESIDENT_EVENT_JSON_MAX=2048`). An oversized payload is never truncated — the event is dropped and a line is logged to Serial.
 
@@ -1284,8 +1286,8 @@ On every transport connect the sandbox queues a device hello — the device anno
   "protocol": 1,
   "deviceType": "m5stick", "firmware": "1.4.0", "bootId": "9f2c11a0",
   "profile": "m5stick@2",
-  "limits": { "eventBytes": 1024, "replyBytes": 1024, "storeBytes": 2048,
-              "storeNsChars": 32, "eventsPerSec": 5 },
+  "limits": { "eventBytes": 1024, "eventNameBytes": 31, "replyBytes": 1024,
+              "storeBytes": 2048, "storeNsChars": 32, "eventsPerSec": 5 },
   "app": { "storeNs": "oracle", "generationId": "g1" }
 } }
 ```
@@ -1531,7 +1533,7 @@ ESP-IDF CMake component graph.
 | `RESIDENT_EVENT_JSON_MAX` | `1024` | Event `data` buffer — bounds the `events.send` serializer, the incoming app-channel `data`, and each ring slot. Build-flag overridable; the ring grows by 8× any increase |
 | `RESIDENT_STORE_JSON_MAX` | `2048` | Serialized size cap on the whole persisted `store` blob. Build-flag overridable |
 | `StoreModule::STORE_NS_MAX` | `32` | Maximum `storeNs` length in characters |
-| Event `name` max | `32 chars` | `Event::name` buffer size — driver event names longer than 31 bytes are truncated |
+| `RESIDENT_EVENT_NAME_MAX` | `31` bytes | Longest event name; `Event::name` holds it and its NUL. `publishEventEx` drops a longer name, an empty one, or one with a control character; a driver event name longer than this is truncated. Not a build flag: every device on a network must agree |
 | `SandboxConfig::executionDeadlineMs` | `1000` | Wall-clock milliseconds per dispatch before abort (`0` = no hard guard) |
 | `SandboxConfig::executionSoftDeadlineMs` | `0` | Wall-clock milliseconds per dispatch before reporting (`0` = no reporting) |
 | `SLOW_DISPATCH_COOLDOWN` | `5000 ms` | Minimum interval between `slow_dispatch` reports after the initial burst |
