@@ -15,7 +15,7 @@ extern "C" {
   #include "lua/lauxlib.h"
 }
 
-#ifndef ESP_PLATFORM
+#if !defined(ESP_PLATFORM) && !RESIDENT_DEADLINE_INSTRUCTIONS
 // Host one-shot for the execution deadline (esp_timer's stand-in).
 #include <chrono>
 #include <condition_variable>
@@ -1044,15 +1044,57 @@ void Sandbox::drainOutboundEvents()
 // compared against the elapsed time at disarm and only reports. Because it
 // measures after the fact it also sees time spent inside a blocking C
 // binding, where no Lua instruction executes and therefore no hook can fire.
+//
+// A RESIDENT_DEADLINE_INSTRUCTIONS build replaces the timer with a count
+// hook, for a build that has no timer to interrupt the VM (WebAssembly
+// without threads) or whose clock says nothing about the device's (a host
+// many times faster than it, or one whose clock is virtual). The hook is
+// armed at dispatch start, so every dispatch runs hooked and pays Lua's
+// trap cost. It counts instructions, INSTRUCTION_HOOK_PERIOD at a time, on
+// every thread the dispatch runs, against a budget of executionDeadlineMs *
+// deadlineInstrPerMs. Once that is spent it installs the raising hook the
+// timer installs, so the error and everything above are the same. A thread
+// keeps its count hook across coroutine switches, because setting a hook
+// restarts the thread's count and a loop that switched more often than the
+// period would never be counted; a coroutine inherits its creator's hook.
+// The soft deadline's clock is instructions / deadlineInstrPerMs.
 
 // log.warn's line; defined with the log module below.
 static void writeWarn(const char* msg);
 
-// Wall-clock microseconds for the soft deadline. Only ever differenced, so
-// 32-bit wrap is safe.
-static inline uint32_t dispatchClockUs()
+#if RESIDENT_DEADLINE_INSTRUCTIONS
+namespace {
+
+// Instructions between count-hook calls. A smaller step stops a runaway
+// closer to its budget for more hook calls; 1000 is 0.2 ms at the default
+// rate.
+constexpr uint32_t INSTRUCTION_HOOK_PERIOD = 1000;
+
+// The instruction backend's state, held in _deadlineTimer.
+struct InstructionDeadline {
+  // Instructions counted across all dispatches: the soft deadline's clock.
+  uint64_t counted = 0;
+  // The value of `counted` at which the armed dispatch is out of time.
+  uint64_t expiresAt = 0;
+  uint32_t perMs = 1;
+  // The count hook's step: the period, or the budget if that is smaller.
+  int step = (int)INSTRUCTION_HOOK_PERIOD;
+};
+
+}  // namespace
+#endif
+
+uint32_t Sandbox::dispatchClockUs() const
 {
-#ifdef ESP_PLATFORM
+#if RESIDENT_DEADLINE_INSTRUCTIONS
+  if (_deadlineTimer) {
+    const InstructionDeadline* d =
+        static_cast<const InstructionDeadline*>(_deadlineTimer);
+    return (uint32_t)(d->counted * 1000ULL / d->perMs);
+  }
+  // No hard deadline, so nothing counts: the wall clock, as on any host.
+  return (uint32_t)(millis() * 1000UL);
+#elif defined(ESP_PLATFORM)
   return (uint32_t)esp_timer_get_time();
 #else
   // The host harness fakes millis(); scaling it keeps the soft deadline on
@@ -1099,7 +1141,88 @@ void Sandbox::installDeadlineHook()
   }
 }
 
-#ifdef ESP_PLATFORM
+#if RESIDENT_DEADLINE_INSTRUCTIONS
+
+void Sandbox::instructionCountHook(lua_State* L, lua_Debug* ar)
+{
+  Sandbox* self = sandboxFromState(L);
+  InstructionDeadline* d =
+      self ? static_cast<InstructionDeadline*>(self->_deadlineTimer) : nullptr;
+  // A coroutine that kept its hook from an earlier dispatch, run outside one.
+  if (!d || !self->_deadlineArmed) {
+    lua_sethook(L, nullptr, 0, 0);
+    return;
+  }
+  d->counted += (uint32_t)lua_gethookcount(L);
+  if (d->counted < d->expiresAt) return;
+  // Out of instructions: the raising hook goes on every thread the timer
+  // would hook, and on this one, which raises now.
+  self->installDeadlineHook();
+  lua_sethook(L, executionDeadlineHook, LUA_MASKCOUNT, 1);
+  executionDeadlineHook(L, ar);
+}
+
+void Sandbox::createExecutionDeadlineTimer()
+{
+  if (_deadlineTimer || _config.executionDeadlineMs == 0) return;
+  InstructionDeadline* d = new InstructionDeadline();
+  d->perMs = _config.deadlineInstrPerMs ? _config.deadlineInstrPerMs
+                                        : SandboxConfig().deadlineInstrPerMs;
+  const uint64_t budget = (uint64_t)_config.executionDeadlineMs * d->perMs;
+  if (budget < INSTRUCTION_HOOK_PERIOD) d->step = (int)budget;
+  _deadlineTimer = d;
+  Serial.printf(
+      "Resident::Sandbox: execution deadline %lu ms (%lu instructions/ms)\n",
+      (unsigned long)_config.executionDeadlineMs, (unsigned long)d->perMs);
+}
+
+void Sandbox::destroyExecutionDeadlineTimer()
+{
+  if (!_deadlineTimer) return;
+  if (_lua) lua_sethook(_lua, nullptr, 0, 0);
+  delete static_cast<InstructionDeadline*>(_deadlineTimer);
+  _deadlineTimer = nullptr;
+}
+
+void Sandbox::startDeadlineTimer()
+{
+  InstructionDeadline* d = static_cast<InstructionDeadline*>(_deadlineTimer);
+  _deadlineArmed = true;
+  _deadlineExpired = false;
+  _runningThread = _lua;
+  d->expiresAt = d->counted + (uint64_t)_config.executionDeadlineMs * d->perMs;
+  lua_sethook(_lua, instructionCountHook, LUA_MASKCOUNT, d->step);
+}
+
+bool Sandbox::stopDeadlineTimer()
+{
+  const bool expired = _deadlineExpired;
+  _deadlineArmed = false;
+  _deadlineExpired = false;
+  _runningThread = _lua;
+  // A coroutine keeps its hook, and its count, into the next dispatch; the
+  // hook removes itself if it runs outside one.
+  if (_lua) lua_sethook(_lua, nullptr, 0, 0);
+  return expired;
+}
+
+void Sandbox::setRunningThread(lua_State* co)
+{
+  if (!_deadlineTimer) return;
+  _runningThread = co;
+  if (!_deadlineArmed) return;
+  if (_deadlineExpired) {
+    lua_sethook(co, executionDeadlineHook, LUA_MASKCOUNT, 1);
+  } else if (lua_gethook(co) != instructionCountHook) {
+    // Only a thread not already counting: setting the hook restarts the
+    // thread's count, which a fast enough ping-pong would never finish.
+    const InstructionDeadline* d =
+        static_cast<const InstructionDeadline*>(_deadlineTimer);
+    lua_sethook(co, instructionCountHook, LUA_MASKCOUNT, d->step);
+  }
+}
+
+#elif defined(ESP_PLATFORM)
 
 void Sandbox::executionDeadlineTimeout(void* arg)
 {

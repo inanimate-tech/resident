@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New features
+
+- **An instruction-counted execution deadline, for builds with no clock to trust.** `-DRESIDENT_DEADLINE_INSTRUCTIONS=1` counts the deadline in Lua instructions instead of wall-clock time: a dispatch may run `executionDeadlineMs` × `SandboxConfig::deadlineInstrPerMs` (default 5000, an ESP32-S3's rate) instructions, then ends with the same `execution deadline exceeded (N ms)` error. It covers every coroutine, as the wall-clock deadline does, and the soft deadline and `slow_dispatch` read the same count as elapsed time. For a host build that has no timer to interrupt the VM (WebAssembly without threads), or that runs many times faster than the device, so that it stops the apps the device would stop.
+
 ### Fixes
 
 - **The execution deadline can no longer be caught or outrun.** The hook that aborts a dispatch removed itself before it raised, and the timer fires once, so `while true do pcall(spin) end` caught the one abort and then ran unguarded. A Lua hook also belongs to one thread, and only the main thread was hooked, so a loop inside a coroutine was never stopped. Either kept the loop for as long as the app liked. Once the deadline has passed, the hook now stays installed and raises on every instruction until the dispatch returns. `coroutine.resume`, `coroutine.wrap` and `coroutine.close` are wrapped to track the running thread: the timer hooks that thread, and a coroutine resumed after the deadline is hooked before it runs. Lua that runs while the abort unwinds, such as a `__close` handler, stops at its first instruction. A Lua `xpcall` message handler is not called after the deadline, and the error passes through as it is.

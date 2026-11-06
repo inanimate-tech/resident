@@ -16,6 +16,17 @@
 #include "ResidentSystemMic.h"
 #include "ResidentPersistentStore.h"
 
+// The execution deadline's backend, chosen at build time. 0 (the default) is
+// the wall-clock one: an esp_timer on device, a worker thread on a host. 1
+// counts Lua instructions instead, against executionDeadlineMs *
+// deadlineInstrPerMs: for a build with no timer that can interrupt the VM,
+// such as WebAssembly without threads, or one whose clock runs at another
+// speed than the device's, where the deadline should stop the app the device
+// would stop rather than the one this host is too slow or too fast for.
+#ifndef RESIDENT_DEADLINE_INSTRUCTIONS
+#define RESIDENT_DEADLINE_INSTRUCTIONS 0
+#endif
+
 namespace Resident {
 
 using TelemetryCallback = std::function<void(const char* json)>;
@@ -114,6 +125,19 @@ struct SandboxConfig {
   // `slow_dispatch` telemetry event — and allowed to finish. Independent of
   // executionDeadlineMs and of the platform; 0 = no reporting.
   uint32_t executionSoftDeadlineMs = 0;
+
+  // Lua VM instructions that stand for one millisecond of the deadlines in a
+  // RESIDENT_DEADLINE_INSTRUCTIONS build (ignored otherwise): the hard
+  // deadline is executionDeadlineMs * deadlineInstrPerMs instructions, and
+  // the soft deadline and `slow_dispatch` read instructions / this rate as
+  // the dispatch's elapsed time. 5000 is an ESP32-S3: a recursive
+  // fib(24), 825k instructions, runs in 163 ms there, 5060 per ms. Calls are
+  // among the dearer instructions, so a loop of cheap ones runs faster on the
+  // device than this, and an instruction build is the stricter of the two
+  // there; time spent inside C (a binding, drawing) is not counted at all,
+  // so for a dispatch that spends most of its time in C it is the more
+  // lenient. 0 is taken as the default.
+  uint32_t deadlineInstrPerMs = 5000;
 
   // Framework module (0.8): privileged runtime code the sandbox hosts
   // OUTSIDE the app — its own environment, the runtime-channel sender,
