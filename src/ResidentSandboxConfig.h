@@ -84,6 +84,19 @@ struct SandboxConfig {
   bool persistApps = true;
   PersistentStore* persistentStore = nullptr;
 
+  // App quarantine. An app that is running when the device resets
+  // abnormally (panic, watchdog, brownout) counts a crash; deliberate
+  // restarts (esp_restart, OTA, the reset pin) and power cycles do not.
+  // After appCrashLimit consecutive crashes the app is quarantined: it is
+  // not restored at boot and a load of the same source is refused, until a
+  // `forget`, the countdown long press, a tap to run it anyway, or a load of
+  // a different app clears it. An app that runs for appCleanMs without a
+  // crash has its count cleared. The count lives in RTC memory, so only
+  // ESP32 builds count; elsewhere nothing survives a reset to count with.
+  // appCrashLimit 0 disables the quarantine.
+  uint8_t appCrashLimit = 3;
+  uint32_t appCleanMs = 10UL * 60UL * 1000UL;
+
   // Offline-first (0.8): ticking and event dispatch no longer gate on
   // connectivity — a disconnected device keeps running its app; only
   // network sends wait. Set true to restore the old gated behavior.

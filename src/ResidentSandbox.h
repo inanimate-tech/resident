@@ -115,7 +115,17 @@ public:
                       const char* channel = "driver");
 
     // Forget any persisted app (so the next boot has nothing to restore).
+    // Also clears an app quarantine.
     void clearPersistedApp();
+
+    // App quarantine (see ResidentAppHealth.h and SandboxConfig::appCrashLimit).
+    // True while an app that kept crashing the device is held back: it is not
+    // restored at boot, a load of the same source is refused (telemetry
+    // `app_quarantined`), the hello's `app` carries `quarantined:{crashes}`
+    // and the idle screen says "App paused". clearAppQuarantine() lets it run
+    // again, with a fresh crash count; the quarantined source stays persisted.
+    bool isAppQuarantined() const { return _quarantinedHash != 0; }
+    void clearAppQuarantine();
 
     // State queries
     bool isAppRunning() const;
@@ -642,6 +652,9 @@ private:
     // the device ID for BOOT_COUNTDOWN_MS before auto-loading the persisted
     // app. Hard-coded duration.
     String _pendingPersistedSource;
+    // The pending source is the quarantined app: the countdown is a pause,
+    // not a restore — it ends on the idle screen unless a tap runs it.
+    bool _pendingIsQuarantined = false;
     unsigned long _countdownStartMs = 0;
     int _lastCountdownSecondShown = -1;
     static constexpr unsigned long BOOT_COUNTDOWN_MS = 20000;
@@ -651,6 +664,17 @@ private:
     // standalone setup): identity screen + countdown if an app is persisted,
     // else just the identity screen. No-op once an app is loaded/counting down.
     void enterIdleScreen();
+
+    // App quarantine. The crash record itself is platform memory owned by
+    // ResidentSandbox.cpp; these are the sandbox's view of it.
+    uint32_t _quarantinedHash = 0;      // 0 = nothing quarantined
+    uint32_t _quarantinedCrashes = 0;
+    unsigned long _appArmedAtMs = 0;
+    bool _appForgiven = true;           // clean period already credited
+    void bootAppHealth();               // setup(): read last run's record
+    void armAppHealth(uint32_t hash);   // an app is about to run
+    void disarmAppHealth();             // no app is running
+    void updateAppHealth();             // loop(): credit the clean period
 
     // SystemButton gesture tracking during the countdown (Pending): a tap
     // loads the saved app, a long press forgets it. pressed() is a level read,

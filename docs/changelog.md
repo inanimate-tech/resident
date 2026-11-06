@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- **App quarantine: a saved app that keeps crashing the device stops being run.** Until now a saved app that panicked or hung the device was restored after every reset and crashed it again, a loop that only a person holding the button through the boot countdown could break. The sandbox now keeps a crash record in RTC no-init memory, armed just before an app's `init()` runs. An abnormal reset while it is armed (panic, watchdog, brownout) counts a crash; a deliberate restart does not, because a shutdown handler disarms the record on `esp_restart()` and the reset reason is checked as well. After `SandboxConfig::appCrashLimit` (default 3) consecutive crashes of the same app, its source hash is stored in a new `PersistentStore` quarantine slot (NVS key `resident/quarantine`) and the app is not restored; its source stays saved. A load of the same source is refused (telemetry `app_quarantined`), the hello's `app` carries `quarantined: {crashes}`, and the identity screen reads "App paused". An app that runs for `appCleanMs` (default 10 minutes) without a crash has its count cleared. `forget`, the countdown long press, a tap on the paused countdown (run it anyway), a successful load of a different app, or the new `Sandbox::clearAppQuarantine()` clear it. Only ESP32 builds count crashes: elsewhere nothing survives a reset. See `docs/api.md` §App quarantine.
+- `PersistentStore` gains `saveQuarantine`/`loadQuarantine`/`clearQuarantine`, with inert defaults: a custom store that does not override them keeps a quarantine for the boot it tripped in only.
+
+---
+
 ## v0.12.0
 
 ### Breaking changes

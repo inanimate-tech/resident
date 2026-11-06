@@ -134,11 +134,45 @@ public:
     nvs_close(h);
   }
 
+  // App quarantine slot — same namespace, its own key: {hash, crashes} as
+  // two little-endian u32s. Written only when a quarantine trips or clears.
+  bool saveQuarantine(uint32_t hash, uint32_t crashes) override {
+    uint32_t rec[2] = {hash, crashes};
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) return false;
+    esp_err_t err = nvs_set_blob(h, KEY_QUARANTINE, rec, sizeof(rec));
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err == ESP_OK;
+  }
+
+  bool loadQuarantine(uint32_t& hash, uint32_t& crashes) override {
+    uint32_t rec[2] = {0, 0};
+    size_t len = sizeof(rec);
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return false;
+    esp_err_t err = nvs_get_blob(h, KEY_QUARANTINE, rec, &len);
+    nvs_close(h);
+    if (err != ESP_OK || len != sizeof(rec)) return false;
+    hash = rec[0];
+    crashes = rec[1];
+    return true;
+  }
+
+  void clearQuarantine() override {
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_erase_key(h, KEY_QUARANTINE);
+    nvs_commit(h);
+    nvs_close(h);
+  }
+
 private:
   static constexpr const char* NS  = "resident";
   static constexpr const char* KEY = "app";
   static constexpr const char* KEY_STORE = "store";
   static constexpr const char* KEY_FRAMEWORK = "framework";
+  static constexpr const char* KEY_QUARANTINE = "quarantine";
 };
 
 } // namespace Resident
