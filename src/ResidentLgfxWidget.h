@@ -40,7 +40,11 @@
 #if __has_include(<lvgl.h>) && __has_include(<luavgl.h>)
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#ifdef ESP_PLATFORM
+#include <esp_heap_caps.h>
+#endif
 
 #include "ResidentFrameWidget.h"
 #include "ResidentLgfxWidgetCore.h"
@@ -90,16 +94,47 @@ public:
 
 using CanvasFactory = Canvas* (*)();
 
-// A Canvas over any LovyanGFX-shaped sprite (LGFX_Sprite, M5Canvas).
+// The canvas's pixels: in PSRAM whenever the board has any. The app sizes the
+// widget, and internal RAM is what the network stack and the board's own
+// tasks need, and a widget of 110 x 110 is already 24 KB of it. A board
+// without PSRAM has only internal RAM.
+inline void* allocPixels(size_t bytes) {
+#ifdef ESP_PLATFORM
+  const uint32_t caps = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0
+                            ? MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+                            : MALLOC_CAP_8BIT;
+  return heap_caps_malloc(bytes, caps);
+#else
+  return malloc(bytes);
+#endif
+}
+
+inline void freePixels(void* p) {
+#ifdef ESP_PLATFORM
+  heap_caps_free(p);
+#else
+  free(p);
+#endif
+}
+
+// A Canvas over any LovyanGFX-shaped sprite (LGFX_Sprite, M5Canvas), drawing
+// into a buffer the canvas allocates. LovyanGFX's own sprites cannot keep the
+// pixels out of internal RAM: setPsram(false) allocates internal DMA RAM, and
+// setPsram(true) falls back to it when PSRAM is short.
 template <class TSprite>
 class SpriteCanvas : public Canvas {
 public:
+  ~SpriteCanvas() override { release(); }
+
   bool resize(int32_t w, int32_t h) override {
-    if (_s.getBuffer() && _s.width() == w && _s.height() == h) return true;
-    _s.deleteSprite();
-    _s.setColorDepth(16);
-    _s.setPsram(w * h * 2 > 32 * 1024);   // small sprites stay in fast internal RAM
-    return _s.createSprite(w, h) != nullptr;
+    if (_buf && _s.width() == w && _s.height() == h) return true;
+    release();
+    if (w <= 0 || h <= 0) return false;
+    _buf = allocPixels(static_cast<size_t>(w) * static_cast<size_t>(h) * 2);
+    if (!_buf) return false;
+    _s.setColorDepth(16);   // with no buffer, only sets the colour conversions
+    _s.setBuffer(_buf, w, h, 16);
+    return true;
   }
   const uint16_t* pixels() const override {
     return static_cast<const uint16_t*>(const_cast<TSprite&>(_s).getBuffer());
@@ -154,7 +189,14 @@ public:
   void drawString(const char* s, int32_t x, int32_t y) override { _s.drawString(s, x, y); }
 
 private:
+  void release() {
+    _s.deleteSprite();   // a sprite over our buffer does not free it
+    freePixels(_buf);
+    _buf = nullptr;
+  }
+
   TSprite _s;
+  void* _buf = nullptr;
 };
 
 template <class TSprite>
