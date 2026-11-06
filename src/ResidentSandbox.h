@@ -48,6 +48,15 @@
 #define RESIDENT_EVENT_QUEUE_SIZE 16
 #endif
 
+// Lua incremental-GC pause on boards without PSRAM, applied with the rest of
+// the collector policy at state creation and at every app load (see
+// Sandbox::applyGcPolicy). A cycle starts once the heap grows to pause/100
+// of its live size; the default is Lua's own 200, as on boards with PSRAM.
+// Override with a build flag, e.g. -DRESIDENT_NO_PSRAM_GC_PAUSE=150.
+#ifndef RESIDENT_NO_PSRAM_GC_PAUSE
+#define RESIDENT_NO_PSRAM_GC_PAUSE 200
+#endif
+
 namespace Resident {
 
 class Sandbox {
@@ -474,6 +483,13 @@ private:
     // Fresh app environment (R5): baseline snapshot + per-load reset.
     void snapshotBaselineGlobals();
     void resetAppGlobals();
+
+    // The collector's settings: running, incremental, the board's pause and
+    // Lua's default step multiplier and size. GC state belongs to the one
+    // shared Lua state, so an app's collectgarbage("stop") or mode change
+    // would otherwise hold for every later app and the framework; this runs
+    // at state creation and at every app load.
+    void applyGcPolicy();
 
     // ── Execution guard (R8): per-dispatch wall-clock deadline ──
     void armExecutionGuard();
