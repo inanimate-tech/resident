@@ -55,7 +55,7 @@ Resident pulls in WiFi, ezTime, WiFiManager, Courier, ArduinoJson, Esp32Lua, and
 
 The bring-up `setup()` code stays — peripheral init still happens before Resident takes over. On top:
 
-- Add the in-tree Resident library to `lib_deps` (`symlink://<path-to-resident-root>`) along with its runtime deps: Courier (git URL), `tzapu/WiFiManager`, `bblanchon/ArduinoJson`, `ropg/ezTime`, `fischer-simon/Esp32Lua`.
+- Add the in-tree Resident library to `lib_deps` (`symlink://<path-to-resident-root>`) along with its runtime deps: Courier (git URL), `tzapu/WiFiManager`, `bblanchon/ArduinoJson`, `ropg/ezTime`, `inanimate/Esp32Lua`.
 - Add a custom `partitions.csv` — Resident's stack pushes the binary toward 1.2 MB; the default 4 MB layout's `app0` slice (~1.4 MB) leaves no head-room. The Feather example uses 2.5 MB app + 1.4 MB SPIFFS.
 - Implement a `Resident::SystemDisplay` subclass that paints connection-state text (`"WiFi"`, `"Connecting"`, `"Connected"`, then the device ID) on whatever output the board has — a TFT, an OLED, a NeoPixel, or just plain serial. Resident's internal handler calls `displayText()` on every connection state transition automatically, no wiring required.
 - Build a `Resident::SandboxConfig`: set `deviceType`, point `systemDisplay` at the subclass, leave `extensions` empty for this step. Assign `cfg.network` from a `Courier::Config` populated via direct field assignment (`courier.host = "resident.inanimate.tech"; cfg.network = courier;` — designated initializers don't compile under strict ESP-IDF builds).
