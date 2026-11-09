@@ -18,7 +18,7 @@ From this directory:
 idf.py build
 ```
 
-The fetch step clones [Esp32Lua](https://github.com/Fischer-Simon/Esp32Lua)
+The fetch step clones [Esp32Lua](https://github.com/inanimate-tech/Esp32Lua)
 and [ezTime](https://github.com/ropg/ezTime) and shims each as an IDF
 component under `components/`. Neither is on the ESP Component Registry.
 Both are pinned by commit SHA, idempotent (skips if already present), and

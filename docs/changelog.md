@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.13.1
+
+### Dependencies
+
+- **Esp32Lua is now `inanimate/Esp32Lua` `^1.0.0` (was `fischer-simon/Esp32Lua` `^5.4.7`).** It is a maintained fork of the same library, with the same Lua 5.4.7 core. Its wrapper builds on GCC 14 (Arduino core 3.x / ESP-IDF 5.5), and a git install of it no longer compiles the `lua.c` and `luac.c` entry points. Resident's code is unchanged.
+- **If your project lists `fischer-simon/Esp32Lua` in its own `lib_deps`, change it to `inanimate/Esp32Lua@^1.0.0`.** PlatformIO treats the two as different packages, so keeping the old name installs both, and they contend for one `Esp32Lua` directory in libdeps. A git URL of this library in `lib_deps` has the same effect.
+
+---
+
 ## v0.13.0
 
 ### Breaking changes
