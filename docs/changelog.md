@@ -1,10 +1,39 @@
 # Changelog
 
+
 ## Unreleased
 
 ### Changes
 
 - **A board without PSRAM runs Lua's collector with a pause of 120, not 200.** Without PSRAM, Lua's garbage shares the internal heap with the network stack, and Lua's default pause lets garbage grow to the size of the live heap before a cycle starts. On an M5StickC Plus 1.1, with an allocation-heavy app and 12 app pushes, the worst-case largest free block went from 24.6–30.7 KB to 63.5–69.6 KB. The cost is collector CPU time: about 9% less Lua throughput in a benchmark that allocates without pause. `RESIDENT_NO_PSRAM_GC_PAUSE` overrides the value (1..1023; anything else fails the build); 150 measured about halfway on both counts. Boards with PSRAM are unchanged.
+
+## v0.13.1
+
+### Dependencies
+
+- **Esp32Lua is now `inanimate/Esp32Lua` `^1.0.0` (was `fischer-simon/Esp32Lua` `^5.4.7`).** It is a maintained fork of the same library, with the same Lua 5.4.7 core. Its wrapper builds on GCC 14 (Arduino core 3.x / ESP-IDF 5.5), and a git install of it no longer compiles the `lua.c` and `luac.c` entry points. Resident's code is unchanged.
+- **If your project lists `fischer-simon/Esp32Lua` in its own `lib_deps`, change it to `inanimate/Esp32Lua@^1.0.0`.** PlatformIO treats the two as different packages, so keeping the old name installs both, and they contend for one `Esp32Lua` directory in libdeps. A git URL of this library in `lib_deps` has the same effect.
+
+---
+
+## v0.13.0
+
+### Breaking changes
+
+- **A Lua display handle's `get_layer_sys` is nil.** The system layer is the firmware's (below), so `LvglModule` hides it from apps: an app that drew on it through `lvgl.disp.get_default():get_layer_sys()` or a handle's `.disp` gets nil instead. `get_layer_top` is unchanged and remains the app's layer above its screens.
+
+### New features
+
+- **The system layer: firmware draws above any app, without suspending it.** `LvglModule::systemLayer(name)` returns a display's `lv_layer_sys` — above every screen an app makes, composed into the app's own frames, redrawn only where it changes — for a status strip, a voice indicator or a progress line over whatever is running. Asking for it creates the display if no app has bound it yet, and from then the module keeps LVGL running with no app loaded. Its objects survive every app reset (`luavgl_app_reset` deletes only what Lua made). It is hidden from Lua: display handles lose `get_layer_sys`. When it may draw is `SystemLayerGate` (`ResidentSystemLayer.h`, native-tested): carried by the app's frames while an app owns the target; drawn alone over the board's own content while nobody does, which the board's driver repaints when the layer empties; stood down for `lgfx.bind` and while the app is suspended. See `docs/api.md` §"The system layer".
+- **`LvglModule::addSystemDisplay(name, panel)`: a display no app can reach.** For a status glass that belongs to the firmware: not in `RenderTargets`, refused by `lvgl.bind`, skipped by luavgl's display list, never the default display.
+- **`LvglModule::repaintSystemLayer(name)`.** A board's driver that draws its own content straight to the glass calls it afterwards, so the system layer it covered is redrawn on top.
+- **`Extension::runsWithoutApp()`.** An extension with work of the firmware's own to do with no app loaded answers `true` and is updated every loop, as the system roles are.
+- **`DisplayDriver::restoreContent()`.** The repaint hook moves up from `SystemDisplay` (which keeps it, with the overlay arbiter's contract), so a screen's display driver can be asked to put its content back when the system layer empties over it.
+
+### Changes
+
+- **A display whose system layer is asked for is created then, not at an app's first bind**, and so can be LVGL's default display before any app binds one (a system-only display never is). Apps bind displays by name and are unaffected; firmware that relied on the first app bind making a display the default should bind or set it explicitly.
+- **`lvgl.disp` is a proxy for luavgl's display library**, which reads through to it with `get_next` filtered; every function it had is still there.
 
 ---
 

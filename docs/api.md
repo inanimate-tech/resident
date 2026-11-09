@@ -377,6 +377,7 @@ Include with:
 | `update()` | no-op | Per-loop tick at full main-loop rate (not Lua's 10 FPS) |
 | `onAppReset()` | no-op | Called before each new app is compiled |
 | `onAppRunning(bool running)` | no-op | Called when an app starts or resumes (`true`), and when it stops or is suspended (`false`) |
+| `runsWithoutApp() const` | `false` | `update()` runs every loop for the system roles and, for any other extension, only while an app is loaded. Answer `true` to be updated with no app too, for work of the firmware's own (`LvglModule` does once a [system layer](#the-system-layer) is in use) |
 
 ### Idempotent early init
 
@@ -686,7 +687,7 @@ public:
 
 Settings arrive one key at a time, in no set order, through `setScreen`; `commitScreen(i, L)` then runs once per `screens.set` call, so a driver whose settings constrain each other (a one-bit screen's `black` below its `white`) stages them and validates together, raising with `luaL_error`.
 
-`screen(i)` must be safe at static init: it states facts and pointers and measures nothing (geometry is read from the target when needed). One driver may own several screens. Every `SystemDisplay` is a `DisplayDriver` with no screens by default, so a status-only display declares none and a dual-role one (status text and the app's glass) overrides `screenCount()`/`screen()`.
+`screen(i)` must be safe at static init: it states facts and pointers and measures nothing (geometry is read from the target when needed). One driver may own several screens. `restoreContent()` repaints what the driver shows when nothing else owns its glass (its status text, a last frame); the overlay arbiter calls it when a `SystemDisplay`'s last claim releases, and `LvglModule` when a [system layer](#the-system-layer) empties over a screen no app has bound. Every `SystemDisplay` is a `DisplayDriver` with no screens by default, so a status-only display declares none and a dual-role one (status text and the app's glass) overrides `screenCount()`/`screen()`.
 
 ## Resident::SystemDisplay
 
@@ -997,7 +998,7 @@ lvglModule.addDisplay("main", opts);            // or addDisplay("main")
 // cfg.extensions = {..., &lvglModule};
 ```
 
-`DisplayOptions` also takes a board-supplied draw buffer (`buffer` + `bufferBytes`, e.g. `heap_caps_malloc(..., MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)`); leave it null and the module allocates with `lv_malloc`. The `lv_display_t` is created **on the first bind**, so a board whose apps never use LVGL allocates no display and no buffers. `LV_COLOR_DEPTH` must be 16 (the blit contract is RGB565); the flush byte-swaps LVGL's little-endian pixels into the panel's wire order.
+`DisplayOptions` also takes a board-supplied draw buffer (`buffer` + `bufferBytes`, e.g. `heap_caps_malloc(..., MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)`); leave it null and the module allocates with `lv_malloc`. The `lv_display_t` is created **on the first bind** — or when firmware first asks for its [system layer](#the-system-layer) — so a board whose apps never use LVGL and whose firmware draws on no system layer allocates no display and no buffers. `LV_COLOR_DEPTH` must be 16 (the blit contract is RGB565); the flush byte-swaps LVGL's little-endian pixels into the panel's wire order.
 
 ```lua
 local h = lvgl.bind("main")    -- raises a Lua error for unknown names
@@ -1012,6 +1013,24 @@ h:set_theme { screen = { bg_color = "#0b0b10" } }
 **Widgets.** A board can add its own C++ widget class, constructed from Lua like any other (`parent:Name{...}`): `lvglModule.addWidget(install)` (up to `LvglModule::MAX_WIDGETS` = 8, set before the sandbox runs). `install(lua_State*)` runs on every `bind`, once luavgl is loaded, so it must be idempotent — the sandbox clears globals made after boot at each app load, so a helper global an installer sets is put back for every app: it adds a constructor to luavgl's `"widgets"` registry table (every object's method lookup falls through to it; build with `luavgl_obj_create_helper`) and creates the class's metatable with `luavgl_obj_newmetatable`, so the widget's own `set` takes its own keys and hands the rest to `luavgl_obj_set_property_kv`. It leaves the stack as it found it. luavgl itself is unchanged: this is its public API.
 
 **`lvgl.bind(name)` is also the ownership claim** ([bind is the claim](#bind-is-the-claim-ownership)): it creates the display if needed, takes the target from whoever held it, and invalidates the whole active screen so the takeover repaints every pixel the other library left behind. While this module does NOT own the target, the flush callback returns without touching the panel and the display's refresh timer is paused — that is how a wiped, unowned tree can no longer race a blank frame onto the glass behind the incoming app. `onAppReset` releases the claim, uninstalls the theme Lua set, and replaces each display's active screen with a fresh one, deleting the old tree (luavgl invalidates Lua handles on C-side deletion). It then calls `luavgl_app_reset`, which deletes the app's timers and running anims (without their `done_cb`), its objects on the display layers and on screens it never loaded, and releases its theme styles and Styles: nothing of the outgoing app runs under the next one. A handle the app kept to a timer raises "timer is null". This needs a luavgl with `luavgl_app_reset`. Handle-level caching (one handle per display) stays luavgl's business. Themes are Lua's business: the module bakes none, and apps install their own via `h:set_theme{...}`.
+
+### The system layer
+
+Firmware can draw above whatever app is running, on any LVGL display, without an overlay claim and without suspending the app: a status strip, a voice indicator, a progress line. The layer is LVGL's own `lv_layer_sys` of that display — objects above every screen, composed into the app's frames and redrawn only where they change.
+
+```cpp
+lv_obj_t* layer = lvglModule.systemLayer("main");   // after sandbox.setup() (LVGL is initialised there)
+lv_obj_t* strip = lv_obj_create(layer);             // build with LVGL's C API, on the loop task
+```
+
+- **`systemLayer(name)`** returns the layer, creating the display then if no app has bound it yet (the layer must be able to draw at boot), or `nullptr` for an unknown name or a display with no panel. From the first call the module is updated with no app loaded (`runsWithoutApp`).
+- **Kept across apps.** App reset replaces screens and `luavgl_app_reset` deletes only objects Lua created, so the firmware's objects stay.
+- **Hidden from Lua.** Display handles lose `get_layer_sys`, and luavgl's display list (`lvgl.disp.get_next`, a handle's `get_next`) skips system-only displays. Done in Resident; luavgl is unchanged.
+- **When it draws** is `SystemLayerGate`'s decision (`ResidentSystemLayer.h`, native-tested), made once per update: with an app owning the target (`lvgl.bind`), the app's frames carry the layer, as without one, and it waits out a suspension with the app. With nobody owning it, the glass shows whatever the board's own display driver last drew (boot text, an idle screen): the layer draws over that while it has a visible child, and nothing else does. When it starts, whatever LVGL had pending (its own empty screen, the areas objects crossed while hidden) is rendered and dropped first. When it empties, the target's driver repaints its content (`DisplayDriver::restoreContent`). With another library owning the target (`lgfx.bind`) the layer stands down.
+- A child counts as visible unless it is `LV_OBJ_FLAG_HIDDEN` or fully transparent; hide the layer's content rather than leaving an empty object on it.
+- **`repaintSystemLayer(name)`**: a board whose display driver draws its own content straight to the glass (status text with no app) calls this after drawing, so the layer, which that drawing covered, is redrawn on top. A no-op unless the layer is showing over a glass nobody owns.
+
+**`addSystemDisplay(name, panel[, opts])`** declares a display only the firmware draws on — a status glass no app may reach. It is not registered in `RenderTargets` (so `screens` does not list it), `lvgl.bind` refuses its name, luavgl's display list skips it, and it is never LVGL's default display. Its system layer is all it shows.
 
 ### `store` module
 

@@ -15,9 +15,10 @@ public:
   // Repaint the surface's underlying content (last app frame, idle screen,
   // prior status text) after the last overlay claiming this surface
   // releases. Called by the overlay arbiter — overlays themselves never
-  // restore. Default no-op: correct for dedicated surfaces with nothing
-  // underneath.
-  virtual void restoreContent() {}
+  // restore. Declared on DisplayDriver (LvglModule's system layer calls it
+  // too); restated here because this is where the arbiter's contract lives.
+  // Default no-op: correct for dedicated surfaces with nothing underneath.
+  void restoreContent() override {}
 };
 
 } // namespace Resident

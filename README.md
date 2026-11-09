@@ -189,7 +189,7 @@ lib_deps =
     tzapu/WiFiManager@^2.0.17
     bblanchon/ArduinoJson@^7.4.2
     ropg/ezTime@^0.8.3
-    fischer-simon/Esp32Lua@^5.4.7
+    inanimate/Esp32Lua@^1.0.0
 ```
 
 ### ESP-IDF (Arduino as component)
