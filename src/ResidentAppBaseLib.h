@@ -13,9 +13,12 @@
 //   at app reset, with hooks off (lgc.c: GCTM clears allowhook), so the
 //   execution deadline cannot stop it, and an error in it is only a
 //   warning. One `while true do end` there hangs the VM for good, and a
-//   persisted app re-arms it on every boot. Lua reads __gc raw, and only
-//   when the metatable is attached (luaC_checkfinalizer), so checking the
-//   raw field here is the whole check: adding __gc afterwards does nothing.
+//   persisted app re-arms it on every boot. Whether an object has a
+//   finalizer is decided once, when the metatable is attached, from its raw
+//   __gc (luaC_checkfinalizer), so checking the raw field here is the whole
+//   check for tables: adding __gc afterwards registers nothing. GCTM reads
+//   __gc again when the finalizer runs, which is why the userdata rule
+//   below matters.
 // - getmetatable returns nil for userdata. A binding's userdata metatables
 //   are shared by every object of the type and are usually not locked, so
 //   `getmetatable(obj).__gc = f` would redirect the native finalizer of
@@ -43,14 +46,14 @@ inline int setmetatable(lua_State* L) {
   const int t = lua_type(L, 2);
   luaL_checktype(L, 1, LUA_TTABLE);
   luaL_argexpected(L, t == LUA_TNIL || t == LUA_TTABLE, 2, "nil or table");
+  if (luaL_getmetafield(L, 1, "__metatable") != LUA_TNIL)
+    return luaL_error(L, "cannot change a protected metatable");
   if (t == LUA_TTABLE) {
     lua_pushliteral(L, "__gc");
     const bool hasGc = lua_rawget(L, 2) != LUA_TNIL;
     lua_pop(L, 1);
     if (hasGc) return luaL_error(L, "setmetatable: __gc is not available to apps");
   }
-  if (luaL_getmetafield(L, 1, "__metatable") != LUA_TNIL)
-    return luaL_error(L, "cannot change a protected metatable");
   lua_settop(L, 2);
   lua_setmetatable(L, 1);
   return 1;
