@@ -117,6 +117,7 @@ The Feather exposes three drivers — see [`device/lib/drivers/src/`](../example
 - **Lifecycle of driver state across apps.** On `onAppReset()`, restore a safe baseline: clear the canvas, turn the NeoPixel off, stop any audio. The next app should see fresh hardware. The example: `LEDDriver::onAppReset()` does `setPixelColor(0, 0); show();`.
 - **Order of hardware init vs `sandbox.setup()`.** Build and `init()` the underlying Adafruit / vendor objects in `main.cpp` *before* calling `sandbox.setup()`. The driver's own `begin()` runs inside Resident's lifecycle and assumes the hardware is already up.
 - **Event-emitting drivers.** Drivers can call `sendEvent(name, fields, count)` to surface hardware events to Lua's `on_event`. The m5stick-demo's `PushButtonsDriver` is the canonical example (button presses → `event.name == "button"`, `event.data.index == 0|1`).
+- **A system button, if the board has one.** Assigning a driver to `systemButton` gives the boot countdown its tap and long press, and `onSystemButtonHold` its hold. The runtime takes the button as timestamped edges (`Resident::SystemButton::takeEdge`), never a level: turning the hardware into debounced press and release edges is the driver's job, from an interrupt, a timer, or sampling in `update()`. The m5stick-demo's `PushButtonsDriver` samples in `update()`. See [`docs/api.md`](api.md#residentsystembutton).
 
 ### What the agent should be able to demonstrate
 

@@ -131,14 +131,14 @@ public:
     bool isAppSuspended() const;
 
     // Runtime hold gesture on the SystemButton role slot. cb(true) fires once
-    // when a hold crosses the threshold; cb(false) on release. Fires whenever
-    // an app is loaded OR the device is idle — inert during the boot countdown
-    // (RunState::Pending), where handleCountdownButton owns the button, so the
-    // two never process the same press within a single tick. Note: on a device
-    // that BOTH persists apps AND wires this to the same button, holding
-    // through the countdown's forget-gesture and continuing past the hold
-    // threshold can fire a hold enter without an intervening release; no
-    // shipped example combines these. Optional — unset means no hold handling.
+    // a press has lasted the threshold (timed from the button's edge
+    // timestamps); cb(false) at its release. A hold released before the loop
+    // got back still fires both, in order. Fires whenever an app is loaded OR
+    // the device is idle — inert during the boot countdown (RunState::Pending),
+    // where the countdown owns the button. A press belongs to whichever of the
+    // two saw its down edge: a press that began in the countdown never becomes
+    // a hold, and one that began outside it never ends the countdown (see
+    // serviceSystemButton). Optional — unset means no hold handling.
     using SystemButtonHoldCallback = std::function<void(bool held)>;
     void onSystemButtonHold(SystemButtonHoldCallback cb) { _onHoldCb = std::move(cb); }
 
@@ -663,23 +663,27 @@ private:
     // else just the identity screen. No-op once an app is loaded/counting down.
     void enterIdleScreen();
 
-    // SystemButton gesture tracking during the countdown (Pending): a tap
-    // loads the saved app, a long press forgets it. pressed() is a level read,
-    // so the runtime times the hold itself.
-    bool _buttonWasDown = false;
-    unsigned long _buttonDownSince = 0;
-    bool _longPressFired = false;
+    // SystemButton gestures. Each loop pass serviceSystemButton() drains the
+    // button's edges and replays them, in order, into one of two trackers:
+    // the countdown's while Pending (a tap loads the saved app, a long press
+    // forgets it), the hold detector's otherwise (onSystemButtonHold). Each
+    // edge goes to the tracker for the state at the moment it is replayed, so
+    // a countdown gesture that ends Pending part-way through a drain hands the
+    // edges after it to the hold detector.
     static constexpr unsigned long SYSTEM_BUTTON_LONG_PRESS_MS = 1000;
-    // Returns true when a gesture ended the countdown (loaded or forgot).
-    bool handleCountdownButton();
-
-    // Runtime hold detector (distinct state from the countdown gesture).
-    SystemButtonHoldCallback _onHoldCb;
-    bool _holdWasDown = false;
-    unsigned long _holdDownSince = 0;
-    bool _holdFired = false;
     static constexpr unsigned long SYSTEM_BUTTON_HOLD_MS = 500;
-    void updateSystemButtonHold();
+    PressTracker _countdownPress{SYSTEM_BUTTON_LONG_PRESS_MS};
+    PressTracker _holdPress{SYSTEM_BUTTON_HOLD_MS};
+    SystemButtonHoldCallback _onHoldCb;
+    // Which tracker the button was last handed to (true = the countdown's).
+    bool _buttonInCountdown = false;
+    void serviceSystemButton();
+    // Hands the button to the tracker for the current state, if that changed
+    // since it was last handed over: the outgoing tracker's press in progress
+    // is dropped, a hold in progress ended with cb(false) first.
+    void routeSystemButton();
+    void countdownGesture(const PressGestures& g);
+    void holdGesture(const PressGestures& g);
 
     // Mic streaming pump state.
     bool _micStreaming = false;

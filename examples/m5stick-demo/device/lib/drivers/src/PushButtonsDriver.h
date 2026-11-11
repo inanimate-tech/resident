@@ -12,8 +12,15 @@ struct PushButtonsConfig {
 };
 
 // Also acts as the Resident::SystemButton (button 0 — the front button), so the
-// runtime can read it directly during the boot countdown (tap = load now, long
-// press = forget the saved app), independent of the app-facing button events.
+// runtime takes its edges directly for the boot countdown (tap = load now, long
+// press = forget the saved app) and the hold gesture, independent of the
+// app-facing button events.
+//
+// The pins give only a level, so update() samples them and queues an edge for
+// button 0 at each debounced change, stamped at the sample that saw it. update()
+// and the runtime's drain both run on the loop task, so the queue needs no
+// locking. Sampling once per loop pass makes the edges only as timely as the
+// loop; a board whose button raises an interrupt would queue them from there.
 class PushButtonsDriver : public Resident::SystemButton {
 public:
   explicit PushButtonsDriver(const PushButtonsConfig& config);
@@ -28,9 +35,9 @@ public:
 
   int pressCount(lua_State* L);
 
-  // Resident::SystemButton — debounced held-level of button 0, maintained by
+  // Resident::SystemButton — button 0's queued edges, oldest first, filled by
   // update() (called every loop while this is the system button).
-  bool pressed() override;
+  bool takeEdge(Resident::ButtonEdge& edge) override;
 
   uint16_t getTotalPressCount() const;
 
@@ -65,6 +72,14 @@ private:
   };
   LongPressConfig _longPress[MAX_BUTTONS];
 
+  // Button 0's edges, waiting for takeEdge(). Drained every loop pass, so it
+  // holds at most a press and a release; if it is ever full, a new edge is
+  // dropped (the runtime ignores the unpaired edge that leaves).
+  static constexpr uint8_t EDGE_QUEUE_LEN = 8;
+  Resident::ButtonEdge _edges[EDGE_QUEUE_LEN] = {};
+  uint8_t _edgeHead = 0;
+  uint8_t _edgeCount = 0;
+  void queueEdge(bool down, unsigned long ms);
 };
 
 #endif // PUSH_BUTTONS_DRIVER_H

@@ -7,15 +7,14 @@
 namespace {
 
 // A SystemButton spy usable as the systemButton slot (a peripheral) and/or an
-// extension. Counts begin()/update(); pressed() returns a settable level.
+// extension. Counts begin()/update(); it never has an edge queued.
 class SpyButton : public Resident::SystemButton {
 public:
   int beginCount = 0, updateCount = 0;
-  bool down = false;
   const char* name() const override { return "spy-button"; }
   void begin() override { beginCount++; }
   void update() override { updateCount++; }
-  bool pressed() override { return down; }
+  bool takeEdge(Resident::ButtonEdge&) override { return false; }
 };
 
 // A plain Driver spy (a non-peripheral extension). Counts begin()/update().

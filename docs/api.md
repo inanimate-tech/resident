@@ -50,7 +50,7 @@ void loop()  { sandbox.loop(); }
 | `executionDeadlineMs` | `uint32_t` | `1000` | Per-dispatch **wall-clock** hard deadline, in milliseconds (init / one tick / one event / one chunk / each framework hook). No Lua hook is installed at dispatch start; a one-shot timer installs a stopping hook once the deadline passes. Over-deadline aborts the dispatch with a `runtime_error` (`execution deadline exceeded (N ms)`); the app survives. Available on every platform; `0` = no hard guard. |
 | `executionSoftDeadlineMs` | `uint32_t` | `0` | Per-dispatch **wall-clock** soft deadline, in milliseconds. A dispatch that outlives it is reported — a rate-limited serial line plus a `slow_dispatch` telemetry event — and allowed to finish. Measured at disarm, so it also covers time spent inside a blocking C binding, where no Lua hook fires. Independent of `executionDeadlineMs` and available on every platform; `0` = no reporting. |
 | `framework` | `std::optional<FrameworkConfig>` | unset | Embed a framework module: `{name, version, source}` — privileged Lua the sandbox hosts outside the app (see [Framework modules](#framework-modules)). |
-| `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
+| `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button whose edges the runtime takes to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` (see [Resident::SystemButton](#residentsystembutton)) and pass a pointer here. |
 | `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). On M5 boards use the shipped `Resident::M5Mic` (`#include <ResidentM5Mic.h>`); otherwise implement `Resident::SystemMic`. Not a `Driver` — the pump owns its `begin()`/`end()`. |
 | `persistentStore` | `Resident::PersistentStore*` | `nullptr` | Override the backing store for persistence. `nullptr` uses NVS on device; inject a fake in tests. |
 | `statusDisplay` | `SystemDisplay*` | `nullptr` | **Deprecated** — use `systemDisplay`. Kept as a fallback; a compile-time warning nudges migration. |
@@ -283,7 +283,7 @@ sandbox.isAppRunning();                // true when an app is compiled and activ
 sandbox.suspendApp();                  // pause the running app's tick without unloading it
 sandbox.resumeApp();                   // resume a suspended app
 sandbox.isAppSuspended();              // true between suspendApp() and resumeApp()
-sandbox.onSystemButtonHold(cb);        // cb(true) on hold (past threshold), cb(false) on release
+sandbox.onSystemButtonHold(cb);        // cb(true) once a press lasts the threshold, cb(false) at its release
 sandbox.addOverlay(&ov, &surface, prio); // register a claim on a display surface, with priority
 sandbox.requestOverlay(&ov, show);       // request show/hide; per-surface arbitration picks winners
 sandbox.removeOverlay(&ov);              // deregister (tears the overlay down, resumes app if it suspended)
@@ -309,7 +309,7 @@ sandbox.clearPersistedApp();           // wipe the saved app from the persistent
 
 `suspendApp` pauses the Lua tick (`on_tick` and event dispatch) without unloading the app — Courier and extension `update()` keep running. While suspended, every declared extension receives `onAppRunning(false)` so the status display is freed for direct text (e.g. a "Listening" overlay via `SystemDisplay::displayText()`); `resumeApp` reverses this with `onAppRunning(true)`. Both are no-ops when no app is loaded, and repeated calls don't re-notify. `isAppRunning()` stays `true` while suspended — suspension is a separate axis queried via `isAppSuspended()`. Events arriving while suspended are queued, not dropped (though a long suspend can overflow the 8-slot ring, losing the oldest), and `loadApp` always clears suspension.
 
-`onSystemButtonHold(cb)` turns the `systemButton` role slot into a runtime hold gesture: `cb(true)` fires once when the button is held past the threshold (~500 ms), `cb(false)` on release. It is inert only during the boot countdown (where a hold forgets the persisted app), so it also fires in `Ready` with no app loaded. Combined with an [Overlay](#residentoverlay) and the [SystemMic](#residentsystemmic) streaming pump it composes into push-to-talk with no per-device boilerplate — see the `m5stick-voice` example.
+`onSystemButtonHold(cb)` turns the `systemButton` role slot into a runtime hold gesture: `cb(true)` fires once a press has lasted the threshold (500 ms), `cb(false)` at its release. Both are timed from the button's edge timestamps, not from when the loop looks, so a hold released while an app callback held the loop still fires both, in order, and two quick taps either side of a long callback are never read as one hold. It is inert only during the boot countdown (where a long press forgets the persisted app), so it also fires in `Ready` with no app loaded. A press belongs to whichever of the two saw it start: a press begun during the countdown never becomes a hold, and a hold in progress when the countdown begins is ended with `cb(false)`. Combined with an [Overlay](#residentoverlay) and the [SystemMic](#residentsystemmic) streaming pump it composes into push-to-talk with no per-device boilerplate — see the `m5stick-voice` example.
 
 `addOverlay` / `requestOverlay` / `removeOverlay` and `startMicStream` / `stopMicStream` / `isMicStreaming` / `setMicStreamSink` are covered under [Resident::Overlay](#residentoverlay) and [Resident::SystemMic](#residentsystemmic).
 
@@ -480,7 +480,8 @@ runs on a single de-duplicated list every loop:
 - **Role peripherals** (whatever you assign to `config.systemDisplay` /
   `systemLED` / `systemButton`) update **every loop, always** — so
   the status screen and system button work before any app exists and across a
-  brief reconnect.
+  brief reconnect. The system button's queued edges are drained after the
+  update walk, on every loop whatever the state.
 - **Other extensions** update **only while an app is loaded** (running or
   suspended).
 - **Connectivity gates neither** `update()`, nor the Lua `on_tick` (unless
@@ -737,6 +738,43 @@ public:
 | `solidColor(uint32_t color)` | *(pure virtual)* | Set the LED to a packed `0xRRGGBB` color — called by Resident's internal handler on connection state changes |
 
 Resident's internal handler calls `solidColor` automatically as the connection state changes (yellow during WiFi setup, cyan while transports connect, green when connected, orange while reconnecting, red on failure). `SystemLED` is a `Driver` subclass and therefore inherits the standard `Driver` lifecycle: `begin()` is called once during `Sandbox::setup()` and `update()` is called every loop (both default to no-ops). Override `begin()` to initialize LED hardware there rather than in the constructor.
+
+---
+
+## Resident::SystemButton
+
+A button the runtime takes directly, as a stream of **edges**, never as a level. Assign one via `SandboxConfig::systemButton`. The runtime makes two gestures from it: during the boot countdown a tap loads the saved app now and a long press (1 s) forgets it ([App persistence](#app-persistence)); outside the countdown a hold (500 ms) drives `onSystemButtonHold` ([Sandbox controls](#sandbox-controls)). It is distinct from any app-facing button driver, whose events reach the app only while one runs.
+
+```cpp
+#include <ResidentSystemButton.h>   // pulled in by ResidentSandboxConfig.h
+
+namespace Resident {
+struct ButtonEdge {
+  bool down;     // true = press, false = release
+  uint32_t ms;   // when it happened, on the millis() clock
+};
+
+class SystemButton : public Driver {
+public:
+  virtual bool takeEdge(ButtonEdge& edge) = 0;
+};
+}
+```
+
+Each loop pass, after the driver `update()` walk, the sandbox calls `takeEdge()` until it returns `false`, replaying the edges in order. It drains on every pass whatever the state, so no edge waits to fire a gesture later. Every duration is measured between edge timestamps (or from a press's down edge to the time of the pass, for a hold still in progress), so a press made while an app callback held the loop for hundreds of milliseconds is late, never lost or misread.
+
+The contract an implementation keeps:
+
+| | |
+|---|---|
+| Order | `takeEdge()` hands over the oldest queued edge and returns `true`, or returns `false` when none is queued. Edges come out in the order they happened, press and release alternating. |
+| Timestamp | `ButtonEdge::ms` is when the edge happened, on the `millis()` clock — not when `takeEdge()` is called. |
+| Debounce | Edges are debounced; contact bounce is the implementation's to filter. |
+| Concurrency | The sandbox drains on the loop task. An edge queued from an interrupt or a timer needs a queue that is safe for one context writing while another reads: a single-producer, single-consumer ring, or a critical section around push and pop. |
+
+Converting hardware into edges is the integrator's job. A button that raises an interrupt, or one sampled from a timer, queues each edge from there. A button that only gives a level is sampled on the integrator's side — in the driver's `update()` (which runs every loop for a role peripheral) or a timer — emitting an edge on each debounced change, stamped at the sample that saw it. Sampled once per loop, edges are only as timely as the loop: a press shorter than a long app callback can be missed entirely, so sample from a timer or take an interrupt where that matters. The m5stick-demo's `PushButtonsDriver` samples in `update()`.
+
+The gestures are made by `Resident::PressTracker` (`ResidentButtonEdge.h`), pure and header-only, which an integrator can also use for gestures of their own: `edge(e)` and `poll(nowMs)` return a `PressGestures` (`tap`, `holdStart`, `holdEnd`). A hold starts once the press has lasted the threshold — at `poll()` while the button is still down, or on the release edge itself if no poll saw it in time — and an up edge with no press in progress is ignored.
 
 ---
 
@@ -1211,7 +1249,7 @@ Type: <deviceType>
 20s
 ```
 
-You need the device ID to push apps to the device, so the countdown is a reminder. It is a timer (not press-to-continue) because not every board has a button. An app arriving over the network also ends the countdown (it loads the incoming app). If a `SystemButton` is configured, then during the countdown a **tap** loads the saved app immediately and a **long press** (≥1s) forgets it — the device then settles on the ready screen with nothing to restore.
+You need the device ID to push apps to the device, so the countdown is a reminder. It is a timer (not press-to-continue) because not every board has a button. An app arriving over the network also ends the countdown (it loads the incoming app). If a `SystemButton` is configured, then during the countdown a **tap** loads the saved app immediately and a **long press** (≥1s) forgets it as soon as it has lasted that long — the device then settles on the ready screen with nothing to restore. Both are timed from the button's edge timestamps. A press still down when the countdown ends (by a gesture, by running out, or by an app arriving) is dropped: its release is neither a countdown gesture nor a hold.
 
 When **no** app is loaded — a fresh device, or after a load fails — the status display rests on the same identity screen without the countdown line:
 
@@ -1227,7 +1265,7 @@ If a saved app fails to load — for example after the firmware was reflashed wi
 Config fields related to persistence:
 
 - `persistApps` (default `true`) — turn persistence off for a build.
-- `systemButton` (`Resident::SystemButton*`, default `nullptr`) — a button the runtime polls to skip the countdown.
+- `systemButton` (`Resident::SystemButton*`, default `nullptr`) — a button whose edges the runtime takes to skip the countdown.
 - `persistentStore` (`Resident::PersistentStore*`, default `nullptr`) — override the backing store; `nullptr` uses NVS on device.
 
 Send `{"type":"forget"}` (or call `clearPersistedApp()`) to wipe the saved app.

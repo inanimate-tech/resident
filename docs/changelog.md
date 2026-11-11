@@ -2,7 +2,16 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- **`SystemButton` hands the runtime edges, not a level: `pressed()` is gone, replaced by `takeEdge(ButtonEdge&)`.** The sandbox timed its button gestures (the boot countdown's tap and long press, and `onSystemButtonHold`) by sampling `pressed()` once per loop pass. Across an app callback that ran for hundreds of milliseconds, two quick, separate taps that were each down when the loop looked read as one press held across the gap, and started a hold nobody made. The runtime now takes the button as a stream of `Resident::ButtonEdge { bool down; uint32_t ms; }`, each stamped with when it happened, drains every queued edge on every loop pass, and times each gesture from the edges' own timestamps. A hold released before the loop got back is still a hold, never a tap. Thresholds (1 s long press, 500 ms hold) and `onSystemButtonHold`'s signature are unchanged. There is no level adapter: converting hardware into edges is the integrator's job.
+  - **Migration.** Replace `bool pressed() override` with `bool takeEdge(Resident::ButtonEdge& edge) override`, which hands over the oldest queued edge and returns `true`, or returns `false` when none is queued. Queue a debounced edge at each press and release, stamped with `millis()` at the moment it happened. A button that raises an interrupt or is sampled from a timer queues from there, through a queue safe for one context writing while the loop task reads (a single-producer, single-consumer ring, or a critical section). A driver that only has a level samples it in its own `update()`, as the m5stick-demo's `PushButtonsDriver` does, and queues an edge at each debounced change. See `docs/api.md` §"Resident::SystemButton".
+  - **A press belongs to whichever gesture saw it start.** A press still down when the boot countdown ends (by a tap or long press, by running out, or by an app arriving) is dropped, and its release is no hold. This also stops a long press that forgot the saved app from going on to fire a hold. A hold in progress when the countdown begins is ended with `onSystemButtonHold(false)`.
+  - **An app load no longer resets the hold detector.** With presses timed from their own edges there is no stale state to clear, so a hold in progress across an app load ends at its own release with `onSystemButtonHold(false)`.
+
 ### New features
+
+- **`Resident::PressTracker` (`ResidentButtonEdge.h`).** The pure, header-only tracker the sandbox makes its button gestures with: it replays `ButtonEdge`s into `tap`, `holdStart` and `holdEnd`, with `poll(nowMs)` firing a hold while the button is still down. Native-tested, and usable by an integrator for gestures of their own.
 
 - **`Sandbox::handleRuntimeMessage(transportName, type, doc)`, the runtime plane's own entry point.** It runs the same checks as `handleAppMessage` (self-echo, the nonce ring, the size cap, the gate) and delivers `event.channel == "runtime"`. Courier's default transport routes a frame stating `channel:"runtime"` to it. A wrapper with its own receive path calls it only from an ingress that only the device's own host can write.
 
