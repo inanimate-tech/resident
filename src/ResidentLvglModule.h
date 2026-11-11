@@ -94,9 +94,13 @@ public:
   // pointer; nothing is allocated until that display's first bind.
   static constexpr int MAX_DISPLAYS = 8;
 
+  // The largest draw buffer made for a whole panel without being asked.
+  static constexpr size_t kWholePanelBytes = 64 * 1024;
+
   struct DisplayOptions {
     int32_t dpi = 0;           // 0 = leave LVGL's default
-    int32_t bufferRows = 0;    // 0 = auto (panel height / 10, min 8 rows)
+    int32_t bufferRows = 0;    // 0 = auto: the whole panel if that is at most
+                               // kWholePanelBytes, else its height / 10 (min 8)
     void* buffer = nullptr;    // board-supplied draw buffer (e.g. DMA-capable
     size_t bufferBytes = 0;    // internal RAM); else allocated with lv_malloc
   };
@@ -441,7 +445,12 @@ private:
       buf = frame.px;
       bytes = (size_t)w * (size_t)h * 2u;
     } else {
-      int32_t rows = s.opts.bufferRows > 0 ? s.opts.bufferRows : h / 10;
+      // A band is a pass over the widget tree, so a small glass gets a
+      // buffer for the whole of it (up to kWholePanelBytes of LVGL's heap)
+      // and is drawn in one; a larger one a tenth of its height.
+      int32_t rows = s.opts.bufferRows > 0 ? s.opts.bufferRows
+                   : (size_t)w * (size_t)h * 2u <= kWholePanelBytes ? h
+                   : h / 10;
       if (rows < 8) rows = 8;
       if (rows > h) rows = h;
       bytes = (size_t)w * (size_t)rows * 2u;   // RGB565
@@ -450,6 +459,13 @@ private:
         if (s.opts.bufferBytes < bytes) bytes = s.opts.bufferBytes;
       } else {
         buf = lv_malloc(bytes);
+        // No room in LVGL's heap for the whole panel (its built-in pool is
+        // often 64 KB in all): the band buffer it would have had before.
+        if (!buf && s.opts.bufferRows <= 0 && rows == h && h / 10 < h) {
+          rows = h / 10 < 8 ? (h < 8 ? h : 8) : h / 10;
+          bytes = (size_t)w * (size_t)rows * 2u;
+          buf = lv_malloc(bytes);
+        }
       }
       if (!buf || bytes < (size_t)w * 2u) return false;
     }
@@ -712,10 +728,20 @@ private:
       s->panel->presentFrame(area->x1, area->y1, w, h);
     } else {
       // LVGL renders RGB565 little-endian; PanelTarget::blit takes the panel's
-      // wire order (big-endian). Swap in place — the buffer is LVGL's own.
+      // wire order (big-endian). Swap in place — the buffer is LVGL's own —
+      // two pixels a word (the buffer is word-aligned, LV_DRAW_BUF_ALIGN).
       uint16_t* px = (uint16_t*)px_map;
       uint32_t n = (uint32_t)w * (uint32_t)h;
-      for (uint32_t i = 0; i < n; i++) px[i] = __builtin_bswap16(px[i]);
+      uint32_t i = 0;
+      if (((uintptr_t)px & 3u) == 0) {
+        uint32_t* p32 = (uint32_t*)(void*)px;
+        for (const uint32_t pairs = n >> 1; i < pairs; i++) {
+          const uint32_t v = p32[i];
+          p32[i] = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
+        }
+        i <<= 1;
+      }
+      for (; i < n; i++) px[i] = __builtin_bswap16(px[i]);
       s->panel->blit(area->x1, area->y1, w, h, px);
     }
     const bool last = lv_display_flush_is_last(disp);

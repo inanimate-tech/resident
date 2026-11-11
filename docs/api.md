@@ -1024,12 +1024,13 @@ Resident::LvglModule lvglModule;
 Resident::RenderTargets::addPanel("main", &myPanel);
 Resident::LvglModule::DisplayOptions opts;
 opts.dpi = 240;                                 // 0 = LVGL's default
-opts.bufferRows = 14;                           // 0 = auto (height/10, min 8)
+opts.bufferRows = 14;                           // 0 = auto: the whole panel if that is
+                                                // at most 64 KB, else height/10 (min 8)
 lvglModule.addDisplay("main", opts);            // or addDisplay("main")
 // cfg.extensions = {..., &lvglModule};
 ```
 
-`DisplayOptions` also takes a board-supplied draw buffer (`buffer` + `bufferBytes`, e.g. `heap_caps_malloc(..., MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)`); leave it null and the module allocates with `lv_malloc`. The `lv_display_t` is created **on the first bind** — or when firmware first asks for its [system layer](#the-system-layer) — so a board whose apps never use LVGL and whose firmware draws on no system layer allocates no display and no buffers. `LV_COLOR_DEPTH` must be 16 (the blit contract is RGB565); the flush byte-swaps LVGL's little-endian pixels into the panel's wire order.
+`DisplayOptions` also takes a board-supplied draw buffer (`buffer` + `bufferBytes`, e.g. `heap_caps_malloc(..., MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)`); leave it null and the module allocates with `lv_malloc`: with `bufferRows` at 0, a buffer for the whole panel when that is at most 64 KB (`kWholePanelBytes`), so a small glass is drawn in one pass, falling back to height/10 rows if LVGL's heap cannot give it. The `lv_display_t` is created **on the first bind** — or when firmware first asks for its [system layer](#the-system-layer) — so a board whose apps never use LVGL and whose firmware draws on no system layer allocates no display and no buffers. `LV_COLOR_DEPTH` must be 16 (the blit contract is RGB565); the flush byte-swaps LVGL's little-endian pixels into the panel's wire order.
 
 ```lua
 local h = lvgl.bind("main")    -- raises a Lua error for unknown names
