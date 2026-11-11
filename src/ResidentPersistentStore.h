@@ -4,6 +4,7 @@
 
 #include <Arduino.h>   // String
 #include <cstddef>
+#include <cstdint>
 
 namespace Resident {
 
@@ -49,6 +50,22 @@ public:
   }
   virtual String loadFramework() { return String(); }
   virtual void clearFramework() {}
+
+  // ── Fourth slot: the app quarantine ───────────────────────────────────
+  // The source hash of an app that crashed the device too many times in a
+  // row, and how many times it took (see ResidentAppHealth.h). Independent
+  // of the slots above: the quarantined app's source stays in the app slot
+  // so a person can choose to run it again. Inert defaults: without
+  // overrides a quarantine holds for the boot it tripped in only.
+  virtual bool saveQuarantine(uint32_t hash, uint32_t crashes) {
+    (void)hash; (void)crashes;
+    return false;
+  }
+  virtual bool loadQuarantine(uint32_t& hash, uint32_t& crashes) {
+    (void)hash; (void)crashes;
+    return false;
+  }
+  virtual void clearQuarantine() {}
 
   virtual ~PersistentStore() = default;
 };
