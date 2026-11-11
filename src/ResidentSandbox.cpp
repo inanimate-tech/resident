@@ -12,6 +12,7 @@
 #include "ResidentDatetime.h"
 #include "ResidentAppBaseLib.h"
 #include "ResidentAppHealth.h"
+#include "ResidentFastTrig.h"
 
 extern "C" {
   #include "lua/lua.h"
@@ -353,6 +354,27 @@ void Sandbox::initialize()
   }
 
   luaL_openlibs(_lua);
+
+#ifdef ESP_PLATFORM
+  // math.sin and math.cos, with ResidentFastTrig.h's reduction for large
+  // arguments in place of newlib's (17 us a call there against under 1 us
+  // for a small one). On the device only: a host's libm has no such cliff,
+  // and its results stay exactly libm's. SandboxConfig::fastTrig turns it off.
+  lua_getglobal(_lua, "math");
+  if (_config.fastTrig && lua_istable(_lua, -1)) {
+    lua_pushcfunction(_lua, [](lua_State* L) -> int {
+      lua_pushnumber(L, (lua_Number)fasttrig::sin((float)luaL_checknumber(L, 1)));
+      return 1;
+    });
+    lua_setfield(_lua, -2, "sin");
+    lua_pushcfunction(_lua, [](lua_State* L) -> int {
+      lua_pushnumber(L, (lua_Number)fasttrig::cos((float)luaL_checknumber(L, 1)));
+      return 1;
+    });
+    lua_setfield(_lua, -2, "cos");
+  }
+  lua_pop(_lua, 1);
+#endif
 
   // Store sandbox instance in registry
   lua_pushlightuserdata(_lua, this);
