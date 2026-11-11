@@ -138,6 +138,14 @@ struct SandboxConfig {
   // region would be most of the internal heap.
   uint8_t luaArenaRegions = 8;
 
+  // math.sin and math.cos reduce a large argument (|x| between 200 and 2^20)
+  // themselves on an ESP32 (ResidentFastTrig.h), where newlib takes about
+  // twenty times as long over one as over a small one. The result is within
+  // 2 ulp of newlib's, not always the same float, so an app that hashes with
+  // the low bits of a large sine (sin(x * 12.9898) * 43758.5) can draw a
+  // different pattern. false = newlib's own, bit for bit.
+  bool fastTrig = true;
+
   // Framework module (0.8): privileged runtime code the sandbox hosts
   // OUTSIDE the app — its own environment, the runtime-channel sender,
   // lifecycle interception, and a persistent update slot written only by

@@ -27,6 +27,7 @@
 - **`string.dump` is removed from the app environment** unless `openUnsafeLibs` is set, as `load` already was. It only makes bytecode, which nothing loads now.
 - **A small display's LVGL draw buffer covers the whole panel.** With `DisplayOptions::bufferRows` left at 0 and no board buffer, a panel of at most 64 KB of RGB565 (`LvglModule::kWholePanelBytes`: 240x135, 128x128, 256x48) gets a draw buffer for all of it from `lv_malloc`, so a frame is one pass over the widget tree instead of ten bands. If LVGL's heap has no room for that, it falls back to the height/10 buffer it had before. A larger panel is unchanged. To keep the small buffer, set `bufferRows`.
 - **The flush swaps bytes two pixels a word.** No visible change.
+- **`math.sin` and `math.cos` of a large argument are about five times faster on an ESP32, and can differ from newlib's in the last place.** For |x| between 200 and 2^20 Resident reduces the argument itself (`ResidentFastTrig.h`) instead of taking newlib's general reduction, which costs about 17 us a call on an ESP32-S3 against under 1 us for a small argument. The result is within 2 ulp of the true value, not always newlib's float: an app that hashes with the low bits of a large sine (`sin(x * 12.9898) * 43758.5`) can draw a different pattern. Smaller and larger arguments, and every host build, are newlib's or libm's own. `SandboxConfig::fastTrig = false` restores newlib's results bit for bit.
 
 ### Breaking changes
 
