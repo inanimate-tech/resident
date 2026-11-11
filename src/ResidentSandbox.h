@@ -527,6 +527,10 @@ private:
     // Records a hard abort; the HARD_ABORT_LIMIT-th inside
     // HARD_ABORT_WINDOW_MS suspends the app (`app_throttled`).
     void noteHardAbort();
+    // Removes the deadline hook from L unless the deadline has expired,
+    // under the lock the timer installs hooks under, so a stale hook cannot
+    // remove one the timer has just put back. True if it removed it.
+    bool clearStaleHook(struct lua_State* L);
 
     // A hook set with lua_sethook covers one thread, so the guard follows the
     // thread that is running. coroutine.resume/wrap/close are wrapped to
