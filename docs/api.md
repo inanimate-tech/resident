@@ -1241,10 +1241,10 @@ Send `{"type":"forget"}` (or call `clearPersistedApp()`) to wipe the saved app.
 
 A saved app that crashes the device would otherwise crash it again on every boot. The sandbox counts the crashes and stops running an app that keeps causing them.
 
-- **What counts.** The sandbox arms a small record just before an app's `init()` runs, and disarms it when no app is running. An abnormal reset while it is armed — a panic, a watchdog reset or a brownout — counts one crash. A deliberate restart does not: `esp_restart()` (OTA, a host asking for a restart) runs a shutdown handler that disarms the record, and a software, reset-pin or host-triggered reset is not counted whatever the record says. A power cycle starts the count from zero.
+- **What counts.** The sandbox arms a small record just before an app's `init()` runs, and disarms it when no app is running. An abnormal reset while it is armed — a panic, a watchdog reset or a brownout — counts one crash. A deliberate restart does not: `esp_restart()` (OTA, a host asking for a restart) reads back as a software reset, and a software, reset-pin or host-triggered reset is not counted whatever the record says. The record is armed for as long as an app is loaded, so a crash in firmware code while an app runs counts against that app too. A power cycle starts the count from zero.
 - **Where it lives.** The record is in RTC no-init memory, which survives a reset but not a power cycle, so nothing is written to flash per boot. Builds without RTC memory (native tests, simulators) keep it in ordinary memory, so nothing survives a reset and nothing ever trips.
-- **Tripping.** After `appCrashLimit` (default 3) consecutive crashes of the same app, the app's source hash and the crash count are stored in the `PersistentStore` quarantine slot (NVS key `resident/quarantine`), telemetry `app_quarantined` (error `"3 consecutive crashes"`) is emitted, and the app is not restored. Its source stays saved. Running a *different* app starts a new count; the same app re-sent by a host keeps counting.
-- **Clean running.** An app that runs for `appCleanMs` (default 10 minutes) without a crash has its count cleared.
+- **Tripping.** After `appCrashLimit` (default 3) crashes of the same app, with no other app crashing in between, the app's source hash and the crash count are stored in the `PersistentStore` quarantine slot (NVS key `resident/quarantine`), telemetry `app_quarantined` (error `"3 consecutive crashes"`) is emitted, and the app is not restored. Its source stays saved. The count belongs to the app that crashed: running another app in between (the saved app restored at boot, say) neither clears it nor adds to it, and the same app re-sent by a host keeps counting. An app is identified by the exact bytes of its source, so a host that changes any byte sends a different app with a count of its own; a host that reads `quarantined` in the hello should not re-send the same source.
+- **Clean running.** An app that runs for `appCleanMs` (default 10 minutes) without a crash has its own count cleared.
 - **While quarantined.** A load of the same source is refused before anything is torn down (telemetry `app_quarantined`, error `"load refused"`), the [hello](#hello)'s `app` carries `quarantined: {crashes}`, and the identity screen gains a first line:
 
 ```
@@ -1254,7 +1254,7 @@ Type: <deviceType>
 ```
 
   There is no boot countdown for a quarantined app, on any board: the device goes straight to the screen above and stays there. The app cannot be started from the device: the system button neither runs it (a tap) nor forgets it (a long press).
-- **Clearing it.** Only `forget` (`clearPersistedApp()`), which clears the saved app and the quarantine, or a successful load of a different app. A load of the same source stays refused.
+- **Clearing it.** Only `forget` (`clearPersistedApp()`), which clears the saved app, the quarantine and the count, or a successful load of a different app sent by a host. Restoring the saved app at boot does not clear it, since the app that crashed may never have been saved (a crash in `init()` comes before the save). A load of the same source stays refused.
 
 A custom `PersistentStore` keeps quarantines across reboots by overriding `saveQuarantine`/`loadQuarantine`/`clearQuarantine`; without them a quarantine holds only for the boot it tripped in.
 
