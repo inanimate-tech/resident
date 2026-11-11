@@ -63,9 +63,9 @@ streams audio as binary frames on that same socket.
 Push-to-talk is built entirely on Resident's core primitives, wired up in
 `onSystemButtonHold` (see `device/src/main.cpp`):
 
-- **Hold detection** — `PushButtonsDriver` doubles as the `SystemButton` role;
-  the sandbox derives the hold/release gesture from it and calls back with
-  `held`.
+- **Hold detection** — `PushButtonsDriver` doubles as the `SystemButton` role
+  and queues the front button's press and release edges; the sandbox times the
+  hold from their timestamps and calls back with `held`.
 - **"Listening" overlay** — while held, `requestOverlay` raises a claim on
   the dual-role display and the overlay paints "Listening" in `onAcquire`.
   Because the display is dual-role, the claim suspends the app (there is no

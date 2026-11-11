@@ -1,12 +1,14 @@
 // Behavioral tests for app persistence: save-on-success, restore, and the
 // boot countdown. Compiles the real ResidentSandbox.cpp against the native
 // stub set, networkless. A FakePersistentStore stands in for NVS; a
-// SpyDisplay captures status text; a SpyButton drives the countdown skip.
+// SpyDisplay captures status text; a FakeSystemButton queues the edges that
+// drive the countdown skip and the hold detector.
 #include <unity.h>
 #include <string>
 #include <vector>
 
 #include "ResidentSandbox.cpp"
+#include "FakeSystemButton.h"
 
 namespace {
 
@@ -39,18 +41,12 @@ public:
   std::string last() const { return texts.empty() ? "" : texts.back(); }
 };
 
-class SpyButton : public Resident::SystemButton {
-public:
-  const char* name() const override { return "spy-button"; }
-  bool down = false;
-  bool pressed() override { return down; }
-};
-
 FakeStore* store = nullptr;
 SpyDisplay* display = nullptr;
-SpyButton* button = nullptr;
+FakeSystemButton* button = nullptr;
 Resident::Sandbox* sandbox = nullptr;
 std::vector<std::string>* telemetry = nullptr;
+std::vector<bool> holds;
 
 constexpr const char* GOOD_APP =
     "function init(ctx) end\n"
@@ -68,8 +64,11 @@ void makeSandbox(bool persist, bool withButton) {
   sandbox->setTelemetryCallback([](const char* json) {
     telemetry->push_back(json ? json : "");
   });
+  sandbox->onSystemButtonHold([](bool held) { holds.push_back(held); });
   sandbox->setup();
 }
+
+void loopAt(unsigned long ms) { testMillis() = ms; sandbox->loop(); }
 
 bool telemetryHas(const char* name) {
   for (auto& t : *telemetry)
@@ -83,8 +82,9 @@ void setUp(void) {
   testMillis() = 0;
   store = new FakeStore();
   display = new SpyDisplay();
-  button = new SpyButton();
+  button = new FakeSystemButton();
   telemetry = new std::vector<std::string>();
+  holds.clear();
   sandbox = nullptr;
 }
 
@@ -167,25 +167,126 @@ void test_button_tap_loads_app_now(void) {
   store->save(GOOD_APP, strlen(GOOD_APP));
   makeSandbox(/*persist=*/true, /*withButton=*/true);
 
-  sandbox->loop();                    // counting down, button up
-  button->down = true;  sandbox->loop();   // press
-  button->down = false; sandbox->loop();   // quick release → tap
+  loopAt(0);                          // counting down, no edges
+  button->press(10);  loopAt(10);     // press
+  TEST_ASSERT_FALSE(sandbox->isAppRunning());
+  button->release(80); loopAt(80);    // quick release → tap
 
   TEST_ASSERT_TRUE(sandbox->isAppRunning());   // saved app loaded
   TEST_ASSERT_TRUE(telemetryHas("app_restored"));
+  TEST_ASSERT_EQUAL_INT(0, (int)holds.size()); // a tap, not a hold
 }
 
 void test_button_long_press_forgets_app(void) {
   store->save(GOOD_APP, strlen(GOOD_APP));
   makeSandbox(/*persist=*/true, /*withButton=*/true);
 
-  sandbox->loop();                    // counting down
-  button->down = true;  sandbox->loop();          // press at t=0
-  testMillis() = 1000;  sandbox->loop();          // held ≥ 1000ms → long press
+  loopAt(0);                                      // counting down
+  button->press(0);  loopAt(0);                   // press at t=0
+  loopAt(999);
+  TEST_ASSERT_TRUE(store->hasValue);              // not yet
+  loopAt(1000);                                   // held 1000 ms, still down
 
   TEST_ASSERT_FALSE(sandbox->isAppRunning());     // not loaded
   TEST_ASSERT_FALSE(store->hasValue);             // persisted app forgotten
   TEST_ASSERT_TRUE(store->clearCalls >= 1);
+}
+
+// The loop was away for the whole long press: both edges arrive on one pass,
+// and the press is timed from them — a long press, never a tap that loads.
+void test_long_press_released_before_the_loop_looked_forgets(void) {
+  store->save(GOOD_APP, strlen(GOOD_APP));
+  makeSandbox(true, true);
+
+  loopAt(0);
+  button->press(100);
+  button->release(1300);
+  loopAt(1500);
+
+  TEST_ASSERT_FALSE(sandbox->isAppRunning());
+  TEST_ASSERT_FALSE(store->hasValue);
+  TEST_ASSERT_FALSE(telemetryHas("app_restored"));
+}
+
+// Holding on past the forget, then releasing: the press began in the
+// countdown, so it never becomes a hold once the countdown has ended.
+void test_long_press_held_on_after_forget_is_not_a_hold(void) {
+  store->save(GOOD_APP, strlen(GOOD_APP));
+  makeSandbox(true, true);
+
+  loopAt(0);
+  button->press(0);  loopAt(0);
+  loopAt(1000);                                   // forgotten; now Ready
+  TEST_ASSERT_FALSE(store->hasValue);
+  loopAt(1600);                                   // 600 ms on in Ready
+  loopAt(2500);
+  button->release(3000); loopAt(3000);
+  TEST_ASSERT_EQUAL_INT(0, (int)holds.size());
+
+  // The next press is the hold detector's.
+  button->press(4000); loopAt(4000);
+  loopAt(4500);
+  button->release(4600); loopAt(4600);
+  TEST_ASSERT_EQUAL_INT(2, (int)holds.size());
+  TEST_ASSERT_TRUE(holds[0]);
+  TEST_ASSERT_FALSE(holds[1]);
+}
+
+// A tap that ends the countdown, then a hold, queued together and drained on
+// one pass: the tap is the countdown's (it loads the app) and the edges after
+// it go to the hold detector.
+void test_edges_after_a_countdown_tap_go_to_the_hold_detector(void) {
+  store->save(GOOD_APP, strlen(GOOD_APP));
+  makeSandbox(true, true);
+
+  loopAt(0);
+  button->press(10);
+  button->release(60);                // tap → load the saved app
+  button->press(200);
+  button->release(900);               // 700 ms → a hold
+  loopAt(1000);
+
+  TEST_ASSERT_TRUE(sandbox->isAppRunning());
+  TEST_ASSERT_TRUE(store->hasValue);  // loaded, not forgotten
+  TEST_ASSERT_EQUAL_INT(2, (int)holds.size());
+  TEST_ASSERT_TRUE(holds[0]);
+  TEST_ASSERT_FALSE(holds[1]);
+}
+
+// A press still down when the countdown runs out belongs to the countdown:
+// it is dropped when the app loads, and its release (long after its down edge)
+// is not a hold.
+void test_press_across_the_countdown_deadline_is_dropped(void) {
+  store->save(GOOD_APP, strlen(GOOD_APP));
+  makeSandbox(true, true);
+
+  loopAt(0);
+  button->press(19700); loopAt(19700);
+  loopAt(20000);                      // deadline: the app loads
+  TEST_ASSERT_TRUE(sandbox->isAppRunning());
+  loopAt(20400);
+  button->release(20800); loopAt(20800);
+
+  TEST_ASSERT_EQUAL_INT(0, (int)holds.size());
+  TEST_ASSERT_TRUE(store->hasValue);
+}
+
+// An app arriving over the network ends the countdown mid-press: that press is
+// neither a countdown gesture nor a hold.
+void test_press_across_a_network_push_is_dropped(void) {
+  store->save(GOOD_APP, strlen(GOOD_APP));
+  makeSandbox(true, true);
+
+  loopAt(0);
+  button->press(100); loopAt(100);
+  const char* OTHER = "function on_tick(ctx, dt) end\n";
+  sandbox->loadApp(OTHER);            // simulates an incoming push
+  loopAt(800);
+  button->release(1300); loopAt(1300);   // 1200 ms after its down edge
+
+  TEST_ASSERT_TRUE(sandbox->isAppRunning());
+  TEST_ASSERT_EQUAL_STRING(OTHER, store->value.c_str());  // not forgotten
+  TEST_ASSERT_EQUAL_INT(0, (int)holds.size());
 }
 
 void test_network_push_cancels_countdown(void) {
@@ -343,6 +444,11 @@ int main(int, char**) {
   RUN_TEST(test_countdown_autoloads_after_20s);
   RUN_TEST(test_button_tap_loads_app_now);
   RUN_TEST(test_button_long_press_forgets_app);
+  RUN_TEST(test_long_press_released_before_the_loop_looked_forgets);
+  RUN_TEST(test_long_press_held_on_after_forget_is_not_a_hold);
+  RUN_TEST(test_edges_after_a_countdown_tap_go_to_the_hold_detector);
+  RUN_TEST(test_press_across_the_countdown_deadline_is_dropped);
+  RUN_TEST(test_press_across_a_network_push_is_dropped);
   RUN_TEST(test_network_push_cancels_countdown);
   RUN_TEST(test_restore_failure_discards_and_falls_back);
   RUN_TEST(test_persist_disabled_no_countdown);

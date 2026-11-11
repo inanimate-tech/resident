@@ -2045,7 +2045,7 @@ void Sandbox::loop() {
     }
   }
 
-  updateSystemButtonHold();
+  serviceSystemButton();
   updateOverlays();
   updateMicStream();
   drainOutboundSystem();
@@ -2321,11 +2321,6 @@ void Sandbox::loadApp(const char* luaCode)
 
 bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
 {
-  // Reset the runtime hold detector: a reload (or a failed reload) must never
-  // leave stale hold state that would fire a spurious gesture on the next app.
-  _holdWasDown = false;
-  _holdFired = false;
-
   // An explicit load supersedes a pending boot-countdown restore.
   if (_runState == RunState::Pending) {
     _runState = RunState::Ready;
@@ -2472,10 +2467,6 @@ void Sandbox::refreshLifecycleRef(const char* global, int& ref)
 
 void Sandbox::updateBootCountdown()
 {
-  // System button (if present): a tap loads the saved app now; a long press
-  // forgets it. Either gesture ends the countdown.
-  if (_config.systemButton && handleCountdownButton()) return;
-
   unsigned long elapsed = millis() - _countdownStartMs;
   if (elapsed >= BOOT_COUNTDOWN_MS) {
     finishBootCountdown();
@@ -2490,66 +2481,71 @@ void Sandbox::updateBootCountdown()
   }
 }
 
-bool Sandbox::handleCountdownButton()
+void Sandbox::serviceSystemButton()
 {
-  bool down = _config.systemButton->pressed();
+  if (!_config.systemButton) return;
 
-  if (down && !_buttonWasDown) {
-    // Press edge — start timing.
-    _buttonWasDown = true;
-    _buttonDownSince = millis();
-    _longPressFired = false;
-    return false;
+  // Drain every queued edge on every pass, whatever the state, so an edge is
+  // replayed once, to the tracker for the state it is replayed in, and none is
+  // left to fire a gesture later. Re-route before each edge: a countdown
+  // gesture can end Pending part-way through the drain.
+  ButtonEdge edge;
+  while (_config.systemButton->takeEdge(edge)) {
+    routeSystemButton();
+    if (_buttonInCountdown) countdownGesture(_countdownPress.edge(edge));
+    else holdGesture(_holdPress.edge(edge));
   }
 
-  if (down && _buttonWasDown) {
-    // Held — fire the long press once the threshold is crossed (no release
-    // needed, so a long hold has tactile feedback as soon as it counts).
-    if (!_longPressFired &&
-        millis() - _buttonDownSince >= SYSTEM_BUTTON_LONG_PRESS_MS) {
-      _longPressFired = true;
-      _buttonWasDown = false;
-      _pendingPersistedSource = "";
-      if (_store) _store->clear();
-      _runState = RunState::Ready;
-      showReadyScreen();           // settle on the device-identity screen
-      return true;
-    }
-    return false;
-  }
-
-  if (!down && _buttonWasDown) {
-    // Release edge.
-    _buttonWasDown = false;
-    if (!_longPressFired) {
-      finishBootCountdown();       // tap → load the saved app now
-      return true;
-    }
-  }
-  return false;
+  // A press still down crosses its threshold here, with no edge to say so. The
+  // clock is read after the drain; PressTracker also counts a time earlier
+  // than the press's down edge as no time held.
+  routeSystemButton();
+  uint32_t now = millis();
+  if (_buttonInCountdown) countdownGesture(_countdownPress.poll(now));
+  else holdGesture(_holdPress.poll(now));
 }
 
-void Sandbox::updateSystemButtonHold()
+void Sandbox::routeSystemButton()
 {
-  if (!_onHoldCb || !_config.systemButton || _runState == RunState::Pending) return;
-  bool down = _config.systemButton->pressed();
+  bool countdown = _runState == RunState::Pending;
+  if (countdown == _buttonInCountdown) return;
+  _buttonInCountdown = countdown;
 
-  if (down && !_holdWasDown) {
-    _holdWasDown = true;
-    _holdDownSince = millis();
-    _holdFired = false;
-  } else if (down && _holdWasDown) {
-    if (!_holdFired && millis() - _holdDownSince >= SYSTEM_BUTTON_HOLD_MS) {
-      _holdFired = true;
-      _onHoldCb(true);
-    }
-  } else if (!down && _holdWasDown) {
-    _holdWasDown = false;
-    if (_holdFired) {
-      _holdFired = false;
-      _onHoldCb(false);
-    }
+  // A press belongs to the tracker that saw its down edge. The outgoing
+  // tracker's press in progress is dropped; its up edge reaches the incoming
+  // tracker unpaired and is ignored. So a press that ended the countdown (or
+  // was still down when the countdown ran out, or when an app arrived) never
+  // becomes a hold, and a hold in progress as the countdown begins never
+  // counts as a countdown tap or long press.
+  if (countdown) {
+    bool wasHolding = _holdPress.holding();
+    _holdPress.reset();
+    if (wasHolding && _onHoldCb) _onHoldCb(false);
+  } else {
+    _countdownPress.reset();
   }
+}
+
+void Sandbox::countdownGesture(const PressGestures& g)
+{
+  // A long press ends the countdown as soon as it counts (no release needed,
+  // so it has tactile feedback); the hold end that follows is ignored.
+  if (_runState != RunState::Pending) return;
+  if (g.holdStart) {
+    _pendingPersistedSource = "";
+    if (_store) _store->clear();
+    _runState = RunState::Ready;
+    showReadyScreen();             // settle on the device-identity screen
+    return;
+  }
+  if (g.tap) finishBootCountdown();  // tap → load the saved app now
+}
+
+void Sandbox::holdGesture(const PressGestures& g)
+{
+  if (!_onHoldCb) return;
+  if (g.holdStart) _onHoldCb(true);
+  if (g.holdEnd) _onHoldCb(false);
 }
 
 bool Sandbox::startMicStream()

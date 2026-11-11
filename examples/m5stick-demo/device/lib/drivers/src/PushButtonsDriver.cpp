@@ -46,6 +46,7 @@ void PushButtonsDriver::update()
         btn.isDown = true;
         btn.downStartTime = now;
         btn.longPressTriggered = false;
+        if (i == 0) queueEdge(true, now);
       }
     }
 
@@ -94,6 +95,7 @@ void PushButtonsDriver::update()
             Serial.printf("PushButton[%d] tapped (count=%d)\n", i, btn.pressCount);
           }
           btn.isDown = false;
+          if (i == 0) queueEdge(false, now);
         }
       }
     }
@@ -102,12 +104,21 @@ void PushButtonsDriver::update()
   }
 }
 
-bool PushButtonsDriver::pressed()
+void PushButtonsDriver::queueEdge(bool down, unsigned long ms)
 {
-  // Debounced held-level of button 0, maintained by update() (which the
-  // runtime now calls every loop while this is the system button — including
-  // during the boot countdown).
-  return _buttons[0].isDown;
+  if (_edgeCount == EDGE_QUEUE_LEN) return;
+  uint8_t tail = (_edgeHead + _edgeCount) % EDGE_QUEUE_LEN;
+  _edges[tail] = {down, static_cast<uint32_t>(ms)};
+  _edgeCount++;
+}
+
+bool PushButtonsDriver::takeEdge(Resident::ButtonEdge& edge)
+{
+  if (_edgeCount == 0) return false;
+  edge = _edges[_edgeHead];
+  _edgeHead = (_edgeHead + 1) % EDGE_QUEUE_LEN;
+  _edgeCount--;
+  return true;
 }
 
 void PushButtonsDriver::setLongPress(uint8_t buttonIndex, LongPressFn callback,
