@@ -226,7 +226,14 @@ public:
     for (int i = 0; i < _count; i++) {
       if (_slots[i].disp && _slots[i].system) gateSystemLayer(_slots[i]);
     }
+#if RESIDENT_TICK_DIAGS
+    const uint32_t t0 = micros();
+    const uint32_t flushUs0 = diag().flushUs, frames0 = diag().frames;
     lv_timer_handler_run_in_period(5);
+    noteFrame(micros() - t0, flushUs0, frames0);
+#else
+    lv_timer_handler_run_in_period(5);
+#endif
   }
 
   // The app stopped, was suspended, or resumed. A suspension is the overlay
@@ -710,6 +717,50 @@ private:
     return 1;
   }
 
+#if RESIDENT_TICK_DIAGS
+  // Frame-timing diagnostics (-DRESIDENT_TICK_DIAGS=1), beside the sandbox's
+  // [tickdiag]: every five seconds on Serial, the frames LVGL drew, what
+  // drawing them cost and what sending them cost. `draw` is a pump that
+  // ended in a flush, less its flushes: LVGL's rendering and whatever Lua
+  // its timers and animations ran. `flush` is the panel's side: the swap,
+  // the board's blit or presentFrame, the bus.
+  struct Diag {
+    uint32_t windowStart = 0;
+    uint32_t frames = 0, areas = 0, pixels = 0;
+    uint32_t flushUs = 0;            // running total, never reset
+    uint32_t winFlushUs = 0, winDrawUs = 0, maxFrameUs = 0;
+  };
+  static Diag& diag() { static Diag d; return d; }
+  void noteFrame(uint32_t pumpUs, uint32_t flushUs0, uint32_t frames0) {
+    Diag& d = diag();
+    const uint32_t now = millis();
+    if (d.windowStart == 0) d.windowStart = now;
+    if (d.frames != frames0) {
+      const uint32_t flushed = d.flushUs - flushUs0;
+      d.winFlushUs += flushed;
+      d.winDrawUs += pumpUs > flushed ? pumpUs - flushed : 0;
+      if (pumpUs > d.maxFrameUs) d.maxFrameUs = pumpUs;
+    }
+    if (now - d.windowStart < 5000) return;
+    static uint32_t reported = 0;
+    const uint32_t n = d.frames - reported;
+    if (n > 0) {
+      Serial.printf("[lvgldiag] %lums frames=%lu (%lu.%lu fps) areas=%lu px=%lu "
+                    "draw avg=%lu.%02lums flush avg=%lu.%02lums frame max=%lu.%02lums\n",
+                    (unsigned long)(now - d.windowStart), (unsigned long)n,
+                    (unsigned long)(n * 1000UL / (now - d.windowStart)),
+                    (unsigned long)(n * 10000UL / (now - d.windowStart)) % 10UL,
+                    (unsigned long)d.areas, (unsigned long)d.pixels,
+                    (unsigned long)(d.winDrawUs / n / 1000UL), (unsigned long)(d.winDrawUs / n % 1000UL) / 10UL,
+                    (unsigned long)(d.winFlushUs / n / 1000UL), (unsigned long)(d.winFlushUs / n % 1000UL) / 10UL,
+                    (unsigned long)(d.maxFrameUs / 1000UL), (unsigned long)(d.maxFrameUs % 1000UL) / 10UL);
+    }
+    reported = d.frames;
+    d.windowStart = now;
+    d.areas = d.pixels = d.winFlushUs = d.winDrawUs = d.maxFrameUs = 0;
+  }
+#endif
+
   // The one flush: gate on ownership, byte-swap, blit through the panel.
   static void flush_cb(lv_display_t* disp, const lv_area_t* area,
                        uint8_t* px_map) {
@@ -723,6 +774,9 @@ private:
     }
     int32_t w = area->x2 - area->x1 + 1;
     int32_t h = area->y2 - area->y1 + 1;
+#if RESIDENT_TICK_DIAGS
+    const uint32_t diagT0 = micros();
+#endif
     if (s->direct) {
       // The area is already in the panel's frame.
       s->panel->presentFrame(area->x1, area->y1, w, h);
@@ -746,6 +800,12 @@ private:
     }
     const bool last = lv_display_flush_is_last(disp);
     if (last) s->panel->frameDone();
+#if RESIDENT_TICK_DIAGS
+    diag().flushUs += micros() - diagT0;
+    diag().areas++;
+    diag().pixels += (uint32_t)w * (uint32_t)h;
+    if (last) diag().frames++;
+#endif
     lv_display_flush_ready(disp);
   }
 
