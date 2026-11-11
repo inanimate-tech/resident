@@ -22,6 +22,10 @@ constexpr long kLimitMs = 750;
 // A finite loop that runs far past the deadline on any host: some 100
 // million iterations, a second or more.
 #define SPIN "for i = 1, 100000000 do end\n"
+// Twenty SPINs: longer than kLimitMs on any host, so a coroutine the guard
+// misses is caught by the time limit, not by the main thread's one hook
+// firing after it returns.
+#define LONG_SPIN "for n = 1, 20 do " SPIN " end\n"
 
 // `clock.advance(ms)`: moves the faked millis() the soft deadline reads, so
 // a dispatch can take longer than it without spending real time.
@@ -150,7 +154,7 @@ void test_coroutine_created_after_arming_is_stopped(void) {
   build();
   loadApp(
       "function on_tick(ctx, dt)\n"
-      "  local f = coroutine.wrap(function() " SPIN " end)\n"
+      "  local f = coroutine.wrap(function() " LONG_SPIN " end)\n"
       "  pcall(f)\n"
       "  finished = true\n"
       "end\n");
@@ -164,7 +168,7 @@ void test_coroutine_resumed_after_the_deadline_is_stopped(void) {
   loadApp(
       "function on_tick(ctx, dt)\n"
       "  for n = 1, 3 do\n"
-      "    coroutine.resume(coroutine.create(function() " SPIN " end))\n"
+      "    coroutine.resume(coroutine.create(function() " LONG_SPIN " end))\n"
       "  end\n"
       "  finished = true\n"
       "end\n");

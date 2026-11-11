@@ -1300,13 +1300,14 @@ void Sandbox::executionDeadlineHook(lua_State* L, lua_Debug* ar)
 {
   (void)ar;
   Sandbox* self = sandboxFromState(L);
-  // A hook left on a thread after its dispatch was disarmed (a coroutine the
-  // timer hooked just as the dispatch returned) is stale: it removes itself,
-  // and the in-time dispatch it landed on loses one instruction's time.
-  if (!self || !self->_deadlineExpired) {
+  if (!self) {
     lua_sethook(L, nullptr, 0, 0);
     return;
   }
+  // A hook left on a thread after its dispatch was disarmed (a coroutine the
+  // timer hooked just as the dispatch returned) is stale: it removes itself,
+  // and the in-time dispatch it landed on loses one instruction's time.
+  if (!self->_deadlineExpired && self->clearStaleHook(L)) return;
   // Stays installed: it raises again at the next instruction, wherever the
   // error was caught, until disarm removes it.
   luaL_error(L, "execution deadline exceeded (%d ms)",
@@ -1395,6 +1396,15 @@ void Sandbox::setRunningThread(lua_State* co)
   _runningThread = co;
   if (_deadlineExpired) lua_sethook(co, executionDeadlineHook, LUA_MASKCOUNT, 1);
   portEXIT_CRITICAL(&_deadlineMux);
+}
+
+bool Sandbox::clearStaleHook(lua_State* L)
+{
+  portENTER_CRITICAL(&_deadlineMux);
+  const bool stale = !_deadlineExpired;
+  if (stale) lua_sethook(L, nullptr, 0, 0);
+  portEXIT_CRITICAL(&_deadlineMux);
+  return stale;
 }
 
 #else   // host
@@ -1508,6 +1518,19 @@ void Sandbox::setRunningThread(lua_State* co)
   if (_deadlineExpired) lua_sethook(co, executionDeadlineHook, LUA_MASKCOUNT, 1);
 }
 
+bool Sandbox::clearStaleHook(lua_State* L)
+{
+  HostDeadlineTimer* t = static_cast<HostDeadlineTimer*>(_deadlineTimer);
+  if (!t) {
+    lua_sethook(L, nullptr, 0, 0);
+    return true;
+  }
+  std::lock_guard<std::mutex> lock(t->mu);
+  const bool stale = !_deadlineExpired;
+  if (stale) lua_sethook(L, nullptr, 0, 0);
+  return stale;
+}
+
 #endif
 
 #if RESIDENT_TICK_DIAGS
@@ -1554,15 +1577,22 @@ void Sandbox::disarmExecutionGuard()
 void Sandbox::noteHardAbort()
 {
   const unsigned long now = millis();
-  _hardAbortMs[_hardAbortCount % HARD_ABORT_LIMIT] = now;
-  _hardAbortCount++;
-  if (_hardAbortCount < HARD_ABORT_LIMIT) return;
-  // The slot written next holds the abort HARD_ABORT_LIMIT - 1 before this.
-  const unsigned long oldest = _hardAbortMs[_hardAbortCount % HARD_ABORT_LIMIT];
-  if (now - oldest > HARD_ABORT_WINDOW_MS) return;
+  // The last HARD_ABORT_LIMIT aborts, oldest first. The count saturates at
+  // the limit, so it never wraps.
+  if (_hardAbortCount < HARD_ABORT_LIMIT) {
+    _hardAbortMs[_hardAbortCount++] = now;
+    if (_hardAbortCount < HARD_ABORT_LIMIT) return;
+  } else {
+    memmove(_hardAbortMs, _hardAbortMs + 1,
+            (HARD_ABORT_LIMIT - 1) * sizeof(_hardAbortMs[0]));
+    _hardAbortMs[HARD_ABORT_LIMIT - 1] = now;
+  }
+  if (now - _hardAbortMs[0] > HARD_ABORT_WINDOW_MS) return;
+  // Only a running app is suspended; aborts in init or while suspended stay
+  // on the record and count once it runs.
+  if (_runState != RunState::Running) return;
 
   _hardAbortCount = 0;
-  if (_runState != RunState::Running) return;
   suspendApp();
   char detail[64];
   snprintf(detail, sizeof(detail), "%u hard aborts in %lu s; app suspended",
