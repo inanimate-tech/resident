@@ -242,17 +242,6 @@ void test_deliberate_restarts_do_not_count(void) {
   TEST_ASSERT_FALSE(sandbox->isAppQuarantined());
 }
 
-void test_shutdown_handler_disarms(void) {
-  boot(ResetKind::PowerOn);
-  sandbox->loadApp(APP);
-  runThenCrash();
-  runThenCrash();
-  sandbox->loadApp(APP);
-  disarmAppHealthOnShutdown();
-  boot(ResetKind::Abnormal);           // even read as a crash, nothing was armed
-  TEST_ASSERT_FALSE(sandbox->isAppQuarantined());
-}
-
 void test_clean_running_clears_the_count(void) {
   boot(ResetKind::PowerOn);
   runThenCrash();
@@ -383,6 +372,29 @@ void test_headless_quarantined_app_is_not_restored(void) {
   TEST_ASSERT_TRUE(sandbox->isAppQuarantined());
 }
 
+// A new app that crashes in init() is never saved (the save comes after
+// init), so each boot restores the app saved before it. That restore must
+// neither reset the new app's count nor, once it trips, lift its quarantine.
+void test_restoring_the_saved_app_neither_resets_nor_lifts_it(void) {
+  Opts o; o.withDisplay = false;   // headless: the saved app restores at once
+  boot(ResetKind::PowerOn, o);
+  sandbox->loadApp(OTHER_APP);     // the saved app
+  TEST_ASSERT_TRUE(store->hasValue);
+  for (int i = 0; i < 3; i++) {
+    sandbox->loadApp(APP);         // the host pushes the new app...
+    store->value = String(OTHER_APP);   // ...which crashes in init, unsaved
+    boot(ResetKind::Abnormal, o);
+    sandbox->loop();               // the saved app is restored and runs
+    TEST_ASSERT_TRUE(sandbox->isAppRunning());
+  }
+  TEST_ASSERT_TRUE(sandbox->isAppQuarantined());
+  TEST_ASSERT_TRUE(store->hasQuarantine);
+  const int before = telemetryCount("app_quarantined");
+  sandbox->loadApp(APP);           // and the host's re-send is refused
+  TEST_ASSERT_EQUAL_INT(before + 1, telemetryCount("app_quarantined"));
+  TEST_ASSERT_TRUE(sandbox->isAppQuarantined());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_two_crashes_do_not_quarantine);
@@ -394,7 +406,6 @@ int main(int, char**) {
   RUN_TEST(test_hello_reports_the_quarantine);
   RUN_TEST(test_forget_clears_the_quarantine);
   RUN_TEST(test_deliberate_restarts_do_not_count);
-  RUN_TEST(test_shutdown_handler_disarms);
   RUN_TEST(test_clean_running_clears_the_count);
   RUN_TEST(test_armed_before_init_runs);
   RUN_TEST(test_failed_load_disarms);
@@ -404,6 +415,7 @@ int main(int, char**) {
   RUN_TEST(test_forget_from_the_paused_screen);
   RUN_TEST(test_different_push_from_the_paused_screen);
   RUN_TEST(test_headless_quarantined_app_is_not_restored);
+  RUN_TEST(test_restoring_the_saved_app_neither_resets_nor_lifts_it);
   UNITY_END();
   return 0;
 }

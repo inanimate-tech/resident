@@ -15,6 +15,7 @@ Record armedWith(uint32_t hash, uint32_t count) {
   Record r = fresh();
   arm(r, hash);
   r.count = count;
+  r.crashHash = count ? hash : 0;
   seal(r);
   return r;
 }
@@ -95,7 +96,7 @@ void test_third_consecutive_crash_trips(void) {
   TEST_ASSERT_EQUAL_UINT32(42, d.hash);
   TEST_ASSERT_EQUAL_UINT32(kLimit, d.crashes);
   TEST_ASSERT_EQUAL_UINT32(0, d.record.count);   // the quarantine holds it now
-  TEST_ASSERT_EQUAL_UINT32(0, d.record.hash);
+  TEST_ASSERT_EQUAL_UINT32(0, d.record.crashHash);
 }
 
 void test_limit_zero_never_trips(void) {
@@ -112,17 +113,60 @@ void test_rearming_the_same_app_keeps_its_count(void) {
   TEST_ASSERT_EQUAL_UINT32(1, r.armed);
 }
 
-void test_arming_a_different_app_starts_its_own_count(void) {
+// Arming another app leaves the count with the app that crashed: the saved
+// app restored between a new app's crashes neither resets nor inherits it.
+void test_arming_a_different_app_keeps_the_crashed_apps_count(void) {
   Record r = armedWith(42, 2);
   arm(r, 7);
-  TEST_ASSERT_EQUAL_UINT32(0, r.count);
+  TEST_ASSERT_EQUAL_UINT32(2, r.count);
+  TEST_ASSERT_EQUAL_UINT32(42, r.crashHash);
   TEST_ASSERT_EQUAL_UINT32(7, r.hash);
+}
+
+void test_crashes_interleaved_with_another_app_still_trip(void) {
+  Record r = fresh();
+  for (uint32_t i = 1; i <= kLimit; i++) {
+    arm(r, 7);                       // the saved app, restored, runs clean
+    disarm(r);
+    arm(r, 42);                      // the host pushes the new app; it crashes
+    Decision d = decide(r, ResetKind::Abnormal, kLimit);
+    TEST_ASSERT_EQUAL(i == kLimit, d.tripped);
+    if (d.tripped) TEST_ASSERT_EQUAL_UINT32(42, d.hash);
+    r = d.record;
+  }
+}
+
+void test_another_apps_crash_starts_a_new_count(void) {
+  Record r = armedWith(42, 2);
+  arm(r, 7);
+  Decision d = decide(r, ResetKind::Abnormal, kLimit);
+  TEST_ASSERT_FALSE(d.tripped);
+  TEST_ASSERT_EQUAL_UINT32(1, d.record.count);
+  TEST_ASSERT_EQUAL_UINT32(7, d.record.crashHash);
 }
 
 void test_forgive_clears_the_count_and_stays_armed(void) {
   Record r = armedWith(42, 2);
   forgive(r);
   TEST_ASSERT_EQUAL_UINT32(0, r.count);
+  TEST_ASSERT_EQUAL_UINT32(1, r.armed);
+  TEST_ASSERT_TRUE(valid(r));
+}
+
+void test_forgive_leaves_another_apps_count(void) {
+  Record r = armedWith(42, 2);
+  arm(r, 7);
+  forgive(r);
+  TEST_ASSERT_EQUAL_UINT32(2, r.count);
+  TEST_ASSERT_EQUAL_UINT32(42, r.crashHash);
+}
+
+void test_reset_clears_every_count(void) {
+  Record r = armedWith(42, 2);
+  arm(r, 7);
+  reset(r);
+  TEST_ASSERT_EQUAL_UINT32(0, r.count);
+  TEST_ASSERT_EQUAL_UINT32(0, r.crashHash);
   TEST_ASSERT_EQUAL_UINT32(1, r.armed);
   TEST_ASSERT_TRUE(valid(r));
 }
@@ -147,8 +191,12 @@ int main(int, char**) {
   RUN_TEST(test_third_consecutive_crash_trips);
   RUN_TEST(test_limit_zero_never_trips);
   RUN_TEST(test_rearming_the_same_app_keeps_its_count);
-  RUN_TEST(test_arming_a_different_app_starts_its_own_count);
+  RUN_TEST(test_arming_a_different_app_keeps_the_crashed_apps_count);
+  RUN_TEST(test_crashes_interleaved_with_another_app_still_trip);
+  RUN_TEST(test_another_apps_crash_starts_a_new_count);
   RUN_TEST(test_forgive_clears_the_count_and_stays_armed);
+  RUN_TEST(test_forgive_leaves_another_apps_count);
+  RUN_TEST(test_reset_clears_every_count);
   RUN_TEST(test_mutators_repair_a_garbage_record);
   return UNITY_END();
 }

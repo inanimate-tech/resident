@@ -55,11 +55,12 @@ static void* psramLuaAlloc(void* ud, void* ptr, size_t osize, size_t nsize) {
 //
 // On ESP32 the crash record lives in RTC no-init memory, which a panic,
 // watchdog or software reset leaves alone and a power cycle scrambles (the
-// record's magic and check word reject what power-on leaves there). A
-// shutdown handler disarms it, so esp_restart() (an OTA, a host asking for a
-// restart) never counts as a crash. Elsewhere (native tests, simulators)
-// nothing survives a reset: the record is ordinary memory and the last reset
-// is a power-on unless a test says otherwise, so nothing ever trips.
+// record's magic and check word reject what power-on leaves there). A restart
+// someone asked for (esp_restart(): an OTA, a host asking for one) reads back
+// as a software reset, which never counts as a crash. Elsewhere (native
+// tests, simulators) nothing survives a reset: the record is ordinary memory
+// and the last reset is a power-on unless a test says otherwise, so nothing
+// ever trips.
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
 #include "esp_system.h"
@@ -82,32 +83,13 @@ static Resident::app_health::ResetKind lastResetKind() {
       return ResetKind::Deliberate;
   }
 }
-
-static void disarmAppHealthOnShutdown();
-
-static void registerAppHealthShutdownHandler() {
-  static bool registered = false;
-  if (registered) return;
-  registered = true;
-  // The reset reason alone already tells esp_restart() from a crash; the
-  // handler makes the record itself say so too.
-  if (esp_register_shutdown_handler(&disarmAppHealthOnShutdown) != ESP_OK) {
-    Serial.println("Resident::Sandbox: no shutdown handler slot for the app quarantine");
-  }
-}
 #else
 static Resident::app_health::Record s_appHealthRecord = {};
 // What the "last reset" was on a host: tests set it to simulate a crash.
 static Resident::app_health::ResetKind s_hostResetKind =
     Resident::app_health::ResetKind::PowerOn;
 static Resident::app_health::ResetKind lastResetKind() { return s_hostResetKind; }
-static void registerAppHealthShutdownHandler() {}
 #endif
-
-// Runs from esp_restart(), before the chip resets.
-[[maybe_unused]] static void disarmAppHealthOnShutdown() {
-  Resident::app_health::disarm(s_appHealthRecord);
-}
 
 namespace Resident {
 
@@ -2851,8 +2833,11 @@ bool Sandbox::loadAppInternal(const char* luaCode, bool persistOnSuccess)
   bool loadedOk = compiled && _lastInitOk;
   if (!loadedOk) {
     disarmAppHealth();
-  } else if (isAppQuarantined()) {
-    clearAppQuarantine();   // a different app runs: nothing is paused now
+  } else if (isAppQuarantined() && persistOnSuccess) {
+    // A host sent a different app and it runs: nothing is paused now. A
+    // restore of the saved app does not clear it: the app that crashed may
+    // never have been saved (a crash in init comes before the save).
+    clearAppQuarantine();
   }
 
   // An app loaded while a dual-role overlay claim is held starts suspended
@@ -3253,6 +3238,7 @@ void Sandbox::finishBootCountdown()
 void Sandbox::clearPersistedApp()
 {
   if (_store) _store->clear();
+  app_health::reset(s_appHealthRecord);
   clearAppQuarantine();
 }
 
@@ -3263,7 +3249,6 @@ void Sandbox::bootAppHealth()
   app_health::Decision d =
       app_health::decide(s_appHealthRecord, lastResetKind(), _config.appCrashLimit);
   s_appHealthRecord = d.record;
-  registerAppHealthShutdownHandler();
 
   if (d.tripped) {
     _quarantinedHash = d.hash;
