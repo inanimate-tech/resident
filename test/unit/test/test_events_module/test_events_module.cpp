@@ -222,6 +222,32 @@ bool hasRawControlByte(const std::string& s) {
   return false;
 }
 
+// RFC 3629 well-formedness, written independently of the writer's check.
+bool isValidUtf8(const std::string& s) {
+  size_t i = 0, n = s.size();
+  while (i < n) {
+    unsigned char c = s[i];
+    uint32_t cp; size_t len;
+    if (c < 0x80) { i++; continue; }
+    else if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; len = 2; }
+    else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; len = 3; }
+    else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; len = 4; }
+    else return false;
+    if (i + len > n) return false;
+    for (size_t k = 1; k < len; k++) {
+      unsigned char b = s[i + k];
+      if ((b & 0xC0) != 0x80) return false;
+      cp = (cp << 6) | (b & 0x3F);
+    }
+    static const uint32_t kMin[] = {0, 0, 0x80, 0x800, 0x10000};
+    if (cp < kMin[len] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+      return false;
+    }
+    i += len;
+  }
+  return true;
+}
+
 void buildRecordingEverySend() {
   build();
   sent = new std::vector<std::string>();
@@ -294,6 +320,63 @@ void test_publish_event_escaped_control_bytes_never_go_raw(void) {
   TEST_ASSERT_FALSE(sandbox->publishEvent("", "{}"));
   TEST_ASSERT_FALSE(sandbox->publishEvent("bad\n", "{}"));
   TEST_ASSERT_EQUAL_INT(1, (int)sent->size());
+}
+
+// RFC 8259 §8.1: a frame is UTF-8. Bytes that start no well-formed sequence
+// go out as U+FFFD; a name that is not UTF-8 is the author's to fix.
+void test_invalid_utf8_never_goes_out(void) {
+  buildRecordingEverySend();
+  testSerialLog().clear();
+  loadApp(
+      "function init(ctx)\n"
+      "  badname = events.send(string.char(0xC3)) == 'dropped'\n"
+      "  r = events.send('ping', { s = 'a' .. string.char(0xFF) .. 'b',\n"
+      "    over = string.char(0xC0, 0xAF), sur = string.char(0xED, 0xA0, 0x80),\n"
+      "    cut = string.char(0xE2, 0x82), ok = 'caf' .. string.char(0xC3, 0xA9) })\n"
+      "end\n"
+      "function on_tick(ctx, dt) end\n");
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("badname"));
+  TEST_ASSERT_TRUE(testSerialLog().find("[WARN] event dropped: its name is not "
+                                        "valid UTF-8") != std::string::npos);
+  TEST_ASSERT_EQUAL_INT(1, (int)sent->size());
+  const std::string& f = (*sent)[0];
+  TEST_ASSERT_TRUE(isValidUtf8(f));
+  TEST_ASSERT_TRUE(f.find("\"s\":\"a\xEF\xBF\xBD" "b\"") != std::string::npos);
+  TEST_ASSERT_TRUE(f.find("\"ok\":\"caf\xC3\xA9\"") != std::string::npos);
+  // A C++ caller's lone surrogate escape decodes to bytes no UTF-8 decoder
+  // takes; whatever goes out is still UTF-8.
+  sandbox->publishEvent("score", "{\"s\":\"a\\ud800b\"}");
+  for (auto& fr : *sent) TEST_ASSERT_TRUE(isValidUtf8(fr));
+}
+
+void test_publish_event_unparseable_data_is_dropped(void) {
+  buildRecordingEverySend();
+  testSerialLog().clear();
+  TEST_ASSERT_FALSE(sandbox->publishEvent("score", "{\"n\":"));
+  TEST_ASSERT_EQUAL_INT(0, (int)sent->size());
+  TEST_ASSERT_TRUE(testSerialLog().find("[WARN] event dropped: its data is not "
+                                        "valid JSON") != std::string::npos);
+  TEST_ASSERT_TRUE(sandbox->publishEvent("score", ""));   // no data is {}
+  TEST_ASSERT_EQUAL_INT(1, (int)sent->size());
+}
+
+// An event name a receiver would cut short is dropped on the way in, so it
+// can never match the handler of its 31-byte prefix.
+void test_incoming_name_over_31_bytes_dropped(void) {
+  build();
+  loadApp(COUNTING_APP);
+  std::string longName(40, 'n');
+  std::string justName(31, 'n');
+  for (const std::string* nm : {&longName, &justName}) {
+    JsonDocument evt;
+    evt["channel"] = "app";
+    evt["type"] = nm->c_str();
+    evt["from"] = "otherdev";
+    evt["data"]["k"] = 1;
+    sandbox->injectMessage("test", nm->c_str(), evt);
+    pump();
+  }
+  TEST_ASSERT_EQUAL_INT(1, sandbox->luaGlobalIntForTest("cnt"));
 }
 
 // ── serializeLuaTableToJson: byte-exact unit tests ─────────────────────────
@@ -369,6 +452,16 @@ void test_serializer_top_level_is_always_an_object(void) {
 void test_serializer_skips_unsupported_values(void) {
   TEST_ASSERT_EQUAL_STRING("{\"n\":1}", serialize("{n = 1, f = print}").c_str());
   TEST_ASSERT_EQUAL_STRING("{}", serialize("{f = print}").c_str());
+}
+
+// JSON has no NaN or infinity: %g would write "nan" and "inf".
+void test_serializer_skips_non_finite_numbers(void) {
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"n\":1}",
+      serialize("{n = 1, a = 0/0, b = math.huge, c = -math.huge}").c_str());
+  // An array holds the position with null, as for any unsupported value.
+  TEST_ASSERT_EQUAL_STRING("{\"x\":[1.5,null]}",
+                           serialize("{x = {1.5, 0/0}}").c_str());
 }
 
 void test_serializer_overflow_returns_false(void) {
@@ -652,6 +745,9 @@ int main(int, char**) {
   RUN_TEST(test_event_names_are_1_to_31_bytes_without_control_characters);
   RUN_TEST(test_events_send_control_bytes_in_data_never_go_raw);
   RUN_TEST(test_publish_event_escaped_control_bytes_never_go_raw);
+  RUN_TEST(test_invalid_utf8_never_goes_out);
+  RUN_TEST(test_publish_event_unparseable_data_is_dropped);
+  RUN_TEST(test_incoming_name_over_31_bytes_dropped);
   RUN_TEST(test_serializer_flat_payloads_unchanged);
   RUN_TEST(test_serializer_escapes_quotes_backslashes_controls);
   RUN_TEST(test_serializer_escapes_keys);
@@ -660,6 +756,7 @@ int main(int, char**) {
   RUN_TEST(test_serializer_nested_arrays);
   RUN_TEST(test_serializer_top_level_is_always_an_object);
   RUN_TEST(test_serializer_skips_unsupported_values);
+  RUN_TEST(test_serializer_skips_non_finite_numbers);
   RUN_TEST(test_serializer_overflow_returns_false);
   RUN_TEST(test_events_send_rich_payload_through_envelope);
   RUN_TEST(test_events_send_oversize_payload_dropped_not_truncated);

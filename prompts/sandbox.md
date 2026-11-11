@@ -78,7 +78,7 @@ events.send("must_arrive", { id = 7 }, { keep = true })
   are QUEUED and go later, in order — treat `"queued"` as success.
   `"dropped"` means it will never go (oversize payload, or the queue was
   full). `keep = true` protects a message from queue-overflow eviction.
-- `name` is 1-31 bytes with no control characters (`:` is fine). Any other
+- `name` is 1-31 bytes of UTF-8 with no control characters (`:` is fine). Any other
   name is `"dropped"`, with the reason on `log.warn`'s line.
 - Rate limit: 5 events/s sustained, burst of 10.
 - `data` values: strings, numbers, booleans, tables to depth 3. Serialized

@@ -63,6 +63,18 @@ public:
     };
     sendEvent("oversize", fields, 3);
   }
+
+  // JSON has no NaN or infinity: such a float arrives as nil, and the
+  // event with it.
+  void emitNonFinite() {
+    Resident::EventField fields[] = {
+        {"index", Resident::EventField::INT, {.i = 5}},
+        {"nan", Resident::EventField::FLOAT, {.f = NAN}},
+        {"inf", Resident::EventField::FLOAT, {.f = INFINITY}},
+        {"mag", Resident::EventField::FLOAT, {.f = 2.5f}},
+    };
+    sendEvent("nonfinite", fields, 4);
+  }
 };
 
 ProbeDriver* driver = nullptr;
@@ -190,6 +202,18 @@ void test_driver_field_too_big_is_left_out_whole(void) {
   TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("kept"));
 }
 
+void test_driver_non_finite_float_arrives_as_nil(void) {
+  build();
+  loadApp(
+      "function on_event(ctx, e)\n"
+      "  nf = (e.data.index == 5) and (e.data.nan == nil)\n"
+      "    and (e.data.inf == nil) and (e.data.mag == 2.5)\n"
+      "end\n");
+  driver->emitNonFinite();
+  pump();
+  TEST_ASSERT_TRUE(sandbox->luaGlobalBoolForTest("nf"));
+}
+
 // ctx.trigger_count (a button-press counter for the retired shader templates)
 // is gone: a button is an event, and an app counts its own.
 void test_ctx_has_no_trigger_count(void) {
@@ -211,6 +235,7 @@ int main(int, char**) {
   RUN_TEST(test_driver_event_channel_is_driver);
   RUN_TEST(test_driver_string_field_reaches_lua_intact);
   RUN_TEST(test_driver_field_too_big_is_left_out_whole);
+  RUN_TEST(test_driver_non_finite_float_arrives_as_nil);
   RUN_TEST(test_ctx_has_no_trigger_count);
   return UNITY_END();
 }
