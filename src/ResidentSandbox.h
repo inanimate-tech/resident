@@ -18,6 +18,7 @@
 #include "ResidentOverlay.h"
 #include "ResidentEvents.h"
 #include "ResidentStoreModule.h"
+#include "ResidentSlabAlloc.h"
 
 // Maximum size (bytes, including the NUL terminator) of a serialized event
 // `data` JSON payload — used by the outgoing events.send serializer, the
@@ -391,8 +392,13 @@ public:
     int luaGlobalIntForTest(const char* name);
     void callOnTickForTest(unsigned long dt_ms) { callOnTick(dt_ms); }
 
+    // The Lua heap's small-object arena: what it holds and has served.
+    const SlabArena::Stats& luaArenaStats() const { return _luaArena.stats(); }
+
 private:
     struct lua_State* _lua = nullptr;
+    // Outlives the state: lua_close frees into it.
+    SlabArena _luaArena;
 
     // Unified execution state — the sandbox's single source of truth for what
     // the Lua VM is doing. Ready: no app loaded; the status display rests on
