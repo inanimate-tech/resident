@@ -621,6 +621,27 @@ Resident::RenderTargets::addPanel("main", &myPanel, "rect");
 
 `PanelTarget` is the whole board-side surface: geometry plus a synchronous RGB565 blit. **Byte order: big-endian (high byte first)** — the SPI wire order, which is also LovyanGFX's internal 16-bit sprite format (`swap565`); a caller holding little-endian pixels (LVGL's native RGB565) swaps before calling, as `LvglModule`'s flush does.
 
+#### Lending a frame
+
+A panel that already holds every pixel it shows can lend that memory to the renderer instead of being handed copies of it:
+
+```cpp
+class MyPanel : public Resident::PanelTarget {
+  // ... width(), height(), blit() as above; blit() must write into _store too
+  bool frame(Frame& out) override {
+    if (!_store) return false;          // no memory for one: blit() is used
+    out.px = _store;                    // width() x height(), RGB565 in the
+    out.stride = width();               // MCU's NATIVE order (what LVGL draws)
+    return true;
+  }
+  void presentFrame(int32_t x, int32_t y, int32_t w, int32_t h) override {
+    // put _store's rectangle on the glass, swapping bytes on the way out
+  }
+};
+```
+
+`LvglModule` then creates the display in `LV_DISPLAY_RENDER_MODE_DIRECT`: each changed area is rendered once, straight into the frame, and `presentFrame()` is told the rectangle. Through `blit()` the same pixel is written to a draw buffer, swapped there, read back and written into the panel's store, and an area taller than the draw buffer is rendered in bands, each a walk of the widget tree. The rules: the frame stays where it is for the panel's life; `stride` must equal `width()`; `blit()` keeps working and lands in the same frame, so the frame is always what the glass shows; a `DisplayOptions::buffer` supplied by the board takes precedence over a lent frame. The default `frame()` returns false. `RESIDENT_PANEL_FRAME` is defined by a Resident that has this.
+
 The modules then build their own machinery over that one target when Lua binds it — `LgfxModule` allocates and owns a full-frame sprite and presents it with a single blit; `LvglModule` creates and owns the `lv_display_t`, its partial draw buffers and the flush callback over the same blit.
 
 | Member | Description |

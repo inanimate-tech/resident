@@ -76,7 +76,46 @@ public:
   // landed. A panel that presents whole frames (a one-bit glass quantising
   // its shadow, an e-paper commit) does that here; most panels ignore it.
   virtual void frameDone() {}
+
+  // ── A whole frame the panel keeps (optional) ──────────────────────────
+  //
+  // A panel that already holds every pixel it shows — a backing store it
+  // composites from, a framebuffer it scans out — can lend that memory to a
+  // renderer instead of being handed copies of it. frame() returns true and
+  // describes it: width() x height() pixels of RGB565 in the MCU's NATIVE
+  // byte order (little-endian: what LVGL draws), `stride` pixels a row. The
+  // renderer then draws each changed area straight into the frame, once,
+  // and calls presentFrame() with the rectangle it changed; the panel puts
+  // those pixels on the glass (swapping bytes as it copies them out, if its
+  // wire wants that).
+  //
+  // What it saves is passes over memory. Through blit() a changed pixel is
+  // written to the renderer's draw buffer, swapped there, read back out and
+  // written into the panel's store; a draw buffer smaller than the area is
+  // also rendered in bands, each a walk of the widget tree. With a lent
+  // frame it is written once and read once, in one pass per area. On an
+  // ESP32-S3, where all of this is PSRAM behind a 32 KB cache, those passes
+  // were most of a large frame.
+  //
+  // blit() still works, for everything else that draws on the panel (status
+  // text, an overlay's sprite): it lands in the same frame, so the frame is
+  // always what the glass shows. The frame must stay where it is for the
+  // panel's life. A panel may return false at any time before its first
+  // true (no memory for a store): the renderer falls back to blit().
+  // Feature test: RESIDENT_PANEL_FRAME is defined (below the class) by a
+  // Resident that has this, so a board that also builds against an older one
+  // can leave its frame out there.
+  struct Frame {
+    uint16_t* px = nullptr;
+    int32_t stride = 0;   // pixels a row; a renderer may require == width()
+  };
+  virtual bool frame(Frame& out) { (void)out; return false; }
+  virtual void presentFrame(int32_t x, int32_t y, int32_t w, int32_t h) {
+    (void)x; (void)y; (void)w; (void)h;
+  }
 };
+
+#define RESIDENT_PANEL_FRAME 1
 
 class RenderTargets {
 public:

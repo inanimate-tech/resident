@@ -77,6 +77,10 @@ extern "C" {
 #include <lvgl.h>
 #include <luavgl.h>
 
+// LVGL's "forget the pending invalid areas" (area == NULL), from its private
+// refresh header.
+extern "C" void lv_inv_area(lv_display_t* disp, const lv_area_t* area_p);
+
 #if LV_COLOR_DEPTH != 16
 #error "ResidentLvglModule requires LV_COLOR_DEPTH 16 — PanelTarget::blit is RGB565"
 #endif
@@ -367,6 +371,7 @@ private:
     bool system = false;              // systemLayer() has been asked for
     bool drewOverDriver = false;      // SystemLayerGate's memory
     bool flush = false;               // the gate's flush decision for the layer
+    bool direct = false;              // LVGL draws into the panel's own frame
   };
   Slot _slots[MAX_DISPLAYS] = {};
   int _count = 0;
@@ -423,19 +428,34 @@ private:
     int32_t h = p->height();
     if (w <= 0 || h <= 0) return false;
 
-    int32_t rows = s.opts.bufferRows > 0 ? s.opts.bufferRows : h / 10;
-    if (rows < 8) rows = 8;
-    if (rows > h) rows = h;
-    size_t bytes = (size_t)w * (size_t)rows * 2u;   // RGB565
-    void* buf = s.opts.buffer;
-    if (buf) {
-      if (s.opts.bufferBytes < bytes) bytes = s.opts.bufferBytes;
+    // A panel that keeps a whole frame lends it (PanelTarget::frame): LVGL
+    // then draws each changed area straight into it, in one pass, and the
+    // panel is told which pixels changed. Otherwise a partial draw buffer,
+    // whose bands are swapped and handed to blit().
+    PanelTarget::Frame frame;
+    const bool direct = !s.opts.buffer && p->frame(frame) && frame.px &&
+                        frame.stride == w;
+    void* buf = nullptr;
+    size_t bytes = 0;
+    if (direct) {
+      buf = frame.px;
+      bytes = (size_t)w * (size_t)h * 2u;
     } else {
-      buf = lv_malloc(bytes);
+      int32_t rows = s.opts.bufferRows > 0 ? s.opts.bufferRows : h / 10;
+      if (rows < 8) rows = 8;
+      if (rows > h) rows = h;
+      bytes = (size_t)w * (size_t)rows * 2u;   // RGB565
+      buf = s.opts.buffer;
+      if (buf) {
+        if (s.opts.bufferBytes < bytes) bytes = s.opts.bufferBytes;
+      } else {
+        buf = lv_malloc(bytes);
+      }
+      if (!buf || bytes < (size_t)w * 2u) return false;
     }
-    if (!buf || bytes < (size_t)w * 2u) return false;
 
     s.panel = p;
+    s.direct = direct;
     // A system-only display must never become LVGL's default: luavgl's
     // unbound constructors and lvgl.disp.get_default() resolve through it.
     lv_display_t* prevDefault = lv_display_get_default();
@@ -444,7 +464,8 @@ private:
     if (!s.disp) return false;
     lv_display_set_user_data(s.disp, &s);
     lv_display_set_buffers(s.disp, buf, nullptr, bytes,
-                           LV_DISPLAY_RENDER_MODE_PARTIAL);
+                           direct ? LV_DISPLAY_RENDER_MODE_DIRECT
+                                  : LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(s.disp, flush_cb);
     if (s.opts.dpi > 0) lv_display_set_dpi(s.disp, s.opts.dpi);
     _displays++;
@@ -522,9 +543,14 @@ private:
   // glass and must not reach it: render it now and drop it at the gate, then
   // ask for the layer's visible objects alone. From here, while nobody owns
   // the glass, nothing but the layer changes, so nothing else is redrawn.
+  //
+  // Into the panel's own frame there is nothing to render and drop: a
+  // rendered area would land in the frame, which must go on holding what the
+  // glass shows. The pending areas are forgotten instead.
   static void settleOverDriver(Slot& s) {
     s.flush = false;
-    lv_refr_now(s.disp);
+    if (s.direct) lv_inv_area(s.disp, nullptr);
+    else lv_refr_now(s.disp);
     invalidateLayer(s);
   }
 
@@ -681,13 +707,19 @@ private:
     }
     int32_t w = area->x2 - area->x1 + 1;
     int32_t h = area->y2 - area->y1 + 1;
-    // LVGL renders RGB565 little-endian; PanelTarget::blit takes the panel's
-    // wire order (big-endian). Swap in place — the buffer is LVGL's own.
-    uint16_t* px = (uint16_t*)px_map;
-    uint32_t n = (uint32_t)w * (uint32_t)h;
-    for (uint32_t i = 0; i < n; i++) px[i] = __builtin_bswap16(px[i]);
-    s->panel->blit(area->x1, area->y1, w, h, px);
-    if (lv_display_flush_is_last(disp)) s->panel->frameDone();
+    if (s->direct) {
+      // The area is already in the panel's frame.
+      s->panel->presentFrame(area->x1, area->y1, w, h);
+    } else {
+      // LVGL renders RGB565 little-endian; PanelTarget::blit takes the panel's
+      // wire order (big-endian). Swap in place — the buffer is LVGL's own.
+      uint16_t* px = (uint16_t*)px_map;
+      uint32_t n = (uint32_t)w * (uint32_t)h;
+      for (uint32_t i = 0; i < n; i++) px[i] = __builtin_bswap16(px[i]);
+      s->panel->blit(area->x1, area->y1, w, h, px);
+    }
+    const bool last = lv_display_flush_is_last(disp);
+    if (last) s->panel->frameDone();
     lv_display_flush_ready(disp);
   }
 
