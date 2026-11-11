@@ -942,7 +942,7 @@ Publishes an event on the app data plane (`channel:"app"`) — the Lua-side entr
 
 Both success states are truthy, so a caller that only needs "will this go?" can treat the result as a boolean.
 
-`name` is 1–31 bytes with no control characters (`RESIDENT_EVENT_NAME_MAX`, announced in the hello as `limits.eventNameBytes`). A receiver holds an event's name in a 32-byte buffer, so a longer name would arrive cut short and match no handler. Any other characters are fine, `:` included (`"view:main"`). A name outside the rule is not sent: the call returns `"dropped"` and the reason goes to `log.warn`'s line.
+`name` is 1–31 bytes of UTF-8 with no control characters (`RESIDENT_EVENT_NAME_MAX`, announced in the hello as `limits.eventNameBytes`). A receiver holds an event's name in a 32-byte buffer, so it drops an incoming event with a longer name rather than deliver it cut short. Any other characters are fine, `:` included (`"view:main"`). A name outside the rule is not sent: the call returns `"dropped"` and the reason goes to `log.warn`'s line.
 
 ```lua
 events.send("turn")
@@ -951,7 +951,7 @@ events.send("state", { on = true, pos = { x = 1, y = 2 }, tags = { "a", "b" } })
 events.send("escalation", { level = 3 }, { keep = true })
 ```
 
-`data` serializes to a JSON object. String keys and values are JSON-escaped (`"`, `\`, `\b`, `\f`, `\n`, `\r`, `\t`). Any other control character goes out as U+FFFD, so every frame is valid RFC 8259 JSON however many times it is parsed and serialized on the way. Values may be strings, numbers, booleans, or tables nested up to 3 table levels (counting `data` itself): a string-keyed table becomes a JSON object; a table with a non-empty array part (`#t > 0`) becomes a JSON array of elements `1..#t` (don't mix array and string keys — string keys of an array-part table are ignored). Top-level integer keys, deeper tables, and other value types (functions, userdata) are silently skipped per-key; unsupported array *elements* serialize as `null` to hold their position.
+`data` serializes to a JSON object. String keys and values are JSON-escaped (`"`, `\`, `\b`, `\f`, `\n`, `\r`, `\t`). Any other control character, and any byte that does not start a well-formed UTF-8 sequence, goes out as U+FFFD, so every frame is valid RFC 8259 JSON however many times it is parsed and serialized on the way. The substitution is lossy: send binary data encoded (hex, base64), not raw. A number that is NaN or infinite has no JSON form and is skipped with its key (inside an array it becomes `null`). Values may be strings, numbers, booleans, or tables nested up to 3 table levels (counting `data` itself): a string-keyed table becomes a JSON object; a table with a non-empty array part (`#t > 0`) becomes a JSON array of elements `1..#t` (don't mix array and string keys — string keys of an array-part table are ignored). Top-level integer keys, deeper tables, and other value types (functions, userdata) are silently skipped per-key; unsupported array *elements* serialize as `null` to hold their position.
 
 Serialized into a bounded buffer of `RESIDENT_EVENT_JSON_MAX` bytes (default 1024; override with a build flag, e.g. `-DRESIDENT_EVENT_JSON_MAX=2048`). An oversized payload is never truncated — the event is dropped and a line is logged to Serial.
 
@@ -1533,7 +1533,7 @@ ESP-IDF CMake component graph.
 | `RESIDENT_EVENT_JSON_MAX` | `1024` | Event `data` buffer — bounds the `events.send` serializer, the incoming app-channel `data`, and each ring slot. Build-flag overridable; the ring grows by 8× any increase |
 | `RESIDENT_STORE_JSON_MAX` | `2048` | Serialized size cap on the whole persisted `store` blob. Build-flag overridable |
 | `StoreModule::STORE_NS_MAX` | `32` | Maximum `storeNs` length in characters |
-| `RESIDENT_EVENT_NAME_MAX` | `31` bytes | Longest event name; `Event::name` holds it and its NUL. `publishEventEx` drops a longer name, an empty one, or one with a control character; a driver event name longer than this is truncated. Not a build flag: every device on a network must agree |
+| `RESIDENT_EVENT_NAME_MAX` | `31` bytes | Longest event name; `Event::name` holds it and its NUL. `publishEventEx` drops a longer name, an empty one, one with a control character, or one that is not UTF-8; an incoming event with a longer name is dropped and counted; a driver event name longer than this is truncated. Not a build flag: every device on a network must agree |
 | `SandboxConfig::executionDeadlineMs` | `1000` | Wall-clock milliseconds per dispatch before abort (`0` = no hard guard) |
 | `SandboxConfig::executionSoftDeadlineMs` | `0` | Wall-clock milliseconds per dispatch before reporting (`0` = no reporting) |
 | `SLOW_DISPATCH_COOLDOWN` | `5000 ms` | Minimum interval between `slow_dispatch` reports after the initial burst |

@@ -1,4 +1,6 @@
 #include "ResidentSandbox.h"
+
+#include <cmath>
 #include <Arduino.h>
 #include <ezTime.h>
 #include <math.h>
@@ -693,6 +695,15 @@ void Sandbox::deliverWireEvent(const char* type, JsonDocument& doc,
     name = doc["name"] | "";
     if (!name[0]) return;
   }
+  // Event::name holds RESIDENT_EVENT_NAME_MAX bytes. A longer name would
+  // arrive cut short and could match the handler of its prefix, so it is
+  // dropped (a sender on this version refuses to send one).
+  if (strlen(name) > RESIDENT_EVENT_NAME_MAX) {
+    countDrop();
+    Serial.printf("Resident::Sandbox: event name longer than %d bytes; dropped\n",
+                  RESIDENT_EVENT_NAME_MAX);
+    return;
+  }
   const char* from = doc["from"] | "";
   if (from[0] && getDeviceId().equals(from)) return;   // self-echo (multicast loopback)
   const char* nonce = doc["nonce"] | "";
@@ -836,6 +847,11 @@ bool Sandbox::sendSystem(JsonDocument& doc)
 // the transport serialises that document with ArduinoJson again. So such a
 // byte is written as U+FFFD REPLACEMENT CHARACTER, which survives any number
 // of round trips.
+//
+// RFC 8259 also requires UTF-8, and ArduinoJson passes bytes of 0x80 and up
+// through unchecked (and decodes a lone \uD800 escape to bytes no UTF-8
+// decoder accepts). So each byte that does not start a well-formed UTF-8
+// sequence is written as U+FFFD too.
 namespace {
 
 constexpr char kReplacementChar[] = "\xEF\xBF\xBD";  // U+FFFD in UTF-8
@@ -846,25 +862,51 @@ bool isUnescapedControl(unsigned char c) {
          c != '\t';
 }
 
-// s with each byte isUnescapedControl() names replaced by U+FFFD: a string
-// ArduinoJson serialises as valid JSON. Also safe to run over ArduinoJson's
-// compact output, where such a byte can only sit inside a string.
+// The length of the well-formed UTF-8 sequence p starts (RFC 3629: no
+// overlong forms, no surrogates, nothing above U+10FFFF), or 0 if it starts
+// none. p is NUL-terminated, and NUL is never a continuation byte, so this
+// never reads past the terminator.
+size_t utf8SequenceLength(const unsigned char* p) {
+  const unsigned char c = p[0];
+  if (c < 0x80) return 1;
+  auto cont = [](unsigned char b) { return (b & 0xC0) == 0x80; };
+  if (c >= 0xC2 && c <= 0xDF) return cont(p[1]) ? 2 : 0;
+  if (c >= 0xE0 && c <= 0xEF) {
+    const unsigned char lo = (c == 0xE0) ? 0xA0 : 0x80;  // overlong
+    const unsigned char hi = (c == 0xED) ? 0x9F : 0xBF;  // surrogates
+    return (p[1] >= lo && p[1] <= hi && cont(p[2])) ? 3 : 0;
+  }
+  if (c >= 0xF0 && c <= 0xF4) {
+    const unsigned char lo = (c == 0xF0) ? 0x90 : 0x80;  // overlong
+    const unsigned char hi = (c == 0xF4) ? 0x8F : 0xBF;  // above U+10FFFF
+    return (p[1] >= lo && p[1] <= hi && cont(p[2]) && cont(p[3])) ? 4 : 0;
+  }
+  return 0;
+}
+
+// s with each byte isUnescapedControl() names, and each byte that starts no
+// well-formed UTF-8 sequence, replaced by U+FFFD: a string ArduinoJson
+// serialises as valid JSON. Also safe to run over ArduinoJson's compact
+// output, where both can only sit inside a string.
 String jsonSafe(const char* s) {
   if (!s) return String();
-  size_t len = 0;
-  size_t extra = 0;  // each replacement grows 1 byte to 3
-  for (const unsigned char* p = (const unsigned char*)s; *p; p++, len++) {
-    if (isUnescapedControl(*p)) extra += 2;
+  bool clean = true;
+  for (const unsigned char* p = (const unsigned char*)s; *p && clean;) {
+    size_t n = utf8SequenceLength(p);
+    if (n == 0 || isUnescapedControl(*p)) clean = false;
+    p += n ? n : 1;
   }
-  if (extra == 0) return String(s);  // the usual case: a plain copy
+  if (clean) return String(s);  // the usual case: a plain copy
+  // No reserve(): an embedder's host String stand-in may not have it.
   String out;
-  out.reserve(len + extra);
-  for (const unsigned char* p = (const unsigned char*)s; *p; p++) {
-    if (isUnescapedControl(*p)) {
+  for (const unsigned char* p = (const unsigned char*)s; *p;) {
+    size_t n = utf8SequenceLength(p);
+    if (n == 0 || isUnescapedControl(*p)) {
       out += kReplacementChar;
-    } else {
-      out += (char)*p;
+      p++;
+      continue;
     }
+    while (n--) out += (char)*p++;
   }
   return out;
 }
@@ -909,8 +951,18 @@ void writeJsonString(JsonWriter& w, const char* s, size_t maxIn = SIZE_MAX) {
       default:
         if (c < 0x20) {
           w.puts_(kReplacementChar);
-        } else {
+        } else if (c < 0x80) {
           w.putc_((char)c);
+        } else {
+          // The cut above can end a sequence early, so it is checked
+          // against n as well as for its form.
+          size_t len = utf8SequenceLength(p + i);
+          if (len == 0 || i + len > n) {
+            w.puts_(kReplacementChar);
+          } else {
+            for (size_t k = 0; k < len; k++) w.putc_((char)p[i + k]);
+            i += len - 1;
+          }
         }
     }
   }
@@ -921,8 +973,12 @@ void writeJsonString(JsonWriter& w, const char* s, size_t maxIn = SIZE_MAX) {
 const char* eventNameProblem(const char* name) {
   if (!name || !name[0]) return "is empty";
   size_t n = 0;
-  for (const unsigned char* p = (const unsigned char*)name; *p; p++, n++) {
+  for (const unsigned char* p = (const unsigned char*)name; *p;) {
     if (*p < 0x20 || *p == 0x7F) return "holds a control character";
+    size_t len = utf8SequenceLength(p);
+    if (len == 0) return "is not valid UTF-8";
+    p += len;
+    n += len;
   }
   static_assert(RESIDENT_EVENT_NAME_MAX == 31, "the message states the limit");
   if (n > RESIDENT_EVENT_NAME_MAX) return "is longer than 31 bytes";
@@ -1080,7 +1136,11 @@ Sandbox::SendResult Sandbox::publishEventEx(const char* name,
   doc["channel"] = (channel && channel[0]) ? channel : "app";
   doc["type"] = name;
   JsonDocument data;
-  if (dataJson && dataJson[0] && !deserializeJson(data, dataJson)) {
+  if (dataJson && dataJson[0]) {
+    if (deserializeJson(data, dataJson)) {
+      writeWarn("event dropped: its data is not valid JSON");
+      return SendResult::Dropped;
+    }
     doc["data"] = data;
   } else {
     doc["data"].to<JsonObject>();
@@ -1723,8 +1783,9 @@ void Sandbox::endCapture()
 //
 // Kept identical for existing flat string/number payloads (byte-for-byte,
 // escaping aside): pair order is lua_next order, integers print via %lld,
-// floats via %g, unsupported values (functions, userdata, nil, too-deep
-// tables) are skipped along with their key, no data → "{}".
+// floats via %g, unsupported values (functions, userdata, nil, NaN and
+// infinities, too-deep tables) are skipped along with their key, no data →
+// "{}".
 //
 // Test cases live in test/unit/test/test_events_module — serializer cases
 // call serializeLuaTableToJson directly on a bare lua_State.
@@ -1745,8 +1806,10 @@ void writeLuaArray(lua_State* L, int idx, JsonWriter& w, int depth);
 bool luaValueSupported(lua_State* L, int idx, int depth) {
   switch (lua_type(L, idx)) {
     case LUA_TSTRING:
-    case LUA_TNUMBER:
     case LUA_TBOOLEAN: return true;
+    // JSON has no NaN or infinity; %g would write "nan" or "inf".
+    case LUA_TNUMBER:
+      return lua_isinteger(L, idx) || std::isfinite(lua_tonumber(L, idx));
     case LUA_TTABLE:   return depth < LUA_JSON_MAX_DEPTH;
     default:           return false;
   }
@@ -3328,8 +3391,12 @@ void Sandbox::driverEventHandler(void* ctx, const char* name,
         w.puts_(num);
         break;
       case EventField::FLOAT:
-        snprintf(num, sizeof(num), "%g", (double)fields[i].f);
-        w.puts_(num);
+        if (std::isfinite(fields[i].f)) {
+          snprintf(num, sizeof(num), "%g", (double)fields[i].f);
+          w.puts_(num);
+        } else {
+          w.puts_("null");  // JSON has no NaN or infinity
+        }
         break;
       case EventField::BOOL:
         w.puts_(fields[i].b ? "true" : "false");
