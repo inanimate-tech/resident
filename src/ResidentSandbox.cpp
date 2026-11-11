@@ -54,8 +54,8 @@ static const char* REGISTRY_KEY = "ResidentSandbox_instance";
 
 // The one way untrusted Lua (an app, a chunk, the framework slot) is
 // compiled: text only. Mode "t" refuses a precompiled binary chunk whatever
-// its length, so the guarantee no longer rests on the callers' strings
-// ending at the first NUL (every Lua 5.4 binary chunk has one at byte 5).
+// its length, so the refusal does not depend on callers passing strings
+// that end at the first NUL (every Lua 5.4 binary chunk has one at byte 5).
 // The chunkname is short ("=app"), so an error reads "app:3: ..." instead of
 // quoting the source. Leaves the chunk or the error message on the stack and
 // returns the luaL_loadbufferx status.

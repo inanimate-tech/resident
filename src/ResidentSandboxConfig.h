@@ -92,7 +92,8 @@ struct SandboxConfig {
   // Sandbox hardening (0.8): by default the app environment does NOT get
   // os / io / package / require / load / dofile / loadstring / loadfile /
   // debug, or string.dump. Set true to open the full standard library
-  // (trusted builds whose apps predate the closed default).
+  // (trusted builds whose apps predate the closed default); apps then have
+  // load, whose default mode loads binary chunks.
   bool openUnsafeLibs = false;
 
   // Fresh app environment (0.8): each loadApp resets the globals to the
