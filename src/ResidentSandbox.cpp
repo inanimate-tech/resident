@@ -30,26 +30,77 @@ extern "C" {
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#endif
 
-// Custom Lua allocator. Prefers PSRAM, but transparently falls back to
-// internal RAM on boards without PSRAM (e.g. ESP32-S3FN8). The capability is
-// resolved once on first use from whether any SPIRAM is actually present.
-static void* psramLuaAlloc(void* ud, void* ptr, size_t osize, size_t nsize) {
-  (void)ud;
-  (void)osize;
-  static const uint32_t kLuaHeapCaps =
+// The Lua heap. Small objects come from the sandbox's SlabArena
+// (ResidentSlabAlloc.h, which says why); the rest, and everything when the
+// arena is off or out of regions, from the system allocator — PSRAM where
+// there is some, internal RAM on a board without (e.g. ESP32-S3FN8).
+namespace {
+
+#ifdef ESP_PLATFORM
+uint32_t luaHeapCaps() {
+  static const uint32_t caps =
       (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0) ? MALLOC_CAP_SPIRAM
                                                         : MALLOC_CAP_8BIT;
-  if (nsize == 0) {
-    heap_caps_free(ptr);
-    return NULL;
-  }
-  if (ptr == NULL) {
-    return heap_caps_malloc(nsize, kLuaHeapCaps);
-  }
-  return heap_caps_realloc(ptr, nsize, kLuaHeapCaps);
+  return caps;
 }
+void* luaSysAlloc(size_t n) { return heap_caps_malloc(n, luaHeapCaps()); }
+void* luaSysRealloc(void* p, size_t n) { return heap_caps_realloc(p, n, luaHeapCaps()); }
+void luaSysFree(void* p) { heap_caps_free(p); }
+// A region, 8-byte aligned so a slot is as aligned as its size class.
+void* luaRegionAlloc(size_t n) { return heap_caps_aligned_alloc(8, n, luaHeapCaps()); }
+// The arena takes its memory 256 KB at a time, which only PSRAM can spare: on
+// a board without any, a region would be most of the internal heap, so there
+// the arena stays off and every block comes from the system allocator.
+bool luaArenaFits() { return luaHeapCaps() == MALLOC_CAP_SPIRAM; }
+#else
+void* luaSysAlloc(size_t n) { return malloc(n); }
+void* luaSysRealloc(void* p, size_t n) { return realloc(p, n); }
+void luaSysFree(void* p) { free(p); }
+void* luaRegionAlloc(size_t n) { return malloc(n); }
+bool luaArenaFits() { return true; }
 #endif
+
+// lua_Alloc. Lua states the old size of every block it frees or resizes, so
+// a system block is told from an arena slot without asking the heap.
+void* luaSlabAlloc(void* ud, void* ptr, size_t osize, size_t nsize) {
+  Resident::SlabArena& arena = *static_cast<Resident::SlabArena*>(ud);
+  const size_t kSmall = Resident::SlabArena::kMaxSmall;
+  if (nsize == 0) {
+    if (!ptr) return nullptr;
+    if (arena.owns(ptr)) arena.free(ptr);
+    else luaSysFree(ptr);
+    return nullptr;
+  }
+  if (!ptr) {
+    if (nsize <= kSmall && arena.ready()) {
+      if (void* p = arena.alloc(nsize)) return p;
+    }
+    return luaSysAlloc(nsize);
+  }
+  if (arena.owns(ptr)) {
+    const size_t have = arena.sizeOf(ptr);
+    if (nsize <= have && Resident::SlabArena::slotSize(nsize) == have) return ptr;
+    void* q = nsize <= kSmall ? arena.alloc(nsize) : nullptr;
+    if (!q) q = luaSysAlloc(nsize);
+    // Lua takes a shrink to be infallible; the slot it has is big enough.
+    if (!q) return nsize <= have ? ptr : nullptr;
+    memcpy(q, ptr, osize < nsize ? osize : nsize);
+    arena.free(ptr);
+    return q;
+  }
+  if (nsize <= kSmall && arena.ready()) {
+    if (void* q = arena.alloc(nsize)) {
+      memcpy(q, ptr, osize < nsize ? osize : nsize);
+      luaSysFree(ptr);
+      return q;
+    }
+  }
+  return luaSysRealloc(ptr, nsize);
+}
+
+}  // namespace
 
 // ── App quarantine: the platform half (ResidentAppHealth.h is the pure one) ──
 //
@@ -197,6 +248,7 @@ Sandbox::~Sandbox()
     lua_close(_lua);
     _lua = nullptr;
   }
+  _luaArena.reset();
 }
 
 void Sandbox::setTimezone(const char* ianaZone)
@@ -287,11 +339,13 @@ void Sandbox::initialize()
 {
   Serial.println("Initializing Resident::Sandbox");
 
-#ifdef ESP_PLATFORM
-  _lua = lua_newstate(psramLuaAlloc, NULL);
-#else
-  _lua = luaL_newstate();
-#endif
+  if (_config.luaArenaRegions > 0 && luaArenaFits() && !_luaArena.ready()) {
+    Resident::SlabArena::Backend backend;
+    backend.alloc = luaRegionAlloc;
+    backend.free = luaSysFree;
+    _luaArena.begin(backend, _config.luaArenaRegions);
+  }
+  _lua = lua_newstate(luaSlabAlloc, &_luaArena);
 
   if (!_lua) {
     Serial.println("Error: Failed to create Lua state");

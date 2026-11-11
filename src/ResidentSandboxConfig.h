@@ -129,6 +129,15 @@ struct SandboxConfig {
   // executionDeadlineMs and of the platform; 0 = no reporting.
   uint32_t executionSoftDeadlineMs = 0;
 
+  // The Lua heap's small-object arena (ResidentSlabAlloc.h): how many 256 KB
+  // regions it may hold. Objects of up to 512 bytes come from it, with no
+  // lock and no per-object header, instead of from the system allocator; a
+  // region is taken when one is needed and given back when it empties. Past
+  // the cap, and for anything larger, the system allocator serves as before.
+  // 0 = no arena. On an ESP32 without PSRAM there is never an arena: a
+  // region would be most of the internal heap.
+  uint8_t luaArenaRegions = 8;
+
   // Framework module (0.8): privileged runtime code the sandbox hosts
   // OUTSIDE the app — its own environment, the runtime-channel sender,
   // lifecycle interception, and a persistent update slot written only by
