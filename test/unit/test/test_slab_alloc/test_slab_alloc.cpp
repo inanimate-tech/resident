@@ -10,6 +10,10 @@
 #include <cstring>
 #include <map>
 #include <vector>
+#include <csignal>
+#include <cstdio>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "ResidentSlabAlloc.h"
 
@@ -297,6 +301,193 @@ void test_live_slots_never_overlap() {
   a.reset();
 }
 
+// ── Corruption: checked free list links and frees ─────────────────────────
+
+struct Reported {
+  int count = 0;
+  const char* what = nullptr;
+  const void* block = nullptr;
+};
+
+static void recordCorruption(const char* what, const void* block, void* ctx) {
+  Reported* r = static_cast<Reported*>(ctx);
+  r->count++;
+  r->what = what;
+  r->block = block;
+}
+
+// A slot's offset in its chunk. `keep` is the first slot of a fresh chunk, so
+// it sits at offset 0 and marks the chunk's base.
+static uint16_t offsetIn(const void* base, const void* p) {
+  return (uint16_t)((const uint8_t*)p - (const uint8_t*)base);
+}
+
+// Frees a, then b, so b heads its chunk's free list and b's first two bytes
+// are the link to a: what a write through a stale pointer to b overwrites.
+static void expectLinkCaught(uint16_t (*badLink)(uint16_t a, uint16_t b)) {
+  SlabArena arena;
+  arena.begin(backend());
+  Reported reported;
+  arena.setCorruptionHandler(recordCorruption, &reported);
+  void* keep = arena.alloc(32);   // keeps the chunk alive
+  void* a = arena.alloc(32);
+  void* b = arena.alloc(32);
+  void* tail = arena.alloc(32);   // so b's successor is handed out
+  arena.free(a);
+  arena.free(b);
+  const uint16_t link = badLink(offsetIn(keep, a), offsetIn(keep, b));
+  memcpy(b, &link, sizeof(link));
+
+  void* p = arena.alloc(32);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  TEST_ASSERT_EQUAL_STRING("free list link is not a slot of its chunk", reported.what);
+  TEST_ASSERT_EQUAL_PTR(b, reported.block);
+  // Neither the overwritten slot nor anything on its list comes back: the
+  // slot is a fresh chunk's.
+  TEST_ASSERT_NOT_NULL(p);
+  TEST_ASSERT_TRUE(p != a && p != b);
+  TEST_ASSERT_EQUAL_UINT(2, arena.stats().chunksInUse);
+  memset(p, 0xA5, 32);
+
+  // The arena goes on working, and the damaged chunk's live slots still free.
+  void* q = arena.alloc(32);
+  TEST_ASSERT_NOT_NULL(q);
+  arena.free(q);
+  arena.free(p);
+  arena.free(tail);
+  arena.free(keep);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  TEST_ASSERT_EQUAL_UINT(0, arena.stats().liveSlots);
+  arena.reset();
+}
+
+static uint16_t linkPastTheChunk(uint16_t, uint16_t) { return 0x7FF0; }
+static uint16_t linkBetweenTwoSlots(uint16_t a, uint16_t) { return (uint16_t)(a + 8); }
+static uint16_t linkIntoTheUnusedTail(uint16_t, uint16_t b) { return (uint16_t)(b + 8 * 32); }
+static uint16_t linkToItself(uint16_t, uint16_t b) { return b; }
+
+void test_a_free_list_link_past_its_chunk_is_caught() { expectLinkCaught(linkPastTheChunk); }
+void test_a_free_list_link_between_two_slots_is_caught() { expectLinkCaught(linkBetweenTwoSlots); }
+void test_a_free_list_link_to_a_slot_never_handed_out_is_caught() {
+  expectLinkCaught(linkIntoTheUnusedTail);
+}
+void test_a_free_list_link_to_itself_is_caught() { expectLinkCaught(linkToItself); }
+
+void test_an_intact_free_list_reports_nothing() {
+  SlabArena arena;
+  arena.begin(backend());
+  Reported reported;
+  arena.setCorruptionHandler(recordCorruption, &reported);
+  std::vector<void*> blocks;
+  for (int i = 0; i < 32; i++) blocks.push_back(arena.alloc(256));   // one chunk, full
+  for (int i = 0; i < 32; i += 2) arena.free(blocks[i]);
+  for (int i = 0; i < 32; i += 2) blocks[i] = arena.alloc(256);
+  for (void* p : blocks) arena.free(p);
+  TEST_ASSERT_EQUAL_INT(0, reported.count);
+  TEST_ASSERT_EQUAL_UINT(0, arena.stats().liveSlots);
+  arena.reset();
+}
+
+void test_a_slot_freed_twice_is_caught_and_ignored() {
+  SlabArena arena;
+  arena.begin(backend());
+  Reported reported;
+  arena.setCorruptionHandler(recordCorruption, &reported);
+  void* keep = arena.alloc(48);
+  void* a = arena.alloc(48);
+  arena.free(a);
+  arena.free(a);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  TEST_ASSERT_EQUAL_STRING("slot freed twice", reported.what);
+  // Ignored: a is handed out once, not twice.
+  void* p = arena.alloc(48);
+  void* q = arena.alloc(48);
+  TEST_ASSERT_EQUAL_PTR(a, p);
+  TEST_ASSERT_TRUE(q != a);
+  arena.free(p);
+  arena.free(q);
+  arena.free(keep);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  TEST_ASSERT_EQUAL_UINT(0, arena.stats().liveSlots);
+  arena.reset();
+}
+
+void test_a_free_of_a_misaligned_address_is_caught() {
+  SlabArena arena;
+  arena.begin(backend());
+  Reported reported;
+  arena.setCorruptionHandler(recordCorruption, &reported);
+  char* a = static_cast<char*>(arena.alloc(64));
+  arena.free(a + 8);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  TEST_ASSERT_EQUAL_UINT(1, arena.stats().liveSlots);   // still live
+  arena.free(a);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  TEST_ASSERT_EQUAL_UINT(0, arena.stats().liveSlots);
+  arena.reset();
+}
+
+void test_a_free_of_a_slot_never_handed_out_is_caught() {
+  SlabArena arena;
+  arena.begin(backend());
+  Reported reported;
+  arena.setCorruptionHandler(recordCorruption, &reported);
+  char* a = static_cast<char*>(arena.alloc(64));
+  arena.free(a + 64 * 4);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  TEST_ASSERT_EQUAL_STRING("free of a slot this chunk did not hand out", reported.what);
+  arena.free(a);
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  arena.reset();
+}
+
+void test_a_free_into_the_metadata_or_an_empty_chunk_is_caught() {
+  SlabArena arena;
+  arena.begin(backend());
+  Reported reported;
+  arena.setCorruptionHandler(recordCorruption, &reported);
+  char* a = static_cast<char*>(arena.alloc(64));   // chunk 1 of the region
+  arena.free(a - SlabArena::kChunkBytes);          // the region's metadata
+  TEST_ASSERT_EQUAL_INT(1, reported.count);
+  TEST_ASSERT_EQUAL_STRING("free inside a region's metadata", reported.what);
+  arena.free(a + SlabArena::kChunkBytes);          // chunk 2: never handed out
+  TEST_ASSERT_EQUAL_INT(2, reported.count);
+  TEST_ASSERT_EQUAL_STRING("free in a chunk with no live slots", reported.what);
+  static uint64_t elsewhere;
+  arena.free(&elsewhere);
+  TEST_ASSERT_EQUAL_INT(3, reported.count);
+  TEST_ASSERT_EQUAL_STRING("free of a pointer the arena does not own", reported.what);
+  arena.free(a);
+  TEST_ASSERT_EQUAL_INT(3, reported.count);
+  TEST_ASSERT_EQUAL_UINT(0, arena.stats().liveSlots);
+  arena.reset();
+}
+
+// By default corruption aborts the process, so this runs in a child.
+void test_by_default_a_corrupt_link_aborts() {
+  fflush(stdout);
+  const pid_t pid = fork();
+  TEST_ASSERT_TRUE(pid >= 0);
+  if (pid == 0) {
+    if (!freopen("/dev/null", "w", stderr)) _exit(2);
+    SlabArena arena;
+    arena.begin(backend());
+    arena.alloc(32);   // keeps the chunk alive
+    void* a = arena.alloc(32);
+    void* b = arena.alloc(32);
+    arena.free(a);
+    arena.free(b);
+    const uint16_t bad = 0x7FF0;
+    memcpy(b, &bad, sizeof(bad));
+    arena.alloc(32);
+    _exit(0);   // reached only if the arena carried on
+  }
+  int status = 0;
+  TEST_ASSERT_EQUAL_INT(pid, waitpid(pid, &status, 0));
+  TEST_ASSERT_TRUE(WIFSIGNALED(status));
+  TEST_ASSERT_EQUAL_INT(SIGABRT, WTERMSIG(status));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_slot_sizes_cover_their_requests);
@@ -307,5 +498,15 @@ int main(int, char**) {
   RUN_TEST(test_the_cap_and_a_refusing_system_return_null);
   RUN_TEST(test_random_walk_against_a_shadow);
   RUN_TEST(test_live_slots_never_overlap);
+  RUN_TEST(test_a_free_list_link_past_its_chunk_is_caught);
+  RUN_TEST(test_a_free_list_link_between_two_slots_is_caught);
+  RUN_TEST(test_a_free_list_link_to_a_slot_never_handed_out_is_caught);
+  RUN_TEST(test_a_free_list_link_to_itself_is_caught);
+  RUN_TEST(test_an_intact_free_list_reports_nothing);
+  RUN_TEST(test_a_slot_freed_twice_is_caught_and_ignored);
+  RUN_TEST(test_a_free_of_a_misaligned_address_is_caught);
+  RUN_TEST(test_a_free_of_a_slot_never_handed_out_is_caught);
+  RUN_TEST(test_a_free_into_the_metadata_or_an_empty_chunk_is_caught);
+  RUN_TEST(test_by_default_a_corrupt_link_aborts);
   return UNITY_END();
 }
