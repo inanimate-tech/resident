@@ -23,6 +23,17 @@
 // its region for any class to take, and a region with no live chunks goes
 // back to the system, so a burst of one size does not pin memory for good.
 //
+// A freed slot keeps its free list link (a chunk offset) in its first two
+// bytes, where a write through a stale pointer can overwrite it. Followed,
+// such a link would hand the heap any address in the chunk, the metadata
+// included. So a link is checked before it is followed: it must be a slot
+// boundary below the chunk's never-used tail. A free is checked too: the
+// pointer must be a slot boundary the chunk has handed out, in a chunk that
+// serves a class and has live slots, and not the slot freed last. A failed
+// check is heap corruption: the arena calls its corruption handler, which by
+// default prints what it found and aborts. A handler that returns lets the
+// arena carry on without the damage, leaking the memory involved.
+//
 // What it does not do. Anything over kMaxSmall bytes is not its business:
 // the caller sends those to the system allocator. It is not thread-safe: one
 // arena belongs to one task. Out of regions (the cap, or the system has no
@@ -33,6 +44,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace Resident {
@@ -63,8 +76,23 @@ public:
     uint32_t refusals = 0;     // alloc() calls that returned nullptr
   };
 
+  // Called with what was found and the slot or pointer involved. If it
+  // returns, the arena carries on as described above.
+  using CorruptionHandler = void (*)(const char* what, const void* block, void* ctx);
+
   SlabArena() {
     for (int i = 0; i < kClasses; i++) _partial[i] = kNone;
+  }
+
+  void setCorruptionHandler(CorruptionHandler h, void* ctx) {
+    _onCorrupt = h ? h : abortOnCorruption;
+    _onCorruptCtx = h ? ctx : nullptr;
+  }
+
+  static void abortOnCorruption(const char* what, const void* block, void*) {
+    fprintf(stderr, "SlabArena: heap corruption: %s (block %p)\n", what, block);
+    fflush(stderr);
+    abort();
   }
 
   // `maxRegions` caps what the arena may hold (1..kMaxRegions).
@@ -82,14 +110,31 @@ public:
   // n in 1..kMaxSmall. nullptr: no region to be had; ask the system.
   void* alloc(size_t n) {
     const int cls = classOf(n);
-    uint16_t id = _partial[cls];
-    if (id == kNone) {
-      id = takeChunk(cls);
-      if (id == kNone) { _stats.refusals++; return nullptr; }
+    uint16_t id;
+    Meta* mp;
+    uint8_t* base;
+    for (;;) {
+      id = _partial[cls];
+      if (id == kNone) {
+        id = takeChunk(cls);
+        if (id == kNone) { _stats.refusals++; return nullptr; }
+      }
+      Region& r = _regions[id / kChunksPerRegion];
+      mp = &r.meta()[id % kChunksPerRegion];
+      base = r.chunk(id % kChunksPerRegion);
+      if (mp->freeHead == kNoSlot) break;
+      // The head was checked when it became the head; its link was written
+      // into a freed slot and may not be what the arena left there.
+      uint16_t next;
+      memcpy(&next, base + mp->freeHead, sizeof(next));
+      if (next == kNoSlot ||
+          (next < mp->bump && next % kSlot[cls] == 0 && next != mp->freeHead)) {
+        break;
+      }
+      corrupt("free list link is not a slot of its chunk", base + mp->freeHead);
+      dropFreeList(cls, id, *mp);
     }
-    Region& r = _regions[id / kChunksPerRegion];
-    Meta& m = r.meta()[id % kChunksPerRegion];
-    uint8_t* base = r.chunk(id % kChunksPerRegion);
+    Meta& m = *mp;
     uint8_t* p;
     if (m.freeHead != kNoSlot) {
       p = base + m.freeHead;
@@ -125,12 +170,20 @@ public:
   // p must be owned (owns(p)).
   void free(void* p) {
     const uint16_t id = chunkOf(p);
+    if (id == kNone) { corrupt("free of a pointer the arena does not own", p); return; }
+    if (id % kChunksPerRegion == 0) { corrupt("free inside a region's metadata", p); return; }
     const int ri = id / kChunksPerRegion;
     Region& r = _regions[ri];
     Meta& m = r.meta()[id % kChunksPerRegion];
+    if (!m.inUse || m.used == 0) { corrupt("free in a chunk with no live slots", p); return; }
     const int cls = m.cls;
     uint8_t* base = r.chunk(id % kChunksPerRegion);
     const uint16_t off = (uint16_t)((uint8_t*)p - base);
+    if (off >= m.bump || off % kSlot[cls] != 0) {
+      corrupt("free of a slot this chunk did not hand out", p);
+      return;
+    }
+    if (off == m.freeHead) { corrupt("slot freed twice", p); return; }
     const uint16_t head = m.freeHead;
     memcpy(p, &head, sizeof(head));
     m.freeHead = off;
@@ -209,6 +262,20 @@ private:
       }
     }
     return kNone;   // not reached for an owned pointer
+  }
+
+  void corrupt(const char* what, const void* block) { _onCorrupt(what, block, _onCorruptCtx); }
+
+  // Forgets a free list that cannot be trusted, with every slot on it and the
+  // never-used tail: the chunk counts as full, so it is never allocated from
+  // again until a live slot is freed, and never empties.
+  void dropFreeList(int cls, uint16_t id, Meta& m) {
+    m.freeHead = kNoSlot;
+    m.bump = (uint16_t)(kCap[cls] * kSlot[cls]);
+    if (m.used != kCap[cls]) {
+      unlinkPartial(cls, id, m);
+      m.used = kCap[cls];
+    }
   }
 
   Meta& metaOf(uint16_t id) {
@@ -309,6 +376,8 @@ private:
   Region _regions[kMaxRegions];
   uint16_t _partial[kClasses];
   Stats _stats;
+  CorruptionHandler _onCorrupt = abortOnCorruption;
+  void* _onCorruptCtx = nullptr;
 };
 
 // The three calls a heap needs, over an arena and the system allocator behind
