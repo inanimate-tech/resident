@@ -379,6 +379,10 @@ public:
     // overrides it. The WiFi portal's name stays chip-derived.
     virtual const String& getDeviceId() const { return _deviceId; }
     const String& getAPName() const { return _apName; }
+    // The portal's network name from SandboxConfig::apName (null or empty =
+    // "Resident <Type>"), the device type and the device id; at most 32 bytes.
+    static String buildAPName(const char* apName, const char* deviceType,
+                              const String& deviceId);
     const char* getDeviceType() const {
       return _config.deviceType ? _config.deviceType : "device";
     }

@@ -35,6 +35,7 @@ void loop()  { sandbox.loop(); }
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `deviceType` | `const char*` | `nullptr` | Device type string — used for the WiFiManager AP name and the default `/agents/<type>-agent/<deviceId>` WS path |
+| `apName` | `const char*` | `nullptr` | The WiFi setup portal's network name, before the id: `"Acme Chrono"` gives `"Acme Chrono 3b21"`. Null or empty is `"Resident <DeviceType>"`. Kept to the 32 bytes a network name allows (see [WiFi setup portal](#wifi-setup-portal)) |
 | `firmwareVersion` | `const char*` | `nullptr` | The board build's version string, announced in the device hello (see [Hello](#hello)). Omitted from the hello when null. |
 | `profileRef` | `const char*` | `nullptr` | Name+version of this device type's out-of-band authoring document (e.g. `"m5stick@2"`), announced in the device hello. Omitted when null. |
 | `extensions` | `Extensions` | `{}` | Drivers and extensions registered with the sandbox (registration order is preserved across `begin()` / `registerModule()` / `update()` / `onAppReset()`) |
@@ -116,7 +117,7 @@ sandbox.loop();    // call from Arduino loop()
 2. **`setup()`** — in order:
    1. The user-registered `onConfigureNetwork(cb)` fires (if any), receiving the `Courier::Client&`. Use this to configure transports, register additional transports, or set TLS certificates.
    2. Resident's internal Courier hooks are wired (status-display / status-LED updates, reserved-type message routing).
-   3. WiFiManager AP name is set to `"Resident <DeviceType> <id-suffix>"`.
+   3. WiFiManager AP name is set to `"<apName> <id-suffix>"`, by default `"Resident <DeviceType> <id-suffix>"` (see [WiFi setup portal](#wifi-setup-portal)). It overwrites a `c.setAPName(...)` made in `onConfigureNetwork`: set `SandboxConfig::apName` instead.
    4. The sandbox initialises: Lua state is created, then Resident builds a de-duplicated lifecycle list of all managed objects — the `extensions[]` entries plus any role-slot peripherals (`systemDisplay`, `systemLED`, `systemButton`). Each object in that list receives `begin()` and `registerModule()` exactly once (idempotent), in registration order. Globals are registered.
    5. `Courier::Client::setup()` runs, which kicks WiFi and transports. During this:
       - `onCourierConnectionChange` fires for each state transition (`WifiConnecting` → `WifiConnected` → `NetworkReady` → `TransportsConnecting` → `Connected`, etc.). Internal handler updates `systemDisplay`/`systemLED`, then the user's `onConnectionChange(cb)` callback fires.
@@ -365,6 +366,34 @@ In standalone mode:
 - `onConfigureNetwork` / `onNetworkReady` / `onTransportsWillConnect` / `onMessage` / `onConnectionChange` / `onConnected` never fire — but registering them is harmless.
 
 ---
+
+## WiFi setup portal
+
+A networked sandbox with no saved network (or one it can't reach) opens Courier's setup portal: an open access point serving WiFiManager's pages, where someone picks the network the device should join. Everything about it is set from the sandbox's config and from Courier.
+
+**The network's name** is `"<apName> <id>"`, `<id>` being the first four hex digits of the chip-derived device id. Set `SandboxConfig::apName`; null or empty gives `"Resident <DeviceType> <id>"`. A WiFi network name is at most 32 bytes, so a long `apName` is shortened, never the id. The identity screen's "Configure WiFi" line shows the same name. Resident sets the name during `setup()`, after `onConfigureNetwork`, so `c.setAPName(...)` there is overwritten: use the config field.
+
+```cpp
+cfg.deviceType = "chrono";
+cfg.apName     = "Acme Chrono";      // the portal: "Acme Chrono 3b21"
+```
+
+**The pages' title, menu and look** are WiFiManager settings, reached through Courier's `onConfigureWiFi`, which runs once before WiFiManager first connects or serves the portal:
+
+```cpp
+sandbox.onConfigureNetwork([](Courier::Client& c) {
+  c.onConfigureWiFi([](WiFiManager& wm) {
+    wm.setTitle("Acme");
+    wm.setCustomHeadElement("<style>button{background:#0a7}</style>");
+  });
+});
+```
+
+Resident leaves `onConfigureWiFi` to the application: it registers nothing there, so your callback is the only one.
+
+**The portal serves only WiFi setup.** Courier closes WiFiManager's firmware-upload, erase and restart pages, which would otherwise be open to anyone who joins the access point; `Courier::Config::portalMaintenancePages = true` (on `cfg.network`) restores them. See Courier's docs/api.md, "The config portal's maintenance pages".
+
+**The pages' words** (button labels, the saved message) are compile-time strings in WiFiManager, changed with a strings file named by `WM_STRINGS_FILE`: Courier's docs/api.md, "The portal's words", has the build flags and an example.
 
 ## Resident::Extension
 

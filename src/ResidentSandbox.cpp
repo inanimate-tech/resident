@@ -603,6 +603,32 @@ void Sandbox::setupLuaEnvironment()
   lua_setglobal(_lua, "screens");
 }
 
+String Sandbox::buildAPName(const char* apName, const char* deviceType,
+                            const String& deviceId)
+{
+  // A WiFi network name is at most 32 bytes; the soft AP refuses a longer one.
+  static constexpr unsigned kMaxSsidBytes = 32;
+
+  String name;
+  if (apName && apName[0]) {
+    name = apName;
+  } else {
+    String type = deviceType ? deviceType : "";
+    if (type.length() > 0) type[0] = toupper(type[0]);
+    name = type.length() > 0 ? String("Resident ") + type : String("Resident");
+  }
+  String suffix = String(" ") + deviceId.substring(0, 4);
+  unsigned room = kMaxSsidBytes > suffix.length() ? kMaxSsidBytes - suffix.length() : 0;
+  if (name.length() > room) {
+    // Cut at a character boundary: never inside a UTF-8 sequence.
+    unsigned cut = room;
+    while (cut > 0 && (static_cast<uint8_t>(name[cut]) & 0xC0) == 0x80) cut--;
+    while (cut > 0 && name[cut - 1] == ' ') cut--;
+    name = name.substring(0, cut);
+  }
+  return name + suffix;
+}
+
 void Sandbox::setup()
 {
   if (_initialized) return;
@@ -629,10 +655,7 @@ void Sandbox::setup()
     wireInternalCourierHooks();
 
     // 3. AP name for WiFi config portal.
-    String apName = String(getDeviceType());
-    if (apName.length() > 0) apName[0] = toupper(apName[0]);
-    String idSuffix = _deviceId.substring(0, 4);
-    _apName = String("Resident ") + apName + " " + idSuffix;
+    _apName = buildAPName(_config.apName, getDeviceType(), _deviceId);
     _courier->setAPName(_apName.c_str());
 
     Serial.printf("[resident] Device: %s (%s)\n",

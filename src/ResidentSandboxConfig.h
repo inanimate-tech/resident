@@ -35,11 +35,21 @@ using TelemetryCallback = std::function<void(const char* json)>;
 // executionSoftDeadlineMs, so a board that also builds against an older
 // published SDK can guard its use of them on the fields' presence.
 #define RESIDENT_HAS_EXECUTION_DEADLINE 1
+// Feature test for SandboxConfig::apName.
+#define RESIDENT_HAS_AP_NAME_CONFIG 1
 
 struct SandboxConfig {
   // Identifies the physical board (used for AP name and protocol path
   // defaults). Stays at top-level — it labels the device, not the network.
   const char* deviceType = nullptr;
+
+  // The WiFi setup portal's network name (and the identity screen's line
+  // under "Configure WiFi") is "<apName> <id>", where <id> is the first four
+  // hex digits of the chip-derived device id: "Acme Chrono 3b21". Null or
+  // empty takes the default, "Resident" and deviceType with its first letter
+  // capitalised ("Resident Clock 3b21"). The whole name is kept to the 32
+  // bytes a WiFi network name allows, shortening apName, never the id.
+  const char* apName = nullptr;
 
   // Optional self-description carried in the device hello (see docs/api.md
   // "Hello"). firmwareVersion is the BOARD build's version string (not
