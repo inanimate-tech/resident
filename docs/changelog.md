@@ -1,11 +1,15 @@
 # Changelog
 
-## Unreleased
+## v0.15.0
 
 ### New features
 
 - **`SandboxConfig::apName` names the WiFi setup portal's network.** The name is `"<apName> <id>"` (`"Acme Chrono 3b21"`), and the identity screen's "Configure WiFi" line shows the same. Null or empty keeps the default, `"Resident <DeviceType> <id>"`, so nothing changes unless a board sets it. The name is kept to the 32 bytes a WiFi network name allows, shortening `apName` and never the id. `RESIDENT_HAS_AP_NAME_CONFIG` is defined for feature tests. Until now the only way to name the network was `c.setAPName()` in `onConfigureNetwork`, which Resident overwrote.
 - **docs/api.md: "WiFi setup portal"**, on naming the network and setting the portal's title, menu, look and words through Courier.
+
+### Dependencies
+
+- Courier `^0.11.0` (was `^0.10.0`). Its setup portal no longer serves WiFiManager's firmware-upload, erase and restart pages, which were open to anyone who joined a device's setup access point (`Courier::Config::portalMaintenancePages = true`, on `cfg.network`, restores them), and `onConfigureWiFi` runs once, also before a new device's portal. See Courier's changelog, v0.11.0. Resident's own code does not depend on either change.
 
 ## v0.14.0
 
