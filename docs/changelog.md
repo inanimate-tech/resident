@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- **`SandboxConfig::apName` names the WiFi setup portal's network.** The name is `"<apName> <id>"` (`"Acme Chrono 3b21"`), and the identity screen's "Configure WiFi" line shows the same. Null or empty keeps the default, `"Resident <DeviceType> <id>"`, so nothing changes unless a board sets it. The name is kept to the 32 bytes a WiFi network name allows, shortening `apName` and never the id. `RESIDENT_HAS_AP_NAME_CONFIG` is defined for feature tests. Until now the only way to name the network was `c.setAPName()` in `onConfigureNetwork`, which Resident overwrote.
+- **docs/api.md: "WiFi setup portal"**, on naming the network and setting the portal's title, menu, look and words through Courier.
+
 ## v0.14.0
 
 ### New features

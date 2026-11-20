@@ -34,7 +34,7 @@ pio device monitor
 
 ## Wi-Fi setup (first boot only)
 
-On first boot the device hosts an open AP named something like `Resident feather-tft XXXX`. Join from a phone, the captive portal pops, enter your real Wi-Fi credentials. Saved to NVS — every subsequent boot connects silently.
+On first boot the device hosts an open AP named something like `Resident Feather-tft XXXX`. Join from a phone, the captive portal pops, enter your real Wi-Fi credentials. Saved to NVS — every subsequent boot connects silently.
 
 ## Pushing apps
 
