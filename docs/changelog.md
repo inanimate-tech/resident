@@ -8,7 +8,7 @@
 
 ### Dependencies
 
-- Needs Courier's `Client::openConfigPortal()` (unreleased; the next Courier release).
+- Courier `^0.12.0` (was `^0.11.0`), for `Client::openConfigPortal()`.
 
 ## v0.15.0
 
