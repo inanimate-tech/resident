@@ -700,10 +700,34 @@ void Sandbox::setup()
   // 6. Kick off Courier (WiFi + transports). The idle screen is then shown on
   // first connection. Standalone has no connection step, so enter it now.
   if (_courier.has_value()) {
+    if (heldForWifiPortal()) _courier->openConfigPortal();
     _courier->setup();
   } else {
     enterIdleScreen();
   }
+
+  // A press still down here, whatever began it, belongs to boot.
+  _holdWaitsForRelease = _config.systemButton && _config.systemButton->pressed();
+}
+
+bool Sandbox::heldForWifiPortal()
+{
+  const unsigned long holdMs = _config.wifiPortalHoldMs;
+  if (holdMs == 0 || !_config.systemButton || !_config.systemButton->pressed()) {
+    return false;
+  }
+  Serial.println("[resident] System button held at boot");
+  showStatusText("Keep holding\nfor WiFi setup");
+  const unsigned long start = millis();
+  while (_config.systemButton->pressed()) {
+    if (millis() - start >= holdMs) {
+      Serial.println("[resident] WiFi setup portal requested");
+      return true;
+    }
+    delay(10);
+  }
+  Serial.println("[resident] System button released; booting");
+  return false;
 }
 
 void Sandbox::wireInternalCourierHooks()
@@ -3092,6 +3116,10 @@ void Sandbox::updateSystemButtonHold()
 {
   if (!_onHoldCb || !_config.systemButton || _runState == RunState::Pending) return;
   bool down = _config.systemButton->pressed();
+  if (_holdWaitsForRelease) {
+    if (!down) _holdWaitsForRelease = false;
+    return;
+  }
 
   if (down && !_holdWasDown) {
     _holdWasDown = true;

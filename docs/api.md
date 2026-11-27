@@ -53,7 +53,8 @@ void loop()  { sandbox.loop(); }
 | `luaArenaRegions` | `uint8_t` | `8` | How many 256 KB regions of PSRAM the Lua heap's small-object arena may hold (`ResidentSlabAlloc.h`). Blocks of up to 512 bytes come from it, with no lock and no per-object header; larger ones, and everything past the cap, from the system allocator. A region is taken when needed and returned when it empties. `0` = no arena. Ignored on an ESP32 without PSRAM, which never has one. |
 | `fastTrig` | `bool` | `true` | On an ESP32, `math.sin`/`math.cos` reduce an argument between 200 and 2^20 in magnitude themselves (`ResidentFastTrig.h`), where newlib is about twenty times slower than for a small one. Within 2 ulp of the true value, so not always newlib's float. `false` = newlib's results bit for bit. No effect on a host build. |
 | `framework` | `std::optional<FrameworkConfig>` | unset | Embed a framework module: `{name, version, source}` — privileged Lua the sandbox hosts outside the app (see [Framework modules](#framework-modules)). |
-| `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Implement `Resident::SystemButton` and pass a pointer here. |
+| `systemButton` | `Resident::SystemButton*` | `nullptr` | Optional button the runtime polls to skip the boot countdown (and, via `onSystemButtonHold`, a runtime hold gesture). Held through boot, it opens the WiFi setup portal (`wifiPortalHoldMs`). Implement `Resident::SystemButton` and pass a pointer here. |
+| `wifiPortalHoldMs` | `unsigned long` | `3000` | Holding the `systemButton` through boot this long opens the WiFi setup portal, keeping the saved network (see [WiFi setup portal](#wifi-setup-portal)). `0` turns it off |
 | `systemMic` | `Resident::SystemMic*` | `nullptr` | Optional microphone the runtime streams via the mic pump (see [SystemMic](#residentsystemmic)). On M5 boards use the shipped `Resident::M5Mic` (`#include <ResidentM5Mic.h>`); otherwise implement `Resident::SystemMic`. Not a `Driver` — the pump owns its `begin()`/`end()`. |
 | `persistentStore` | `Resident::PersistentStore*` | `nullptr` | Override the backing store for persistence. `nullptr` uses NVS on device; inject a fake in tests. |
 | `appCrashLimit` | `uint8_t` | `3` | Consecutive crashes after which a running app is quarantined (see [App quarantine](#app-quarantine)). `0` disables the quarantine. |
@@ -377,6 +378,8 @@ A networked sandbox with no saved network (or one it can't reach) opens Courier'
 cfg.deviceType = "chrono";
 cfg.apName     = "Acme Chrono";      // the portal: "Acme Chrono 3b21"
 ```
+
+**Holding the system button through boot opens the portal** with the saved network kept, so a device can be moved to another network. `setup()` checks the `systemButton` just before it starts Courier; while the button is down it shows "Keep holding / for WiFi setup" on the `systemDisplay` and waits, and once it has been held for `SandboxConfig::wifiPortalHoldMs` (3 s by default) it calls Courier's `openConfigPortal()` and carries on. A release before then boots as usual. Powering the device off and on leaves the portal and joins the saved network. The press starts no runtime hold (`onSystemButtonHold`) until the button is released, so a push-to-talk wired to the same button does not start as the portal opens. `wifiPortalHoldMs = 0` turns the gesture off; it needs a `systemButton` and a network.
 
 **The pages' title, menu and look** are WiFiManager settings, reached through Courier's `onConfigureWiFi`, which runs once before WiFiManager first connects or serves the portal:
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- **Holding the system button through boot opens the WiFi setup portal**, keeping the saved network, so a device can be moved to another network. `setup()` waits while the button is down ("Keep holding / for WiFi setup" on the `systemDisplay`) and, after `SandboxConfig::wifiPortalHoldMs` (3 s by default; `0` turns it off), asks Courier for the portal with `openConfigPortal()`. A release before then boots as usual. The press starts no runtime hold until the button is released. `RESIDENT_HAS_WIFI_PORTAL_HOLD` is defined for feature tests.
+
+### Dependencies
+
+- Courier `^0.12.0` (was `^0.11.0`), for `Client::openConfigPortal()`.
+
 ## v0.15.0
 
 ### New features
