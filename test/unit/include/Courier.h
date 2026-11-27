@@ -85,6 +85,9 @@ public:
   void setup() {}
   void loop() {}
   void setAPName(const char* name) { (void)name; }
+  // Counted so tests can see the boot gesture ask for the portal.
+  int openConfigPortalCalls = 0;
+  void openConfigPortal() { openConfigPortalCalls++; }
 
   void onMessage(std::function<void(const char*, const char*, JsonDocument&)>) {}
   void onTransportsWillConnect(std::function<void()>) {}

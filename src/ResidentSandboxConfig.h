@@ -37,6 +37,8 @@ using TelemetryCallback = std::function<void(const char* json)>;
 #define RESIDENT_HAS_EXECUTION_DEADLINE 1
 // Feature test for SandboxConfig::apName.
 #define RESIDENT_HAS_AP_NAME_CONFIG 1
+// Feature test for SandboxConfig::wifiPortalHoldMs.
+#define RESIDENT_HAS_WIFI_PORTAL_HOLD 1
 
 struct SandboxConfig {
   // Identifies the physical board (used for AP name and protocol path
@@ -50,6 +52,15 @@ struct SandboxConfig {
   // capitalised ("Resident Clock 3b21"). The whole name is kept to the 32
   // bytes a WiFi network name allows, shortening apName, never the id.
   const char* apName = nullptr;
+
+  // Holding the systemButton through boot for this long serves the WiFi
+  // setup portal, keeping the saved network (Courier's openConfigPortal()):
+  // the way to move a device to another network. setup() waits while the
+  // button is down, showing "Keep holding for WiFi setup" on the
+  // systemDisplay; a release before the time boots as usual. The press
+  // starts no runtime hold (onSystemButtonHold) until the button is
+  // released. Needs a systemButton and a network; 0 turns it off.
+  unsigned long wifiPortalHoldMs = 3000;
 
   // Optional self-description carried in the device hello (see docs/api.md
   // "Hello"). firmwareVersion is the BOARD build's version string (not

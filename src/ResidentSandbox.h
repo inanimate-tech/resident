@@ -758,6 +758,14 @@ private:
     static constexpr unsigned long SYSTEM_BUTTON_HOLD_MS = 500;
     void updateSystemButtonHold();
 
+    // Boot gesture (SandboxConfig::wifiPortalHoldMs): true when the system
+    // button was held through boot for the configured time. Blocks setup()
+    // only while the button is down.
+    bool heldForWifiPortal();
+    // A press that began before setup() returned starts no runtime hold:
+    // set while the button is down at the end of setup(), cleared on release.
+    bool _holdWaitsForRelease = false;
+
     // Mic streaming pump state.
     bool _micStreaming = false;
     MicStreamSink _micSink;

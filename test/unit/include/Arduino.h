@@ -55,6 +55,8 @@ static constexpr int INPUT_PULLUP = 0x05;
 // gate) advance it directly: `testMillis() += 200;`. Reset it in setUp().
 inline unsigned long& testMillis() { static unsigned long now = 0; return now; }
 inline unsigned long millis() { return testMillis(); }
+// delay() moves the fake clock on, so a loop that waits on millis() ends.
+inline void delay(unsigned long ms) { testMillis() += ms; }
 
 // Stub GPIO
 inline void     pinMode(int, int)       {}
